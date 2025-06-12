@@ -148,6 +148,6 @@ Built with amazing open-source projects:
 
 **Ready to take control of your enterprise search?**
 
-[⭐ Star this repo](https://github.com/yourusername/clio) • [Documentation](docs/) • [Discussions](https://github.com/yourusername/clio/discussions)
+[⭐ Star this repo](https://github.com/cliohq/clio) • [Documentation](docs/) • [Discussions](https://github.com/cliohq/clio/discussions)
 
 </div>
