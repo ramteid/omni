@@ -1,3 +1,5 @@
+import os
+import sys
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
@@ -9,8 +11,51 @@ from embeddings import (
     load_model,
     generate_embeddings_sync,
     TASK,
-    MODEL_NAME,
 )
+
+def get_required_env(key: str) -> str:
+    """Get required environment variable with validation"""
+    value = os.getenv(key)
+    if not value:
+        print(f"ERROR: Required environment variable '{key}' is not set", file=sys.stderr)
+        print("Please set this variable in your .env file or environment", file=sys.stderr)
+        sys.exit(1)
+    return value
+
+def get_optional_env(key: str, default: str) -> str:
+    """Get optional environment variable with default"""
+    return os.getenv(key, default)
+
+def validate_port(port_str: str) -> int:
+    """Validate port number"""
+    try:
+        port = int(port_str)
+        if port < 1 or port > 65535:
+            raise ValueError("Port must be between 1 and 65535")
+        return port
+    except ValueError as e:
+        print(f"ERROR: Invalid port number '{port_str}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+def validate_embedding_dimensions(dims_str: str) -> int:
+    """Validate embedding dimensions"""
+    try:
+        dims = int(dims_str)
+        if dims < 1:
+            raise ValueError("Embedding dimensions must be positive")
+        return dims
+    except ValueError as e:
+        print(f"ERROR: Invalid embedding dimensions '{dims_str}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+# Load and validate configuration
+PORT = validate_port(get_required_env("PORT"))
+MODEL_PATH = get_required_env("MODEL_PATH")
+EMBEDDING_MODEL = get_required_env("EMBEDDING_MODEL")
+EMBEDDING_DIMENSIONS = validate_embedding_dimensions(get_required_env("EMBEDDING_DIMENSIONS"))
+VLLM_URL = get_required_env("VLLM_URL")
+REDIS_URL = get_required_env("REDIS_URL")
+DATABASE_URL = get_required_env("DATABASE_URL")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -54,7 +99,13 @@ async def startup_event():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "service": "ai", "model": MODEL_NAME}
+    return {
+        "status": "healthy", 
+        "service": "ai", 
+        "model": EMBEDDING_MODEL,
+        "port": PORT,
+        "embedding_dimensions": EMBEDDING_DIMENSIONS
+    }
 
 
 @app.post("/embeddings", response_model=EmbeddingResponse)
@@ -106,5 +157,11 @@ async def rag_inference(request: RAGRequest):
 
 if __name__ == "__main__":
     import uvicorn
+    
+    logger.info(f"Starting AI service on port {PORT}")
+    logger.info(f"Using embedding model: {EMBEDDING_MODEL}")
+    logger.info(f"Model path: {MODEL_PATH}")
+    logger.info(f"Embedding dimensions: {EMBEDDING_DIMENSIONS}")
+    logger.info(f"vLLM URL: {VLLM_URL}")
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

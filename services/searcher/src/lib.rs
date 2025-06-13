@@ -8,11 +8,11 @@ use axum::{
     Router,
 };
 use redis::Client as RedisClient;
-use shared::{AIClient, DatabasePool};
-use std::{env, net::SocketAddr};
+use shared::{AIClient, DatabasePool, SearcherConfig};
+use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{error, info};
+use tracing::info;
 
 pub type Result<T> = std::result::Result<T, SearcherError>;
 
@@ -84,22 +84,16 @@ pub async fn run_server() -> AnyhowResult<()> {
 
     info!("Searcher service starting...");
 
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
-    let ai_service_url = env::var("AI_SERVICE_URL").unwrap_or_else(|_| "http://ai:3003".to_string());
-    let port = env::var("PORT")
-        .unwrap_or_else(|_| "3002".to_string())
-        .parse::<u16>()
-        .expect("PORT must be a valid number");
-
-    let db_pool = DatabasePool::new(&database_url)
+    let config = SearcherConfig::from_env();
+    
+    let db_pool = DatabasePool::new(&config.database.database_url)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create database pool: {}", e))?;
 
-    let redis_client = RedisClient::open(redis_url)?;
+    let redis_client = RedisClient::open(config.redis.redis_url)?;
     info!("Redis client initialized");
 
-    let ai_client = AIClient::new(ai_service_url);
+    let ai_client = AIClient::new(config.ai_service_url);
     info!("AI client initialized");
 
     let app_state = AppState {
@@ -110,7 +104,7 @@ pub async fn run_server() -> AnyhowResult<()> {
 
     let app = create_app(app_state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Searcher service listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

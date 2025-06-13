@@ -19,8 +19,9 @@ use axum::{
 };
 use error::Result as IndexerResult;
 use serde_json::json;
+use shared::IndexerConfig;
 use sqlx::{types::time::OffsetDateTime, PgPool};
-use std::{env, net::SocketAddr};
+use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
@@ -374,14 +375,9 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     info!("Indexer service starting...");
 
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
-    let port = env::var("PORT")
-        .unwrap_or_else(|_| "3001".to_string())
-        .parse::<u16>()
-        .expect("PORT must be a valid number");
+    let config = IndexerConfig::from_env();
 
-    let db_pool = DatabasePool::new(&database_url)
+    let db_pool = DatabasePool::new(&config.database.database_url)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create database pool: {}", e))?;
 
@@ -394,7 +390,7 @@ pub async fn run_server() -> anyhow::Result<()> {
         }
     }
 
-    let redis_client = RedisClient::open(redis_url)?;
+    let redis_client = RedisClient::open(config.redis.redis_url)?;
     info!("Redis client initialized");
 
     let app_state = AppState {
@@ -411,7 +407,7 @@ pub async fn run_server() -> anyhow::Result<()> {
         }
     });
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Indexer service listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

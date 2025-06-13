@@ -1,4 +1,5 @@
 import logging
+import os
 import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
@@ -17,7 +18,7 @@ _model_lock = threading.Lock()
 
 # Model configuration
 TASK = "retrieval.passage"
-MODEL_NAME = "jinaai/jina-embeddings-v3"
+MODEL_NAME = os.getenv("EMBEDDING_MODEL", "jinaai/jina-embeddings-v3")
 MAX_LENGTH = 8192  # Jina v3 supports up to 8K tokens
 
 

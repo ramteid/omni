@@ -1,4 +1,5 @@
 pub mod clients;
+pub mod config;
 pub mod db;
 pub mod models;
 pub mod traits;
@@ -6,6 +7,7 @@ pub mod traits;
 pub mod test_utils;
 
 pub use clients::ai::AIClient;
+pub use config::*;
 pub use db::repositories::{
     DocumentRepository, EmbeddingRepository, SourceRepository, UserRepository,
 };

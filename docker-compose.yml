@@ -6,9 +6,9 @@ services:
     image: pgvector/pgvector:pg17
     container_name: clio-postgres
     environment:
-      POSTGRES_DB: clio
-      POSTGRES_USER: clio
-      POSTGRES_PASSWORD: clio_password
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./services/indexer/migrations:/docker-entrypoint-initdb.d
@@ -17,7 +17,7 @@ services:
     networks:
       - clio-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clio -d clio"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -45,12 +45,13 @@ services:
       dockerfile: services/searcher/Dockerfile
     container_name: clio-searcher
     environment:
-      - DATABASE_URL=postgresql://clio:clio_password@postgres:5432/clio
-      - REDIS_URL=redis://redis:6379
-      - RUST_LOG=info
-      - PORT=3001
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - RUST_LOG=${RUST_LOG}
+      - PORT=${SEARCHER_PORT}
+      - AI_SERVICE_URL=${AI_SERVICE_URL}
     ports:
-      - "3001:3001"
+      - "${SEARCHER_PORT}:${SEARCHER_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -66,12 +67,13 @@ services:
       dockerfile: services/indexer/Dockerfile
     container_name: clio-indexer
     environment:
-      - DATABASE_URL=postgresql://clio:clio_password@postgres:5432/clio
-      - REDIS_URL=redis://redis:6379
-      - RUST_LOG=info
-      - PORT=3002
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - RUST_LOG=${RUST_LOG}
+      - PORT=${INDEXER_PORT}
+      - AI_SERVICE_URL=${AI_SERVICE_URL}
     ports:
-      - "3002:3002"
+      - "${INDEXER_PORT}:${INDEXER_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -87,13 +89,16 @@ services:
       dockerfile: services/ai/Dockerfile
     container_name: clio-ai
     environment:
-      - DATABASE_URL=postgresql://clio:clio_password@postgres:5432/clio
-      - REDIS_URL=redis://redis:6379
-      - RUST_LOG=info
-      - PORT=3003
-      - MODEL_PATH=/models
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - RUST_LOG=${RUST_LOG}
+      - PORT=${AI_SERVICE_PORT}
+      - MODEL_PATH=${MODEL_PATH}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
+      - VLLM_URL=${VLLM_URL}
     ports:
-      - "3003:3003"
+      - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     networks:
       - clio-network
     volumes:
@@ -112,13 +117,14 @@ services:
       dockerfile: connectors/google/Dockerfile
     container_name: clio-google-connector
     environment:
-      - REDIS_URL=redis://redis:6379
-      - RUST_LOG=info
-      - PORT=4001
+      - REDIS_URL=${REDIS_URL}
+      - RUST_LOG=${RUST_LOG}
+      - PORT=${GOOGLE_CONNECTOR_PORT}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
     ports:
-      - "4001:4001"
+      - "${GOOGLE_CONNECTOR_PORT}:${GOOGLE_CONNECTOR_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -132,14 +138,14 @@ services:
       dockerfile: connectors/slack/Dockerfile
     container_name: clio-slack-connector
     environment:
-      - REDIS_URL=redis://redis:6379
-      - RUST_LOG=info
-      - PORT=4002
+      - REDIS_URL=${REDIS_URL}
+      - RUST_LOG=${RUST_LOG}
+      - PORT=${SLACK_CONNECTOR_PORT}
       - SLACK_CLIENT_ID=${SLACK_CLIENT_ID}
       - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
     ports:
-      - "4002:4002"
+      - "${SLACK_CONNECTOR_PORT}:${SLACK_CONNECTOR_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -153,13 +159,13 @@ services:
       dockerfile: connectors/atlassian/Dockerfile
     container_name: clio-atlassian-connector
     environment:
-      - REDIS_URL=redis://redis:6379
-      - RUST_LOG=info
-      - PORT=4003
+      - REDIS_URL=${REDIS_URL}
+      - RUST_LOG=${RUST_LOG}
+      - PORT=${ATLASSIAN_CONNECTOR_PORT}
       - ATLASSIAN_CLIENT_ID=${ATLASSIAN_CLIENT_ID}
       - ATLASSIAN_CLIENT_SECRET=${ATLASSIAN_CLIENT_SECRET}
     ports:
-      - "4003:4003"
+      - "${ATLASSIAN_CONNECTOR_PORT}:${ATLASSIAN_CONNECTOR_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -174,15 +180,17 @@ services:
       dockerfile: Dockerfile
     container_name: clio-web
     environment:
-      - DATABASE_URL=postgresql://clio:clio_password@postgres:5432/clio
-      - REDIS_URL=redis://redis:6379
-      - SEARCHER_URL=http://searcher:3001
-      - INDEXER_URL=http://indexer:3002
-      - AI_SERVICE_URL=http://ai:3003
-      - SESSION_SECRET=your-session-secret-key-change-in-production
-      - PUBLIC_APP_URL=http://localhost:3000
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - SEARCHER_URL=${SEARCHER_URL}
+      - INDEXER_URL=${INDEXER_URL}
+      - AI_SERVICE_URL=${AI_SERVICE_URL}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - SESSION_COOKIE_NAME=${SESSION_COOKIE_NAME}
+      - SESSION_DURATION_DAYS=${SESSION_DURATION_DAYS}
+      - PUBLIC_APP_URL=${PUBLIC_APP_URL}
     ports:
-      - "3000:3000"
+      - "${WEB_PORT}:${WEB_PORT}"
     networks:
       - clio-network
     depends_on:

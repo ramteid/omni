@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use sqlx::postgres::PgPoolOptions;
+use shared::GoogleConnectorConfig;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use tracing::{error, info};
@@ -27,17 +27,11 @@ async fn main() -> Result<()> {
 
     info!("Starting Google Connector");
 
-    let database_url = std::env::var("DATABASE_URL")?;
-    let redis_url = std::env::var("REDIS_URL")?;
+    let config = GoogleConnectorConfig::from_env();
 
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await?;
-
-    let redis_client = redis::Client::open(redis_url)?;
+    let redis_client = redis::Client::open(config.base.redis.redis_url)?;
     
-    let sync_manager = Arc::new(SyncManager::new(pool, redis_client).await?);
+    let sync_manager = Arc::new(SyncManager::new(redis_client).await?);
 
     let mut sync_interval = interval(Duration::from_secs(60));
 

@@ -4,6 +4,7 @@ import { createRedisClient } from '$lib/server/redis';
 import { db } from '$lib/server/db';
 import { sources } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
+import { oauth } from '$lib/server/config';
 import crypto from 'crypto';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -36,13 +37,6 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		throw error(401, 'Unauthorized');
 	}
 
-	const clientId = process.env.GOOGLE_CLIENT_ID;
-	const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-	const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${url.origin}/api/oauth/google/callback`;
-
-	if (!clientId || !clientSecret) {
-		throw error(500, 'Google OAuth not configured');
-	}
 
 	try {
 		const tokenResponse = await fetch(GOOGLE_TOKEN_URL, {
@@ -52,9 +46,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			},
 			body: new URLSearchParams({
 				code,
-				client_id: clientId,
-				client_secret: clientSecret,
-				redirect_uri: redirectUri,
+				client_id: oauth.google.clientId,
+				client_secret: oauth.google.clientSecret,
+				redirect_uri: oauth.google.redirectUri,
 				grant_type: 'authorization_code'
 			})
 		});
