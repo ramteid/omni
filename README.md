@@ -4,8 +4,6 @@
 
 **The Open-Source Enterprise Search Platform**
 
-*A self-hosted alternative to Glean with AI-powered semantic search*
-
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-3670A0?style=flat&logo=python&logoColor=ffdd54)](https://www.python.org/)
@@ -20,12 +18,12 @@
 
 ## What is Clio?
 
-Clio is a powerful, self-hosted enterprise search platform that unifies your organization's knowledge across multiple data sources. Think Elasticsearch meets ChatGPT, but completely under your control.
+Clio is a powerful, self-hosted enterprise search platform that unifies your organization's knowledge across multiple data sources. Think Google + ChatGPT for your enterprise data, but completely private and under your control.
 
 - **Privacy-first**: Your data never leaves your infrastructure
 - **Lightning-fast**: Sub-second search across millions of documents
-- **AI-powered**: Semantic search and document summarization using local LLMs
-- **Easy setup**: Up and running in 30 minutes with Docker Compose
+- **AI-powered**: Semantic search and AI-powered answers using local LLMs
+- **Easy setup**: Up and running in minutes with Docker Compose
 
 ## Features
 
@@ -51,38 +49,17 @@ Clio is a powerful, self-hosted enterprise search platform that unifies your org
 
 ## Architecture
 
-Clio uses a modern, event-driven microservices architecture built for scalability and maintainability:
+Clio uses a simple, event-driven microservices architecture built for scalability and maintainability:
 
-```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│  SvelteKit  │───▶│    Search    │───▶│ PostgreSQL  │
-│  Frontend   │    │   Service    │    │ + pgvector  │
-└─────────────┘    └──────────────┘    └─────────────┘
-                            │                   ▲
-                            ▼                   │
-┌─────────────┐    ┌──────────────┐    ┌───────┴─────┐
-│ Connectors  │───▶│ Redis Pub/Sub│───▶│   Indexer   │
-│ (Rust μSvc) │    │              │    │   Service   │
-└─────────────┘    └──────────────┘    └─────────────┘
-                                                │
-                                                ▼
-                                       ┌─────────────┐
-                                       │ AI Service  │◀──┐
-                                       │  (FastAPI)  │   │
-                                       └─────────────┘   │
-                                                         │
-                                       ┌─────────────────┘
-                                       │ vLLM Server
-                                       │ (Local LLM)
-```
+![clio-arch-transparent](https://github.com/user-attachments/assets/305fcee7-56e4-4b3a-878a-dcc83da6d6aa)
 
 ### Core Components
 
-- **Search Service** (Rust): Query processing, result ranking, caching
-- **Indexer Service** (Rust): Document processing, database writes
-- **AI Service** (Python): Embedding generation, RAG orchestration
+- **clio-search** (Rust): Query processing, result ranking, caching
+- **clio-indexer** (Rust): Document processing, database writes
+- **clio-ai** (Python): Embedding generation, RAG orchestration
 - **Connectors** (Rust): Independent microservices for each data source
-- **SvelteKit Frontend**: Modern web interface with TypeScript
+- **clio-web**: SvelteKit with TypeScript
 
 ## Quick Start
 
