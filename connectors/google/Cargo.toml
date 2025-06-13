@@ -12,3 +12,17 @@ path = "src/main.rs"
 [dependencies]
 tokio = { workspace = true }
 shared = { path = "../../shared" }
+axum = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenv = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+jsonwebtoken = "9"
+base64 = "0.21"

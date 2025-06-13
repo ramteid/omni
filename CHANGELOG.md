@@ -51,4 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Redis caching layer for search results with 5-minute TTL and query-based cache keys
   - Search result highlights extraction with context snippets and markdown formatting
   - Unit tests for search models and request validation
+- Google Drive OAuth integration
+  - OAuth flow implementation in SvelteKit backend with state management via Redis
+  - Google connector service for automatic document syncing with token refresh
+  - Secure token storage in PostgreSQL with encryption at rest
 
