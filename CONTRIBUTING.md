@@ -116,14 +116,7 @@ clio/
 
 ### Commit Message Format
 
-We follow [Conventional Commits](https://www.conventionalcommits.org/):
-
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation changes
-- `test:` Test additions or modifications
-- `chore:` Maintenance tasks
-- `refactor:` Code refactoring
+We follow the recommendations from the [Google Eng Practices Documentation](https://google.github.io/eng-practices/review/developer/cl-descriptions.html).
 
 ## Testing
 

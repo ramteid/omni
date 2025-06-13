@@ -5,7 +5,7 @@ Unit tests for the chunking functions in main.py
 import pytest
 import torch
 from transformers import AutoTokenizer
-from main import chunk_by_sentences
+from embeddings import chunk_by_sentences
 
 
 class TestChunkBySentences:
