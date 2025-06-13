@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**The Open-Source Enterprise Search Platform**
+**The Open-Source Enterprise AI Search Platform**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -18,7 +18,7 @@
 
 ## What is Clio?
 
-Clio is a powerful, self-hosted enterprise search platform that unifies your organization's knowledge across multiple data sources. Think Google + ChatGPT for your enterprise data, but completely private and under your control.
+Clio is a self-hosted enterprise search platform that unifies your organization's knowledge across multiple data sources.
 
 - **Privacy-first**: Your data never leaves your infrastructure
 - **Lightning-fast**: Sub-second search across millions of documents
@@ -33,9 +33,8 @@ Clio is a powerful, self-hosted enterprise search platform that unifies your org
 - Real-time indexing with sub-second response times
 
 ### AI-Driven Intelligence
-- Document summarization using local LLM models (no external APIs)
+- AI answers powered by local LLMs (no external APIs)
 - Semantic search with state-of-the-art embeddings
-- RAG (Retrieval-Augmented Generation) for context-aware answers
 
 ### Enterprise-Ready Security
 - Role-based access control (RBAC) with source-level permissions
@@ -45,11 +44,11 @@ Clio is a powerful, self-hosted enterprise search platform that unifies your org
 ### Scalable Architecture
 - Event-driven microservices for loose coupling
 - Handles 5M+ documents efficiently with PostgreSQL
-- Optional Elasticsearch upgrade path for larger deployments
+- Optional Elasticsearch upgrade path for larger deployments (coming soon)
 
 ## Architecture
 
-Clio uses a simple, event-driven microservices architecture built for scalability and maintainability:
+Clio uses a simple microservices architecture built for scalability and maintainability:
 
 ![clio-arch-transparent](https://github.com/user-attachments/assets/305fcee7-56e4-4b3a-878a-dcc83da6d6aa)
 
@@ -58,12 +57,12 @@ Clio uses a simple, event-driven microservices architecture built for scalabilit
 - **clio-search** (Rust): Query processing, result ranking, caching
 - **clio-indexer** (Rust): Document processing, database writes
 - **clio-ai** (Python): Embedding generation, RAG orchestration
+- **clio-web** (SvelteKit + Typescript): Frontend
 - **Connectors** (Rust): Independent microservices for each data source
-- **clio-web**: SvelteKit with TypeScript
 
 ## Quick Start
 
-*Detailed deployment instructions coming soon! We're finalizing the k8s setup*
+*Detailed deployment instructions coming soon! We're finalizing the docker/k8s setup*
 
 ## Supported Integrations
 
@@ -89,13 +88,6 @@ Clio uses a simple, event-driven microservices architecture built for scalabilit
 | **Cache/Queue** | Redis | Search cache and message queue |
 | **Deployment** | Docker Compose | Single-command deployment |
 
-## Performance
-
-- **Search Speed**: Sub-second response times
-- **Scale**: Efficiently handles 5M+ documents
-- **Memory**: Optimized Rust services with minimal footprint
-- **Storage**: Intelligent indexing with PostgreSQL FTS + vector search
-
 ## Contributing
 
 We welcome contributions! Clio is built with modern tools and follows best practices:
@@ -113,7 +105,7 @@ Clio is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for detail
 
 ## Acknowledgments
 
-Built with amazing open-source projects:
+Built with these amazing open-source projects:
 - [Axum](https://github.com/tokio-rs/axum) for Rust web services
 - [SvelteKit](https://kit.svelte.dev/) for the frontend
 - [pgvector](https://github.com/pgvector/pgvector) for vector search
