@@ -31,7 +31,7 @@ class EmbeddingRequest(BaseModel):
 
 
 class EmbeddingResponse(BaseModel):
-    embeddings: List[List[float]]
+    embeddings: List[List[List[float]]]
     chunks_count: List[int]  # Number of chunks per text
 
 
@@ -43,8 +43,6 @@ class RAGRequest(BaseModel):
 class RAGResponse(BaseModel):
     answer: str
     relevant_chunks: List[str]
-
-
 
 
 @app.on_event("startup")
@@ -65,6 +63,14 @@ async def generate_embeddings(request: EmbeddingRequest):
     logger.info(
         f"Generating embeddings for {len(request.texts)} texts with chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}"
     )
+
+    # Validate chunking method
+    valid_chunking_modes = ["sentence", "fixed"]
+    if request.chunking_mode not in valid_chunking_modes:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid chunking_mode: {request.chunking_mode}. Must be one of: {valid_chunking_modes}"
+        )
 
     try:
         # Run embedding generation in thread pool to avoid blocking
