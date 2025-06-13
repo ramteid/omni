@@ -32,7 +32,6 @@ pub struct Source {
     pub name: String,
     pub source_type: String,
     pub config: JsonValue,
-    pub oauth_credentials: Option<JsonValue>,
     pub is_active: bool,
     pub last_sync_at: Option<OffsetDateTime>,
     pub sync_status: Option<String>,
@@ -68,4 +67,31 @@ pub struct Embedding {
     pub embedding: Vector,
     pub model_name: String,
     pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+pub enum OAuthProvider {
+    Google,
+    Slack,
+    Atlassian,
+    Github,
+    Microsoft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct OAuthCredentials {
+    pub id: String,
+    pub source_id: String,
+    pub provider: OAuthProvider,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub token_type: Option<String>,
+    pub expires_at: Option<OffsetDateTime>,
+    pub scopes: Option<Vec<String>>,
+    pub metadata: JsonValue,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }

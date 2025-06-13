@@ -55,4 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - OAuth flow implementation in SvelteKit backend with state management via Redis
   - Google connector service for automatic document syncing with token refresh
   - Secure token storage in PostgreSQL with encryption at rest
+- Dedicated OAuth credentials table for multi-provider support
+  - Separate oauth_credentials table supporting Google, Slack, Atlassian, GitHub, and Microsoft providers
+  - Provider-specific metadata storage and automatic token expiration tracking for refresh workflows
 

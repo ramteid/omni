@@ -14,7 +14,7 @@ impl SourceRepository {
     pub async fn find_by_type(&self, source_type: &str) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, oauth_credentials, is_active, 
+            SELECT id, name, source_type, config, is_active, 
                    last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
             FROM sources
             WHERE source_type = $1
@@ -31,7 +31,7 @@ impl SourceRepository {
     pub async fn find_active_sources(&self) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, oauth_credentials, is_active, 
+            SELECT id, name, source_type, config, is_active, 
                    last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
             FROM sources
             WHERE is_active = true
@@ -59,7 +59,7 @@ impl Repository<Source, String> for SourceRepository {
     async fn find_by_id(&self, id: String) -> Result<Option<Source>, DatabaseError> {
         let source = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, oauth_credentials, is_active, 
+            SELECT id, name, source_type, config, is_active, 
                    last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
             FROM sources
             WHERE id = $1
@@ -75,7 +75,7 @@ impl Repository<Source, String> for SourceRepository {
     async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, oauth_credentials, is_active, 
+            SELECT id, name, source_type, config, is_active, 
                    last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
             FROM sources
             ORDER BY created_at DESC
@@ -93,9 +93,9 @@ impl Repository<Source, String> for SourceRepository {
     async fn create(&self, source: Source) -> Result<Source, DatabaseError> {
         let created_source = sqlx::query_as::<_, Source>(
             r#"
-            INSERT INTO sources (id, name, source_type, config, oauth_credentials, is_active, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, name, source_type, config, oauth_credentials, is_active, 
+            INSERT INTO sources (id, name, source_type, config, is_active, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, name, source_type, config, is_active, 
                       last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
             "#
         )
@@ -103,7 +103,6 @@ impl Repository<Source, String> for SourceRepository {
         .bind(&source.name)
         .bind(&source.source_type)
         .bind(&source.config)
-        .bind(&source.oauth_credentials)
         .bind(source.is_active)
         .bind(&source.created_by)
         .fetch_one(&self.pool)
@@ -122,10 +121,9 @@ impl Repository<Source, String> for SourceRepository {
         let updated_source = sqlx::query_as::<_, Source>(
             r#"
             UPDATE sources
-            SET name = $2, source_type = $3, config = $4, 
-                oauth_credentials = $5, is_active = $6
+            SET name = $2, source_type = $3, config = $4, is_active = $5
             WHERE id = $1
-            RETURNING id, name, source_type, config, oauth_credentials, is_active, 
+            RETURNING id, name, source_type, config, is_active, 
                       last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
             "#,
         )
@@ -133,7 +131,6 @@ impl Repository<Source, String> for SourceRepository {
         .bind(&source.name)
         .bind(&source.source_type)
         .bind(&source.config)
-        .bind(&source.oauth_credentials)
         .bind(source.is_active)
         .fetch_optional(&self.pool)
         .await?;
