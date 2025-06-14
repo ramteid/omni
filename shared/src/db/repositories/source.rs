@@ -97,7 +97,7 @@ impl Repository<Source, String> for SourceRepository {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, name, source_type, config, is_active, 
                       last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
-            "#
+            "#,
         )
         .bind(&source.id)
         .bind(&source.name)

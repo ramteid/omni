@@ -30,18 +30,18 @@ async fn main() -> Result<()> {
     let config = GoogleConnectorConfig::from_env();
 
     let redis_client = redis::Client::open(config.base.redis.redis_url)?;
-    
+
     let db_pool = DatabasePool::from_config(&config.database).await?;
-    
+
     let sync_manager = Arc::new(SyncManager::new(db_pool.pool().clone(), redis_client).await?);
 
     let mut sync_interval = interval(Duration::from_secs(60));
 
     loop {
         sync_interval.tick().await;
-        
+
         info!("Starting sync cycle");
-        
+
         let sync_manager_clone = Arc::clone(&sync_manager);
         tokio::spawn(async move {
             if let Err(e) = sync_manager_clone.sync_all_sources().await {

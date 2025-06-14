@@ -12,12 +12,12 @@ mod tests {
             offset: None,
             mode: None,
         };
-        
+
         assert_eq!(request.limit(), 20);
         assert_eq!(request.offset(), 0);
         assert!(matches!(request.search_mode(), SearchMode::Fulltext));
     }
-    
+
     #[test]
     fn test_search_request_limits() {
         let request = SearchRequest {
@@ -28,11 +28,11 @@ mod tests {
             offset: Some(-10),
             mode: None,
         };
-        
+
         assert_eq!(request.limit(), 100); // Should be capped at 100
         assert_eq!(request.offset(), 0); // Negative offset should become 0
     }
-    
+
     #[test]
     fn test_search_modes() {
         let modes = vec![
@@ -40,7 +40,7 @@ mod tests {
             SearchMode::Semantic,
             SearchMode::Hybrid,
         ];
-        
+
         for mode in modes {
             let request = SearchRequest {
                 query: "test".to_string(),
@@ -50,7 +50,7 @@ mod tests {
                 offset: None,
                 mode: Some(mode.clone()),
             };
-            
+
             match (request.search_mode(), &mode) {
                 (SearchMode::Fulltext, SearchMode::Fulltext) => (),
                 (SearchMode::Semantic, SearchMode::Semantic) => (),
@@ -59,28 +59,28 @@ mod tests {
             }
         }
     }
-    
+
     #[test]
     fn test_suggestions_query_defaults() {
         use searcher::models::SuggestionsQuery;
-        
+
         let query = SuggestionsQuery {
             q: "test".to_string(),
             limit: None,
         };
-        
+
         assert_eq!(query.limit(), 5);
     }
-    
+
     #[test]
     fn test_suggestions_query_limit_cap() {
         use searcher::models::SuggestionsQuery;
-        
+
         let query = SuggestionsQuery {
             q: "test".to_string(),
             limit: Some(50),
         };
-        
+
         assert_eq!(query.limit(), 20); // Should be capped at 20
     }
 }

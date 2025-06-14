@@ -10,7 +10,9 @@ use sqlx::types::time::OffsetDateTime;
 use tracing::info;
 
 pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<Value>> {
-    sqlx::query("SELECT 1").execute(state.db_pool.pool()).await?;
+    sqlx::query("SELECT 1")
+        .execute(state.db_pool.pool())
+        .await?;
 
     let mut redis_conn = state
         .redis_client

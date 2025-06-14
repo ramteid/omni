@@ -2,6 +2,7 @@
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import type { PageData } from './$types.js';
+    import Input from '$lib/components/ui/input/input.svelte'
 
 	export let data: PageData;
 </script>
@@ -19,21 +20,14 @@
 	</div>
 
 	<!-- Search Box -->
-	<div class="mb-8">
-		<Card>
-			<CardContent class="p-6">
-				<div class="space-y-4">
-					<input
-						type="text"
-						placeholder="Search across all your data sources..."
-						class="w-full rounded-md border border-input bg-background px-4 py-3 text-lg focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20 text-foreground"
-					/>
-					<Button class="w-full sm:w-auto">
-						Search
-					</Button>
-				</div>
-			</CardContent>
-		</Card>
+	<div class="flex gap-2">
+		<Input
+			type="text"
+			placeholder="Ask anything..."
+		/>
+		<Button class="w-full sm:w-auto">
+			Search
+		</Button>
 	</div>
 
 	<!-- Quick Stats -->

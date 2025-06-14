@@ -26,7 +26,7 @@ impl DriveClient {
         page_token: Option<&str>,
     ) -> Result<FilesListResponse> {
         let url = format!("{}/files", DRIVE_API_BASE);
-        
+
         let mut params = vec![
             ("pageSize", "100"),
             ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role))"),
@@ -39,7 +39,8 @@ impl DriveClient {
             params.push(("pageToken", token));
         }
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .bearer_auth(token)
             .query(&params)
@@ -74,12 +75,8 @@ impl DriveClient {
 
     async fn get_google_doc_content(&self, token: &str, file_id: &str) -> Result<String> {
         let url = format!("{}/documents/{}", DOCS_API_BASE, file_id);
-        
-        let response = self.client
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await?;
+
+        let response = self.client.get(&url).bearer_auth(token).send().await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
@@ -92,16 +89,15 @@ impl DriveClient {
 
     async fn get_google_sheet_content(&self, token: &str, file_id: &str) -> Result<String> {
         let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, file_id);
-        
-        let response = self.client
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await?;
+
+        let response = self.client.get(&url).bearer_auth(token).send().await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
-            return Err(anyhow!("Failed to get spreadsheet metadata: {}", error_text));
+            return Err(anyhow!(
+                "Failed to get spreadsheet metadata: {}",
+                error_text
+            ));
         }
 
         let sheet: GoogleSpreadsheet = response.json().await?;
@@ -110,13 +106,14 @@ impl DriveClient {
         for sheet_info in &sheet.sheets {
             let sheet_name = &sheet_info.properties.title;
             let range = format!("'{}'", sheet_name);
-            
+
             let values_url = format!(
                 "{}/spreadsheets/{}/values/{}",
                 SHEETS_API_BASE, file_id, range
             );
 
-            let values_response = self.client
+            let values_response = self
+                .client
                 .get(&values_url)
                 .bearer_auth(token)
                 .send()
@@ -139,12 +136,8 @@ impl DriveClient {
 
     async fn download_file_content(&self, token: &str, file_id: &str) -> Result<String> {
         let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, file_id);
-        
-        let response = self.client
-            .get(&url)
-            .bearer_auth(token)
-            .send()
-            .await?;
+
+        let response = self.client.get(&url).bearer_auth(token).send().await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
@@ -195,7 +188,7 @@ struct TextRun {
 
 fn extract_text_from_document(doc: &GoogleDocument) -> String {
     let mut text = String::new();
-    
+
     for element in &doc.body.content {
         if let Some(paragraph) = &element.paragraph {
             for elem in &paragraph.elements {
@@ -205,7 +198,7 @@ fn extract_text_from_document(doc: &GoogleDocument) -> String {
             }
         }
     }
-    
+
     text
 }
 

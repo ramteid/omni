@@ -15,14 +15,17 @@ impl OAuthCredentialsRepository {
         Self { pool: pool.clone() }
     }
 
-    pub async fn find_by_source_id(&self, source_id: &str) -> Result<Vec<OAuthCredentials>, DatabaseError> {
+    pub async fn find_by_source_id(
+        &self,
+        source_id: &str,
+    ) -> Result<Vec<OAuthCredentials>, DatabaseError> {
         let credentials = sqlx::query_as::<_, OAuthCredentials>(
-            "SELECT * FROM oauth_credentials WHERE source_id = $1 ORDER BY created_at DESC"
+            "SELECT * FROM oauth_credentials WHERE source_id = $1 ORDER BY created_at DESC",
         )
         .bind(source_id)
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(credentials)
     }
 
@@ -32,26 +35,29 @@ impl OAuthCredentialsRepository {
         provider: OAuthProvider,
     ) -> Result<Option<OAuthCredentials>, DatabaseError> {
         let credential = sqlx::query_as::<_, OAuthCredentials>(
-            "SELECT * FROM oauth_credentials WHERE source_id = $1 AND provider = $2"
+            "SELECT * FROM oauth_credentials WHERE source_id = $1 AND provider = $2",
         )
         .bind(source_id)
         .bind(provider)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(credential)
     }
 
-    pub async fn find_expiring_tokens(&self, hours_ahead: i32) -> Result<Vec<OAuthCredentials>, DatabaseError> {
+    pub async fn find_expiring_tokens(
+        &self,
+        hours_ahead: i32,
+    ) -> Result<Vec<OAuthCredentials>, DatabaseError> {
         let credentials = sqlx::query_as::<_, OAuthCredentials>(
             "SELECT * FROM oauth_credentials 
              WHERE expires_at IS NOT NULL 
-             AND expires_at <= NOW() + INTERVAL '1 hours' * $1"
+             AND expires_at <= NOW() + INTERVAL '1 hours' * $1",
         )
         .bind(hours_ahead)
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(credentials)
     }
 
@@ -69,7 +75,7 @@ impl OAuthCredentialsRepository {
                  expires_at = COALESCE($4, expires_at),
                  updated_at = NOW()
              WHERE id = $1
-             RETURNING *"
+             RETURNING *",
         )
         .bind(id)
         .bind(access_token)
@@ -77,7 +83,7 @@ impl OAuthCredentialsRepository {
         .bind(expires_at)
         .fetch_one(&self.pool)
         .await?;
-        
+
         Ok(credential)
     }
 }
@@ -85,23 +91,28 @@ impl OAuthCredentialsRepository {
 #[async_trait]
 impl Repository<OAuthCredentials, String> for OAuthCredentialsRepository {
     async fn find_by_id(&self, id: String) -> Result<Option<OAuthCredentials>, DatabaseError> {
-        let credential = sqlx::query_as::<_, OAuthCredentials>("SELECT * FROM oauth_credentials WHERE id = $1")
-            .bind(&id)
-            .fetch_optional(&self.pool)
-            .await?;
-        
+        let credential =
+            sqlx::query_as::<_, OAuthCredentials>("SELECT * FROM oauth_credentials WHERE id = $1")
+                .bind(&id)
+                .fetch_optional(&self.pool)
+                .await?;
+
         Ok(credential)
     }
 
-    async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<OAuthCredentials>, DatabaseError> {
+    async fn find_all(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<OAuthCredentials>, DatabaseError> {
         let credentials = sqlx::query_as::<_, OAuthCredentials>(
-            "SELECT * FROM oauth_credentials ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT * FROM oauth_credentials ORDER BY created_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(credentials)
     }
 
@@ -112,7 +123,7 @@ impl Repository<OAuthCredentials, String> for OAuthCredentialsRepository {
                 access_token, refresh_token, token_type, expires_at, 
                 scopes, metadata
              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-             RETURNING *"
+             RETURNING *",
         )
         .bind(&entity.id)
         .bind(&entity.source_id)
@@ -129,7 +140,9 @@ impl Repository<OAuthCredentials, String> for OAuthCredentialsRepository {
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
-                DatabaseError::ConstraintViolation("OAuth credentials already exist for this source and provider".to_string())
+                DatabaseError::ConstraintViolation(
+                    "OAuth credentials already exist for this source and provider".to_string(),
+                )
             }
             _ => DatabaseError::from(e),
         })?;
@@ -137,7 +150,11 @@ impl Repository<OAuthCredentials, String> for OAuthCredentialsRepository {
         Ok(created_credential)
     }
 
-    async fn update(&self, id: String, entity: OAuthCredentials) -> Result<Option<OAuthCredentials>, DatabaseError> {
+    async fn update(
+        &self,
+        id: String,
+        entity: OAuthCredentials,
+    ) -> Result<Option<OAuthCredentials>, DatabaseError> {
         let updated_credential = sqlx::query_as::<_, OAuthCredentials>(
             "UPDATE oauth_credentials SET 
                 source_id = $2,
@@ -152,7 +169,7 @@ impl Repository<OAuthCredentials, String> for OAuthCredentialsRepository {
                 metadata = $11,
                 updated_at = NOW()
              WHERE id = $1
-             RETURNING *"
+             RETURNING *",
         )
         .bind(&id)
         .bind(&entity.source_id)

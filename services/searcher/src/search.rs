@@ -14,7 +14,11 @@ pub struct SearchEngine {
 
 impl SearchEngine {
     pub fn new(db_pool: DatabasePool, redis_client: RedisClient, ai_client: AIClient) -> Self {
-        Self { db_pool, redis_client, ai_client }
+        Self {
+            db_pool,
+            redis_client,
+            ai_client,
+        }
     }
 
     pub async fn search(&self, request: SearchRequest) -> Result<SearchResponse> {
@@ -28,7 +32,7 @@ impl SearchEngine {
 
         // Generate cache key based on request parameters
         let cache_key = self.generate_cache_key(&request);
-        
+
         // Try to get from cache first
         if let Ok(mut conn) = self.redis_client.get_multiplexed_async_connection().await {
             if let Ok(cached_response) = conn.get::<_, String>(&cache_key).await {
@@ -275,25 +279,25 @@ impl SearchEngine {
     fn generate_cache_key(&self, request: &SearchRequest) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         request.query.hash(&mut hasher);
         request.search_mode().hash(&mut hasher);
         request.limit().hash(&mut hasher);
         request.offset().hash(&mut hasher);
-        
+
         if let Some(sources) = &request.sources {
             for source in sources {
                 source.hash(&mut hasher);
             }
         }
-        
+
         if let Some(content_types) = &request.content_types {
             for ct in content_types {
                 ct.hash(&mut hasher);
             }
         }
-        
+
         format!("search:{:x}", hasher.finish())
     }
 
@@ -305,68 +309,68 @@ impl SearchEngine {
         let query_lower = query.to_lowercase();
         let content_lower = content.to_lowercase();
         let mut highlights = Vec::new();
-        
+
         // Find all occurrences of the query terms
         let terms: Vec<&str> = query_lower.split_whitespace().collect();
-        
+
         for term in terms {
             if term.len() < 3 {
                 continue; // Skip very short terms
             }
-            
+
             // Find all positions where this term appears
             let mut search_start = 0;
             while let Some(pos) = content_lower[search_start..].find(term) {
                 let absolute_pos = search_start + pos;
-                
+
                 // Extract context around the match (50 chars before and after)
                 let context_start = absolute_pos.saturating_sub(50);
                 let context_end = (absolute_pos + term.len() + 50).min(content.len());
-                
+
                 // Find word boundaries
                 let start = content[..context_start]
                     .rfind(char::is_whitespace)
                     .map(|i| i + 1)
                     .unwrap_or(context_start);
-                    
+
                 let end = content[context_end..]
                     .find(char::is_whitespace)
                     .map(|i| context_end + i)
                     .unwrap_or(context_end);
-                
+
                 let mut snippet = String::new();
                 if start > 0 {
                     snippet.push_str("...");
                 }
-                
+
                 // Add the snippet with the term highlighted using markdown bold
                 let snippet_text = &content[start..end];
                 let highlighted = snippet_text.replace(
                     &content[absolute_pos..absolute_pos + term.len()],
-                    &format!("**{}**", &content[absolute_pos..absolute_pos + term.len()])
+                    &format!("**{}**", &content[absolute_pos..absolute_pos + term.len()]),
                 );
                 snippet.push_str(&highlighted);
-                
+
                 if end < content.len() {
                     snippet.push_str("...");
                 }
-                
+
                 highlights.push(snippet);
-                
+
                 // Only keep first 3 highlights per term
                 if highlights.len() >= 3 {
                     break;
                 }
-                
+
                 search_start = absolute_pos + term.len();
             }
         }
-        
+
         // Deduplicate and limit total highlights
         highlights.sort();
         highlights.dedup();
         highlights.truncate(5);
-        
+
         highlights
     }
 

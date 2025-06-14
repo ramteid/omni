@@ -85,7 +85,7 @@ pub async fn run_server() -> AnyhowResult<()> {
     info!("Searcher service starting...");
 
     let config = SearcherConfig::from_env();
-    
+
     let db_pool = DatabasePool::from_config(&config.database)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create database pool: {}", e))?;

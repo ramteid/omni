@@ -17,10 +17,10 @@ pub struct OAuthCredentials {
 
 impl OAuthCredentials {
     pub fn is_expired(&self) -> bool {
-        let obtained_at = DateTime::from_timestamp(self.obtained_at / 1000, 0)
-            .unwrap_or(Utc::now());
+        let obtained_at =
+            DateTime::from_timestamp(self.obtained_at / 1000, 0).unwrap_or(Utc::now());
         let expires_at = obtained_at + Duration::seconds(self.expires_in - 300);
-        
+
         Utc::now() >= expires_at
     }
 }
@@ -50,7 +50,8 @@ impl AuthManager {
             ("grant_type", "refresh_token"),
         ];
 
-        let response = self.client
+        let response = self
+            .client
             .post(GOOGLE_TOKEN_URL)
             .form(&params)
             .send()
@@ -62,7 +63,7 @@ impl AuthManager {
         }
 
         let token_response: TokenResponse = response.json().await?;
-        
+
         Ok(OAuthCredentials {
             access_token: token_response.access_token,
             refresh_token: refresh_token.to_string(),

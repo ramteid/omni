@@ -1,14 +1,14 @@
-use anyhow::Result;
-use redis::Client as RedisClient;
 use crate::db::pool::DatabasePool;
 use crate::db::repositories::DocumentRepository;
 use crate::models::Document;
+use anyhow::Result;
+use redis::Client as RedisClient;
+use serde_json::json;
 use sqlx::PgPool;
 use std::env;
 use tokio::time::{sleep, timeout, Duration};
-use uuid::Uuid;
 use ulid::Ulid;
-use serde_json::json;
+use uuid::Uuid;
 
 /// Base test fixture for database and Redis setup
 pub struct BaseTestFixture {
@@ -352,21 +352,41 @@ pub async fn create_test_documents_with_embeddings(pool: &PgPool) -> Result<Vec<
     // Different embeddings for different documents to test similarity
     let embeddings = vec![
         // Document 1: Technical/Programming focused
-        vec![0.8, 0.2, 0.1, 0.9, 0.3].into_iter().cycle().take(1024).collect::<Vec<f32>>(),
-        // Document 2: Meeting/Planning focused  
-        vec![0.2, 0.8, 0.3, 0.1, 0.7].into_iter().cycle().take(1024).collect::<Vec<f32>>(),
+        vec![0.8, 0.2, 0.1, 0.9, 0.3]
+            .into_iter()
+            .cycle()
+            .take(1024)
+            .collect::<Vec<f32>>(),
+        // Document 2: Meeting/Planning focused
+        vec![0.2, 0.8, 0.3, 0.1, 0.7]
+            .into_iter()
+            .cycle()
+            .take(1024)
+            .collect::<Vec<f32>>(),
         // Document 3: Architecture/Technical focused
-        vec![0.9, 0.1, 0.2, 0.8, 0.4].into_iter().cycle().take(1024).collect::<Vec<f32>>(),
+        vec![0.9, 0.1, 0.2, 0.8, 0.4]
+            .into_iter()
+            .cycle()
+            .take(1024)
+            .collect::<Vec<f32>>(),
         // Document 4: API/Development focused
-        vec![0.7, 0.3, 0.8, 0.2, 0.5].into_iter().cycle().take(1024).collect::<Vec<f32>>(),
+        vec![0.7, 0.3, 0.8, 0.2, 0.5]
+            .into_iter()
+            .cycle()
+            .take(1024)
+            .collect::<Vec<f32>>(),
         // Document 5: User guide focused
-        vec![0.3, 0.7, 0.5, 0.4, 0.8].into_iter().cycle().take(1024).collect::<Vec<f32>>(),
+        vec![0.3, 0.7, 0.5, 0.4, 0.8]
+            .into_iter()
+            .cycle()
+            .take(1024)
+            .collect::<Vec<f32>>(),
     ];
 
     for (i, doc_id) in doc_ids.iter().enumerate() {
         let embedding = &embeddings[i];
         let embedding_id = Ulid::new().to_string();
-        
+
         // For simplicity, we'll create one embedding per document (chunk_index = 0)
         // In real usage, documents would be split into chunks
         sqlx::query(

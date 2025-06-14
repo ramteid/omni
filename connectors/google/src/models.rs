@@ -54,7 +54,7 @@ pub struct DocumentEvent {
 impl DocumentEvent {
     pub fn from_drive_file(source_id: String, file: &GoogleDriveFile, content: String) -> Self {
         let mut permissions = Vec::new();
-        
+
         if let Some(file_permissions) = &file.permissions {
             for perm in file_permissions {
                 if let Some(email) = &perm.email_address {

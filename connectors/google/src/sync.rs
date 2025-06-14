@@ -31,7 +31,7 @@ impl SyncManager {
 
     pub async fn sync_all_sources(&self) -> Result<()> {
         let sources = self.get_active_sources().await?;
-        
+
         info!("Found {} active Google Drive sources", sources.len());
 
         for source in sources {
@@ -49,7 +49,7 @@ impl SyncManager {
             "SELECT * FROM sources 
              WHERE source_type = 'google_drive' 
              AND is_active = true 
-             AND oauth_credentials IS NOT NULL"
+             AND oauth_credentials IS NOT NULL",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -60,7 +60,8 @@ impl SyncManager {
     async fn sync_source(&self, source: &Source) -> Result<()> {
         info!("Syncing source: {} ({})", source.name, source.id);
 
-        let oauth_creds = source.oauth_credentials
+        let oauth_creds = source
+            .oauth_credentials
             .as_ref()
             .ok_or_else(|| anyhow!("No OAuth credentials found"))?;
 
@@ -77,7 +78,8 @@ impl SyncManager {
         let mut page_token: Option<String> = None;
 
         loop {
-            let response = self.drive_client
+            let response = self
+                .drive_client
                 .list_files(&creds.access_token, page_token.as_deref())
                 .await?;
 
@@ -85,10 +87,18 @@ impl SyncManager {
                 current_files.insert(file.id.clone());
 
                 if self.should_index_file(&file) {
-                    match self.drive_client.get_file_content(&creds.access_token, &file).await {
+                    match self
+                        .drive_client
+                        .get_file_content(&creds.access_token, &file)
+                        .await
+                    {
                         Ok(content) => {
                             if !content.is_empty() {
-                                let event = DocumentEvent::from_drive_file(source.id.clone(), &file, content);
+                                let event = DocumentEvent::from_drive_file(
+                                    source.id.clone(),
+                                    &file,
+                                    content,
+                                );
                                 self.publish_document_event(&event, "created").await?;
                             }
                         }
@@ -106,11 +116,12 @@ impl SyncManager {
         }
 
         for deleted_file_id in synced_files.difference(&current_files) {
-            self.publish_deletion_event(&source.id, deleted_file_id).await?;
+            self.publish_deletion_event(&source.id, deleted_file_id)
+                .await?;
         }
 
         self.update_source_status(&source.id, "completed").await?;
-        
+
         info!("Completed sync for source: {}", source.id);
         Ok(())
     }
@@ -118,30 +129,29 @@ impl SyncManager {
     fn should_index_file(&self, file: &crate::models::GoogleDriveFile) -> bool {
         matches!(
             file.mime_type.as_str(),
-            "application/vnd.google-apps.document" |
-            "application/vnd.google-apps.spreadsheet" |
-            "text/plain" | 
-            "text/html" | 
-            "text/csv"
+            "application/vnd.google-apps.document"
+                | "application/vnd.google-apps.spreadsheet"
+                | "text/plain"
+                | "text/html"
+                | "text/csv"
         )
     }
 
     async fn get_synced_files(&self, source_id: &str) -> Result<HashSet<String>> {
-        let rows = sqlx::query(
-            "SELECT external_id FROM documents WHERE source_id = $1"
-        )
-        .bind(source_id)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT external_id FROM documents WHERE source_id = $1")
+            .bind(source_id)
+            .fetch_all(&self.pool)
+            .await?;
 
-        Ok(rows.into_iter()
+        Ok(rows
+            .into_iter()
             .filter_map(|row| row.try_get::<String, _>("external_id").ok())
             .collect())
     }
 
     async fn publish_document_event(&self, event: &DocumentEvent, event_type: &str) -> Result<()> {
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        
+
         let event_data = json!({
             "type": format!("document_{}", event_type),
             "source_id": event.source_id,
@@ -153,24 +163,30 @@ impl SyncManager {
             "permissions": event.permissions,
         });
 
-        conn.publish::<_, _, ()>("indexer:events", serde_json::to_string(&event_data)?).await?;
+        conn.publish::<_, _, ()>("indexer:events", serde_json::to_string(&event_data)?)
+            .await?;
         Ok(())
     }
 
     async fn publish_deletion_event(&self, source_id: &str, document_id: &str) -> Result<()> {
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        
+
         let event_data = json!({
             "type": "document_deleted",
             "source_id": source_id,
             "document_id": document_id,
         });
 
-        conn.publish::<_, _, ()>("indexer:events", serde_json::to_string(&event_data)?).await?;
+        conn.publish::<_, _, ()>("indexer:events", serde_json::to_string(&event_data)?)
+            .await?;
         Ok(())
     }
 
-    async fn update_oauth_credentials(&self, source_id: &str, creds: &OAuthCredentials) -> Result<()> {
+    async fn update_oauth_credentials(
+        &self,
+        source_id: &str,
+        creds: &OAuthCredentials,
+    ) -> Result<()> {
         sqlx::query(
             "UPDATE sources SET oauth_credentials = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
         )
