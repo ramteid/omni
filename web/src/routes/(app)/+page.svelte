@@ -18,7 +18,7 @@
         <div class="text-center mb-8">
             <h1 class="text-foreground text-4xl font-bold mb-4">Welcome to Clio</h1>
             <p class="text-muted-foreground text-lg">
-                Your unified enterprise search platform. Search across all your connected data sources.
+                Your unified enterprise search platform. Search across your org's data.
             </p>
         </div>
 
@@ -31,7 +31,7 @@
                 <Input 
                     type="text" 
                     placeholder="Ask anything..." 
-                    class="flex-1 border-none bg-transparent py-4 px-0 focus:ring-0 focus:outline-none focus:border-none focus-visible:ring-0 focus-visible:ring-offset-0 rounded-full shadow-none"
+                    class="flex-1 border-none bg-transparent py-4 px-0 text-md md:text-md focus:ring-0 focus:outline-none focus:border-none focus-visible:ring-0 focus-visible:ring-offset-0 rounded-full shadow-none"
                 />
                 <Button class="m-2 px-6 py-2 rounded-full cursor-pointer">Go</Button>
             </div>
