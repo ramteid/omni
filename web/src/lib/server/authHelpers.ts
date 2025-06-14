@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit'
 import type { SessionValidationResult } from './auth'
 
-export function requireAuth(locals: App.Locals, redirectTo = '/auth/login') {
+export function requireAuth(locals: App.Locals, redirectTo = '/login') {
     if (!locals.user || !locals.session) {
         throw redirect(302, redirectTo)
     }
@@ -30,7 +30,7 @@ export function requireAdmin(locals: App.Locals, redirectTo = '/') {
     return requireRole(locals, 'admin', redirectTo)
 }
 
-export function requireActiveUser(locals: App.Locals, redirectTo = '/auth/login') {
+export function requireActiveUser(locals: App.Locals, redirectTo = '/login') {
     const { user, session } = requireAuth(locals, redirectTo)
 
     if (!user.isActive) {
