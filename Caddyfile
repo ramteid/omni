@@ -1,31 +1,149 @@
 # Clio Reverse Proxy Configuration
-localhost {
-    # All routes go to the SvelteKit web application
-    handle /* {
-        reverse_proxy web:3000
+
+# Global options
+{
+    # Enable admin API for metrics (optional)
+    # admin localhost:2019
+    
+    # Disable admin API in production
+    admin off
+}
+
+# Import environment variable for domain (defaults to localhost for development)
+{$CLIO_DOMAIN:localhost} {
+    # Logging
+    log {
+        output stdout
+        format json
+        level INFO
     }
 
-    # Connector OAuth callbacks
+    # Handle OAuth callbacks first (more specific routes)
     handle /auth/google/* {
-        reverse_proxy google-connector:4001
+        reverse_proxy google-connector:4001 {
+            # Health check for the connector
+            health_uri /health
+            health_interval 30s
+            health_timeout 5s
+            
+            # Headers for OAuth flow
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
     }
 
     handle /auth/slack/* {
-        reverse_proxy slack-connector:4002
+        reverse_proxy slack-connector:4002 {
+            health_uri /health
+            health_interval 30s
+            health_timeout 5s
+            
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
     }
 
     handle /auth/atlassian/* {
-        reverse_proxy atlassian-connector:4003
+        reverse_proxy atlassian-connector:4003 {
+            health_uri /health
+            health_interval 30s
+            health_timeout 5s
+            
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
     }
 
-    # Enable gzip compression
-    encode gzip
+    # Health check endpoint for monitoring
+    handle /health {
+        respond "OK" 200
+    }
+
+    # All other routes go to the SvelteKit web application
+    handle {
+        reverse_proxy web:3000 {
+            # Load balancing configuration (for future scaling)
+            lb_policy round_robin
+            lb_try_duration 5s
+            lb_try_interval 250ms
+            
+            # Health checking
+            health_uri /health
+            health_interval 10s
+            health_timeout 3s
+            health_status 200
+            
+            # Headers
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-Host {host}
+            
+            # Timeouts
+            transport http {
+                read_timeout 60s
+                write_timeout 60s
+                dial_timeout 10s
+            }
+        }
+    }
+
+    # Response encoding
+    encode {
+        gzip
+        zstd
+        # Minimum size for compression (1KB)
+        minimum_length 1024
+    }
 
     # Security headers
     header {
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
+        # Remove server header
+        -Server
+        
+        # Security headers
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
         X-XSS-Protection "1; mode=block"
-        Referrer-Policy strict-origin-when-cross-origin
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        
+        # HSTS (only for HTTPS)
+        ?Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        
+        # CSP - adjust based on your needs
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';"
     }
+
+    # Request size limits
+    request_body {
+        # 100MB max request size (for file uploads)
+        max_size 100MB
+    }
+
+    # Error handling
+    handle_errors {
+        @404 {
+            expression {http.error.status_code} == 404
+        }
+        handle @404 {
+            respond "Page not found" 404
+        }
+
+        @5xx {
+            expression {http.error.status_code} >= 500
+        }
+        handle @5xx {
+            respond "Internal server error" 500
+        }
+
+        handle {
+            respond "An error occurred" {http.error.status_code}
+        }
+    }
+}
+
+# Redirect www to non-www (if using a custom domain)
+www.{$CLIO_DOMAIN:localhost} {
+    redir https://{$CLIO_DOMAIN:localhost}{uri} permanent
 }

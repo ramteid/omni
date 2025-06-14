@@ -58,4 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dedicated OAuth credentials table for multi-provider support
   - Separate oauth_credentials table supporting Google, Slack, Atlassian, GitHub, and Microsoft providers
   - Provider-specific metadata storage and automatic token expiration tracking for refresh workflows
+- Enhanced Caddy reverse proxy configuration
+  - Production-ready domain support with CLIO_DOMAIN environment variable
+  - Health checks for all services with configurable intervals
+  - Advanced security headers (CSP, HSTS, permissions policies)
+  - Improved compression with zstd alongside gzip
+  - Load balancing ready with round-robin policy for future scaling
 
