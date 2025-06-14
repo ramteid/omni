@@ -33,7 +33,6 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             timestamp: Date.now(),
         }),
     )
-    await redis.quit()
 
     const params = new URLSearchParams({
         client_id: oauth.google.clientId,

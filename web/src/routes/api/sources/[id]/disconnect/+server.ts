@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
-import { sources } from '$lib/server/db/schema'
+import { sources, oauthCredentials } from '$lib/server/db/schema'
 import { and, eq } from 'drizzle-orm'
 
 export const POST: RequestHandler = async ({ params, locals }) => {
@@ -19,12 +19,16 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         throw error(404, 'Source not found')
     }
 
-    if (source.oauthCredentials && source.sourceType === 'google_drive') {
+    // Get OAuth credentials for this source
+    const credentials = await db.query.oauthCredentials.findFirst({
+        where: eq(oauthCredentials.sourceId, sourceId),
+    })
+
+    if (credentials && source.sourceType === 'google') {
         try {
-            const credentials = source.oauthCredentials as any
-            if (credentials.access_token) {
+            if (credentials.accessToken) {
                 await fetch(
-                    `https://oauth2.googleapis.com/revoke?token=${credentials.access_token}`,
+                    `https://oauth2.googleapis.com/revoke?token=${credentials.accessToken}`,
                     {
                         method: 'POST',
                     },
@@ -35,10 +39,17 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         }
     }
 
+    // Delete OAuth credentials
+    if (credentials) {
+        await db
+            .delete(oauthCredentials)
+            .where(eq(oauthCredentials.sourceId, sourceId))
+    }
+
+    // Update source status
     await db
         .update(sources)
         .set({
-            oauthCredentials: null,
             syncStatus: 'pending',
             isActive: false,
             updatedAt: new Date(),

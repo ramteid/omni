@@ -2,10 +2,11 @@ import { redirect, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { getRedisClient } from '$lib/server/redis'
 import { db } from '$lib/server/db'
-import { sources } from '$lib/server/db/schema'
+import { sources, oauthCredentials } from '$lib/server/db/schema'
 import { eq } from 'drizzle-orm'
 import { oauth } from '$lib/server/config'
 import crypto from 'crypto'
+import { ulid } from 'ulid'
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 
@@ -25,7 +26,6 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const redis = await getRedisClient()
     const stateData = await redis.get(`oauth:state:${state}`)
     await redis.del(`oauth:state:${state}`)
-    await redis.quit()
 
     if (!stateData) {
         throw error(400, 'Invalid or expired state')
@@ -77,25 +77,23 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
         const userInfo = await userInfoResponse.json()
 
-        const encryptedTokens = {
-            access_token: tokens.access_token,
-            refresh_token: tokens.refresh_token,
-            token_type: tokens.token_type,
-            expires_in: tokens.expires_in,
-            obtained_at: Date.now(),
-        }
+        // Calculate token expiration time
+        const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
 
         // Check for existing org-level Google connection
         const existingSource = await db.query.sources.findFirst({
             where: eq(sources.sourceType, 'google'),
         })
 
+        let sourceId: string
+
         if (existingSource) {
+            sourceId = existingSource.id
+            
             // Update existing org-level connection
             await db
                 .update(sources)
                 .set({
-                    oauthCredentials: encryptedTokens,
                     config: {
                         email: userInfo.email,
                         name: userInfo.name,
@@ -105,9 +103,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                     updatedAt: new Date(),
                 })
                 .where(eq(sources.id, existingSource.id))
+
+            // Delete existing OAuth credentials for this source
+            await db
+                .delete(oauthCredentials)
+                .where(eq(oauthCredentials.sourceId, sourceId))
         } else {
             // Create new org-level Google connection
-            const sourceId = crypto.randomBytes(13).toString('hex')
+            sourceId = ulid()
             await db.insert(sources).values({
                 id: sourceId,
                 createdBy: userId,
@@ -117,16 +120,33 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                     email: userInfo.email,
                     name: userInfo.name,
                 },
-                oauthCredentials: encryptedTokens,
                 syncStatus: 'completed',
                 isActive: true,
             })
         }
 
-        throw redirect(302, '/admin/integrations?success=google_connected')
+        // Save OAuth credentials in the oauth_credentials table
+        await db.insert(oauthCredentials).values({
+            id: ulid(),
+            sourceId: sourceId,
+            provider: 'google',
+            clientId: oauth.google.clientId,
+            clientSecret: oauth.google.clientSecret,
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            tokenType: tokens.token_type,
+            expiresAt: expiresAt,
+            metadata: {
+                email: userInfo.email,
+                name: userInfo.name,
+                obtained_at: Date.now(),
+            },
+        })
+
     } catch (err) {
         console.error('OAuth callback error:', err)
-        if (err instanceof Response) throw err
         throw error(500, 'OAuth callback failed')
     }
+
+    throw redirect(302, '/admin/integrations?success=google_connected')
 }
