@@ -33,7 +33,7 @@
 			
 			<div class="flex items-center space-x-4">
 				<span class="text-sm text-slate-600 dark:text-slate-300">
-					{data.user.username}
+					{data.user.email}
 					<span class="text-xs text-slate-500 dark:text-slate-400">({data.user.role})</span>
 				</span>
 				<Button variant="outline" size="sm" on:click={logout}>

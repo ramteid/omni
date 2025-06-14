@@ -1,6 +1,6 @@
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createRedisClient } from '$lib/server/redis';
+import { getRedisClient } from '$lib/server/redis';
 import { oauth } from '$lib/server/config';
 import crypto from 'crypto';
 
@@ -18,8 +18,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	const state = crypto.randomBytes(32).toString('hex');
 	
-	const redis = await createRedisClient();
-	await redis.setex(`oauth:state:${state}`, 300, JSON.stringify({
+	const redis = await getRedisClient();
+	await redis.setEx(`oauth:state:${state}`, 300, JSON.stringify({
 		userId: locals.user.id,
 		timestamp: Date.now()
 	}));

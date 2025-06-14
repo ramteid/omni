@@ -1,10 +1,10 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { validateSessionToken, setSessionTokenCookie } from '$lib/server/auth.js';
+import { validateSessionToken, setSessionTokenCookie, createSession, generateSessionToken } from '$lib/server/auth.js';
 import { sha256 } from '@oslojs/crypto/sha2';
 import { encodeHexLowerCase } from '@oslojs/encoding';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db/index.js';
-import { user, session } from '$lib/server/db/schema.js';
+import { user } from '$lib/server/db/schema.js';
 import { verify } from '@node-rs/argon2';
 import type { Actions, PageServerLoad } from './$types.js';
 
@@ -54,34 +54,36 @@ export const actions: Actions = {
 		}
 
 		const formData = await request.formData();
-		const username = formData.get('username') as string;
+		const email = formData.get('email') as string;
 		const password = formData.get('password') as string;
 
-		if (!username || !password) {
+		if (!email || !password) {
 			return fail(400, {
-				error: 'Username and password are required.',
-				username
+				error: 'Email and password are required.',
+				email
 			});
 		}
 
-		if (typeof username !== 'string' || typeof password !== 'string') {
+		if (typeof email !== 'string' || typeof password !== 'string') {
 			return fail(400, {
 				error: 'Invalid form data.',
-				username
+				email
 			});
 		}
 
-		if (username.length < 3 || username.length > 31) {
+		// Email validation
+		const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+		if (!emailRegex.test(email)) {
 			return fail(400, {
-				error: 'Username must be between 3 and 31 characters.',
-				username
+				error: 'Please enter a valid email address.',
+				email
 			});
 		}
 
 		if (password.length < 6 || password.length > 128) {
 			return fail(400, {
 				error: 'Password must be between 6 and 128 characters.',
-				username
+				email
 			});
 		}
 
@@ -89,52 +91,35 @@ export const actions: Actions = {
 			const [foundUser] = await db
 				.select()
 				.from(user)
-				.where(eq(user.username, username.toLowerCase()));
+				.where(eq(user.email, email.toLowerCase()));
 
 			if (!foundUser) {
 				return fail(400, {
-					error: 'Invalid username or password.',
-					username
+					error: 'Invalid email or password.',
+					email
 				});
 			}
 
 			const validPassword = await verify(foundUser.passwordHash, password);
 			if (!validPassword) {
 				return fail(400, {
-					error: 'Invalid username or password.',
-					username
+					error: 'Invalid email or password.',
+					email
 				});
 			}
 
-			if (foundUser.status === 'suspended') {
+			if (!foundUser.isActive) {
 				return fail(403, {
-					error: 'Your account has been suspended. Please contact an administrator.',
-					username
-				});
-			}
-
-			if (foundUser.status === 'pending') {
-				return fail(403, {
-					error: 'Your account is pending approval. Please wait for an administrator to approve your account.',
-					username
+					error: 'Your account has been deactivated. Please contact an administrator.',
+					email
 				});
 			}
 
 			// Create session
-			const token = crypto.getRandomValues(new Uint8Array(20));
-			const sessionId = encodeHexLowerCase(token);
-			const sessionToken = encodeHexLowerCase(sha256(new TextEncoder().encode(sessionId)));
-			
-			const expiresAt = new Date();
-			expiresAt.setDate(expiresAt.getDate() + 30);
+			const sessionToken = generateSessionToken();
+			const session = await createSession(sessionToken, foundUser.id);
 
-			await db.insert(session).values({
-				id: sessionId,
-				userId: foundUser.id,
-				expiresAt
-			});
-
-			setSessionTokenCookie(cookies, sessionToken, expiresAt);
+			setSessionTokenCookie(cookies, sessionToken, session.expiresAt);
 
 			// Clear rate limiting on successful login
 			loginAttempts.delete(clientIP);
@@ -143,7 +128,7 @@ export const actions: Actions = {
 			console.error('Login error:', error);
 			return fail(500, {
 				error: 'An unexpected error occurred. Please try again.',
-				username
+				email
 			});
 		}
 

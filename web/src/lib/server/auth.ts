@@ -4,8 +4,12 @@ import { sha256 } from '@oslojs/crypto/sha2';
 import { encodeBase64url, encodeHexLowerCase } from '@oslojs/encoding';
 import { db } from '$lib/server/db';
 import * as table from '$lib/server/db/schema';
+import { getRedisClient } from '$lib/server/redis';
+import { getConfig } from '$lib/server/config';
 
+const config = getConfig();
 const DAY_IN_MS = 1000 * 60 * 60 * 24;
+const SESSION_DURATION_MS = DAY_IN_MS * config.session.durationDays;
 
 export const sessionCookieName = 'auth-session';
 
@@ -17,65 +21,87 @@ export function generateSessionToken() {
 
 export async function createSession(token: string, userId: string) {
 	const sessionId = encodeHexLowerCase(sha256(new TextEncoder().encode(token)));
-	const session: table.Session = {
+	const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+	const session = {
 		id: sessionId,
 		userId,
-		expiresAt: new Date(Date.now() + DAY_IN_MS * 30)
+		expiresAt
 	};
-	await db.insert(table.session).values(session);
+	
+	const redis = await getRedisClient();
+	await redis.setEx(
+		`session:${sessionId}`,
+		Math.floor(SESSION_DURATION_MS / 1000),
+		JSON.stringify(session)
+	);
+	
 	return session;
 }
 
 export async function validateSessionToken(token: string) {
 	const sessionId = encodeHexLowerCase(sha256(new TextEncoder().encode(token)));
-	const [result] = await db
-		.select({
-			// Adjust user table here to tweak returned data
-			user: { id: table.user.id, username: table.user.username },
-			session: table.session
-		})
-		.from(table.session)
-		.innerJoin(table.user, eq(table.session.userId, table.user.id))
-		.where(eq(table.session.id, sessionId));
-
-	if (!result) {
+	const redis = await getRedisClient();
+	
+	const sessionData = await redis.get(`session:${sessionId}`);
+	if (!sessionData) {
 		return { session: null, user: null };
 	}
-	const { session, user } = result;
-
+	
+	const session = JSON.parse(sessionData);
+	session.expiresAt = new Date(session.expiresAt);
+	
 	const sessionExpired = Date.now() >= session.expiresAt.getTime();
 	if (sessionExpired) {
-		await db.delete(table.session).where(eq(table.session.id, session.id));
+		await redis.del(`session:${sessionId}`);
 		return { session: null, user: null };
 	}
-
+	
+	// Get user data from database
+	const [userResult] = await db
+		.select({
+			id: table.user.id,
+			email: table.user.email,
+			role: table.user.role,
+			isActive: table.user.isActive
+		})
+		.from(table.user)
+		.where(eq(table.user.id, session.userId));
+	
+	if (!userResult) {
+		await redis.del(`session:${sessionId}`);
+		return { session: null, user: null };
+	}
+	
+	// Renew session if it's close to expiry (within 15 days)
 	const renewSession = Date.now() >= session.expiresAt.getTime() - DAY_IN_MS * 15;
 	if (renewSession) {
-		session.expiresAt = new Date(Date.now() + DAY_IN_MS * 30);
-		await db
-			.update(table.session)
-			.set({ expiresAt: session.expiresAt })
-			.where(eq(table.session.id, session.id));
+		session.expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+		await redis.setEx(
+			`session:${sessionId}`,
+			Math.floor(SESSION_DURATION_MS / 1000),
+			JSON.stringify(session)
+		);
 	}
-
-	return { session, user };
+	
+	return { session, user: userResult };
 }
 
 export type SessionValidationResult = Awaited<ReturnType<typeof validateSessionToken>>;
 
 export async function invalidateSession(sessionId: string) {
-	await db.delete(table.session).where(eq(table.session.id, sessionId));
+	const redis = await getRedisClient();
+	await redis.del(`session:${sessionId}`);
 }
 
-export function setSessionTokenCookie(event: RequestEvent, token: string, expiresAt: Date) {
-	event.cookies.set(sessionCookieName, token, {
+export function setSessionTokenCookie(cookies: any, token: string, expiresAt: Date) {
+	cookies.set(sessionCookieName, token, {
 		expires: expiresAt,
 		path: '/'
 	});
 }
 
-export function deleteSessionTokenCookie(event: RequestEvent) {
-	event.cookies.delete(sessionCookieName, {
+export function deleteSessionTokenCookie(cookies: any) {
+	cookies.delete(sessionCookieName, {
 		path: '/'
 	});
 }

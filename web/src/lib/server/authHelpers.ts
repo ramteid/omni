@@ -29,8 +29,8 @@ export function requireAdmin(locals: App.Locals, redirectTo = '/') {
 export function requireActiveUser(locals: App.Locals, redirectTo = '/auth/login') {
 	const { user, session } = requireAuth(locals, redirectTo);
 	
-	if (user.status !== 'active') {
-		throw redirect(302, '/auth/login?error=account-not-active');
+	if (!user.isActive) {
+		throw redirect(302, '/login?error=account-not-active');
 	}
 	
 	return { user, session };

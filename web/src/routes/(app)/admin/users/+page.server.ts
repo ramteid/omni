@@ -12,12 +12,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const users = await db
 		.select({
 			id: table.user.id,
-			username: table.user.username,
 			email: table.user.email,
 			role: table.user.role,
-			status: table.user.status,
+			isActive: table.user.isActive,
 			createdAt: table.user.createdAt,
-			approvedAt: table.user.approvedAt
+			updatedAt: table.user.updatedAt
 		})
 		.from(table.user)
 		.orderBy(table.user.createdAt);
@@ -42,15 +41,14 @@ export const actions: Actions = {
 			await db
 				.update(table.user)
 				.set({
-					status: 'active',
-					approvedAt: new Date(),
-					approvedBy: user.id
+					isActive: true,
+					updatedAt: new Date()
 				})
 				.where(eq(table.user.id, userId));
 
 			return { success: true };
 		} catch (error) {
-			return fail(500, { message: 'Failed to approve user' });
+			return fail(500, { message: 'Failed to activate user' });
 		}
 	},
 
@@ -72,7 +70,10 @@ export const actions: Actions = {
 		try {
 			await db
 				.update(table.user)
-				.set({ status: 'suspended' })
+				.set({ 
+					isActive: false,
+					updatedAt: new Date()
+				})
 				.where(eq(table.user.id, userId));
 
 			return { success: true };
@@ -94,7 +95,10 @@ export const actions: Actions = {
 		try {
 			await db
 				.update(table.user)
-				.set({ status: 'active' })
+				.set({ 
+					isActive: true,
+					updatedAt: new Date()
+				})
 				.where(eq(table.user.id, userId));
 
 			return { success: true };
@@ -133,7 +137,10 @@ export const actions: Actions = {
 		try {
 			await db
 				.update(table.user)
-				.set({ role })
+				.set({ 
+					role,
+					updatedAt: new Date()
+				})
 				.where(eq(table.user.id, userId));
 
 			return { success: true };

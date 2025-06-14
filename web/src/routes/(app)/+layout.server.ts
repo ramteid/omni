@@ -6,12 +6,8 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 		throw redirect(302, '/login');
 	}
 
-	if (locals.user.status === 'pending') {
-		throw redirect(302, '/pending');
-	}
-
-	if (locals.user.status === 'suspended') {
-		throw redirect(302, '/suspended'); 
+	if (!locals.user.isActive) {
+		throw redirect(302, '/login?error=account-inactive');
 	}
 
 	return {

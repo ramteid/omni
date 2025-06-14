@@ -41,13 +41,13 @@
 			{/if}
 
 			<div class="space-y-2">
-				<Label for="username">Username</Label>
+				<Label for="email">Email</Label>
 				<Input
-					id="username"
-					name="username"
-					type="text"
-					placeholder="Enter your username"
-					value={form?.username ?? ''}
+					id="email"
+					name="email"
+					type="email"
+					placeholder="Enter your email"
+					value={form?.email ?? ''}
 					required
 					disabled={loading}
 				/>

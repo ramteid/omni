@@ -1,6 +1,6 @@
 import { redirect, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createRedisClient } from '$lib/server/redis';
+import { getRedisClient } from '$lib/server/redis';
 import { db } from '$lib/server/db';
 import { sources } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
@@ -22,7 +22,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		throw error(400, 'Missing required parameters');
 	}
 
-	const redis = await createRedisClient();
+	const redis = await getRedisClient();
 	const stateData = await redis.get(`oauth:state:${state}`);
 	await redis.del(`oauth:state:${state}`);
 	await redis.quit();

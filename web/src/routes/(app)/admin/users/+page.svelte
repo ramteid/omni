@@ -33,12 +33,11 @@
 					<table class="min-w-full divide-y divide-gray-300">
 						<thead class="bg-gray-50">
 							<tr>
-								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Username</th>
 								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Email</th>
 								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Role</th>
 								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Status</th>
 								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Created</th>
-								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Approved</th>
+								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Updated</th>
 								<th class="relative px-6 py-3"><span class="sr-only">Actions</span></th>
 							</tr>
 						</thead>
@@ -46,9 +45,6 @@
 							{#each data.users as user}
 								<tr>
 									<td class="px-6 py-4 text-sm font-medium text-gray-900">
-										{user.username}
-									</td>
-									<td class="px-6 py-4 text-sm text-gray-500">
 										{user.email}
 									</td>
 									<td class="px-6 py-4 text-sm text-gray-500">
@@ -68,44 +64,30 @@
 									</td>
 									<td class="px-6 py-4 text-sm">
 										<span class="inline-flex rounded-full px-2 text-xs font-semibold leading-5
-											{user.status === 'active' ? 'bg-green-100 text-green-800' : ''}
-											{user.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : ''}
-											{user.status === 'suspended' ? 'bg-red-100 text-red-800' : ''}
+											{user.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}
 										">
-											{user.status}
+											{user.isActive ? 'Active' : 'Inactive'}
 										</span>
 									</td>
 									<td class="px-6 py-4 text-sm text-gray-500">
 										{formatDate(user.createdAt)}
 									</td>
 									<td class="px-6 py-4 text-sm text-gray-500">
-										{formatDate(user.approvedAt)}
+										{formatDate(user.updatedAt)}
 									</td>
 									<td class="px-6 py-4 text-right text-sm font-medium">
 										<div class="flex justify-end space-x-2">
-											{#if user.status === 'pending'}
-												<form method="POST" action="?/approve" use:enhance>
-													<input type="hidden" name="userId" value={user.id} />
-													<button
-														type="submit"
-														class="text-indigo-600 hover:text-indigo-900"
-													>
-														Approve
-													</button>
-												</form>
-											{/if}
-											{#if user.status === 'active'}
+											{#if user.isActive}
 												<form method="POST" action="?/suspend" use:enhance>
 													<input type="hidden" name="userId" value={user.id} />
 													<button
 														type="submit"
 														class="text-red-600 hover:text-red-900"
 													>
-														Suspend
+														Deactivate
 													</button>
 												</form>
-											{/if}
-											{#if user.status === 'suspended'}
+											{:else}
 												<form method="POST" action="?/activate" use:enhance>
 													<input type="hidden" name="userId" value={user.id} />
 													<button

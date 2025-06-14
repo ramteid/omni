@@ -52,21 +52,6 @@
 					</div>
 				{/if}
 
-				<div class="space-y-2">
-					<Label for="username">Username</Label>
-					<Input
-						id="username"
-						name="username"
-						type="text"
-						placeholder="Choose a username"
-						value={form?.username ?? ''}
-						required
-						disabled={loading}
-					/>
-					<p class="text-xs text-slate-500 dark:text-slate-400">
-						3-31 characters, letters, numbers, hyphens, and underscores only
-					</p>
-				</div>
 
 				<div class="space-y-2">
 					<Label for="email">Email</Label>
@@ -108,7 +93,7 @@
 					/>
 				</div>
 
-				<Button type="submit" class="w-full" disabled={loading}>
+				<Button type="submit" class="w-full cursor-pointer" disabled={loading}>
 					{loading ? 'Creating account...' : 'Create account'}
 				</Button>
 			</form>
