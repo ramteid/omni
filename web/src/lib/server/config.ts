@@ -140,8 +140,8 @@ function loadConfig(): AppConfig {
 	);
 
 	// App configuration
-	const publicAppUrl = getRequiredEnv('PUBLIC_APP_URL');
-	validateUrl(publicAppUrl, 'PUBLIC_APP_URL');
+	const publicAppUrl = getRequiredEnv('APP_URL');
+	validateUrl(publicAppUrl, 'APP_URL');
 
 	// Google OAuth configuration
 	const googleClientId = getRequiredEnv('GOOGLE_CLIENT_ID');
