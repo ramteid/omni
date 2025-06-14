@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use serde_json::json;
 use sqlx::{PgPool, Row};
@@ -15,6 +15,94 @@ pub struct SyncManager {
     redis_client: RedisClient,
     auth_manager: AuthManager,
     drive_client: DriveClient,
+}
+
+pub struct SyncState {
+    redis_client: RedisClient,
+}
+
+impl SyncState {
+    pub fn new(redis_client: RedisClient) -> Self {
+        Self { redis_client }
+    }
+
+    pub fn get_file_sync_key(&self, source_id: &str, file_id: &str) -> String {
+        format!("google:sync:{}:{}", source_id, file_id)
+    }
+
+    #[cfg(test)]
+    pub fn get_test_file_sync_key(&self, source_id: &str, file_id: &str) -> String {
+        format!("google:sync:test:{}:{}", source_id, file_id)
+    }
+
+    pub async fn get_file_sync_state(&self, source_id: &str, file_id: &str) -> Result<Option<String>> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = self.get_file_sync_key(source_id, file_id);
+        
+        let result: Option<String> = conn.get(&key).await?;
+        Ok(result)
+    }
+
+    pub async fn set_file_sync_state(&self, source_id: &str, file_id: &str, modified_time: &str) -> Result<()> {
+        self.set_file_sync_state_with_expiry(source_id, file_id, modified_time, 30 * 24 * 60 * 60).await
+    }
+
+    #[cfg(test)]
+    pub async fn set_file_sync_state_with_expiry(&self, source_id: &str, file_id: &str, modified_time: &str, expiry_seconds: u64) -> Result<()> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = if cfg!(test) {
+            self.get_test_file_sync_key(source_id, file_id)
+        } else {
+            self.get_file_sync_key(source_id, file_id)
+        };
+        
+        let _: () = conn.set_ex(&key, modified_time, expiry_seconds).await?;
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    async fn set_file_sync_state_with_expiry(&self, source_id: &str, file_id: &str, modified_time: &str, expiry_seconds: u64) -> Result<()> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = self.get_file_sync_key(source_id, file_id);
+        
+        let _: () = conn.set_ex(&key, modified_time, expiry_seconds).await?;
+        Ok(())
+    }
+
+    pub async fn delete_file_sync_state(&self, source_id: &str, file_id: &str) -> Result<()> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = if cfg!(test) {
+            self.get_test_file_sync_key(source_id, file_id)
+        } else {
+            self.get_file_sync_key(source_id, file_id)
+        };
+        
+        let _: () = conn.del(&key).await?;
+        Ok(())
+    }
+
+    pub async fn get_all_synced_file_ids(&self, source_id: &str) -> Result<HashSet<String>> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let pattern = if cfg!(test) {
+            format!("google:sync:test:{}:*", source_id)
+        } else {
+            format!("google:sync:{}:*", source_id)
+        };
+        
+        let keys: Vec<String> = conn.keys(&pattern).await?;
+        let prefix = if cfg!(test) {
+            format!("google:sync:test:{}:", source_id)
+        } else {
+            format!("google:sync:{}:", source_id)
+        };
+        let file_ids: HashSet<String> = keys.into_iter()
+            .filter_map(|key| {
+                key.strip_prefix(&prefix).map(|s| s.to_string())
+            })
+            .collect();
+        
+        Ok(file_ids)
+    }
 }
 
 impl SyncManager {
@@ -75,9 +163,12 @@ impl SyncManager {
             self.update_oauth_credentials(&source.id, &creds).await?;
         }
 
-        let synced_files = self.get_synced_files(&source.id).await?;
+        let sync_state = SyncState::new(self.redis_client.clone());
+        let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
         let mut current_files = HashSet::new();
         let mut page_token: Option<String> = None;
+        let mut processed_count = 0;
+        let mut updated_count = 0;
 
         loop {
             debug!(
@@ -95,25 +186,57 @@ impl SyncManager {
 
             for file in response.files {
                 current_files.insert(file.id.clone());
+                processed_count += 1;
 
                 if self.should_index_file(&file) {
-                    match self
-                        .drive_client
-                        .get_file_content(&creds.access_token, &file)
-                        .await
-                    {
-                        Ok(content) => {
-                            if !content.is_empty() {
-                                let event = DocumentEvent::from_drive_file(
-                                    source.id.clone(),
-                                    &file,
-                                    content,
-                                );
-                                self.publish_document_event(&event, "created").await?;
+                    let should_process = if let Some(modified_time) = &file.modified_time {
+                        match sync_state.get_file_sync_state(&source.id, &file.id).await? {
+                            Some(last_modified) => {
+                                if last_modified != *modified_time {
+                                    debug!(
+                                        "File {} has been modified (was: {}, now: {})", 
+                                        file.name, last_modified, modified_time
+                                    );
+                                    true
+                                } else {
+                                    debug!("File {} unchanged, skipping", file.name);
+                                    false
+                                }
+                            }
+                            None => {
+                                debug!("File {} is new, processing", file.name);
+                                true
                             }
                         }
-                        Err(e) => {
-                            warn!("Failed to get content for file {}: {}", file.name, e);
+                    } else {
+                        warn!("File {} has no modified_time, processing anyway", file.name);
+                        true
+                    };
+
+                    if should_process {
+                        match self
+                            .drive_client
+                            .get_file_content(&creds.access_token, &file)
+                            .await
+                        {
+                            Ok(content) => {
+                                if !content.is_empty() {
+                                    let event = DocumentEvent::from_drive_file(
+                                        source.id.clone(),
+                                        &file,
+                                        content,
+                                    );
+                                    self.publish_document_event(&event, "created").await?;
+                                    updated_count += 1;
+
+                                    if let Some(modified_time) = &file.modified_time {
+                                        sync_state.set_file_sync_state(&source.id, &file.id, modified_time).await?;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to get content for file {}: {}", file.name, e);
+                            }
                         }
                     }
                 }
@@ -126,9 +249,16 @@ impl SyncManager {
         }
 
         for deleted_file_id in synced_files.difference(&current_files) {
+            info!("File {} was deleted, publishing deletion event", deleted_file_id);
             self.publish_deletion_event(&source.id, deleted_file_id)
                 .await?;
+            sync_state.delete_file_sync_state(&source.id, deleted_file_id).await?;
         }
+
+        info!(
+            "Sync completed for source {}: {} files processed, {} updated", 
+            source.id, processed_count, updated_count
+        );
 
         self.update_source_status(&source.id, "completed").await?;
 
@@ -147,17 +277,6 @@ impl SyncManager {
         )
     }
 
-    async fn get_synced_files(&self, source_id: &str) -> Result<HashSet<String>> {
-        let rows = sqlx::query("SELECT external_id FROM documents WHERE source_id = $1")
-            .bind(source_id)
-            .fetch_all(&self.pool)
-            .await?;
-
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| row.try_get::<String, _>("external_id").ok())
-            .collect())
-    }
 
     async fn publish_document_event(&self, event: &DocumentEvent, event_type: &str) -> Result<()> {
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
