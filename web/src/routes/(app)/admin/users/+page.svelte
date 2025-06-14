@@ -10,51 +10,51 @@
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50">
-	<nav class="bg-white shadow">
+<div class="min-h-screen bg-background">
+	<nav class="bg-card shadow border-b">
 		<div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
 			<div class="flex h-16 justify-between">
 				<div class="flex items-center">
 					<h1 class="text-xl font-semibold">Clio Admin - User Management</h1>
 				</div>
 				<div class="flex items-center space-x-4">
-					<a href="/" class="text-sm text-gray-500 hover:text-gray-700">Back to Home</a>
+					<a href="/" class="text-sm text-muted-foreground hover:text-foreground">Back to Home</a>
 				</div>
 			</div>
 		</div>
 	</nav>
 
 	<main class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-		<div class="rounded-lg bg-white shadow">
+		<div class="rounded-lg bg-card shadow border">
 			<div class="px-4 py-5 sm:p-6">
-				<h2 class="text-lg font-medium text-gray-900">Users</h2>
+				<h2 class="text-lg font-medium text-foreground">Users</h2>
 				
-				<div class="mt-6 overflow-hidden shadow ring-1 ring-black ring-opacity-5 md:rounded-lg">
-					<table class="min-w-full divide-y divide-gray-300">
-						<thead class="bg-gray-50">
+				<div class="mt-6 overflow-hidden shadow ring-1 ring-border md:rounded-lg">
+					<table class="min-w-full divide-y divide-border">
+						<thead class="bg-muted/50">
 							<tr>
-								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Email</th>
-								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Role</th>
-								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Status</th>
-								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Created</th>
-								<th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Updated</th>
+								<th class="px-6 py-3 text-left text-sm font-semibold text-foreground">Email</th>
+								<th class="px-6 py-3 text-left text-sm font-semibold text-foreground">Role</th>
+								<th class="px-6 py-3 text-left text-sm font-semibold text-foreground">Status</th>
+								<th class="px-6 py-3 text-left text-sm font-semibold text-foreground">Created</th>
+								<th class="px-6 py-3 text-left text-sm font-semibold text-foreground">Updated</th>
 								<th class="relative px-6 py-3"><span class="sr-only">Actions</span></th>
 							</tr>
 						</thead>
-						<tbody class="divide-y divide-gray-200 bg-white">
+						<tbody class="divide-y divide-border bg-background">
 							{#each data.users as user}
 								<tr>
-									<td class="px-6 py-4 text-sm font-medium text-gray-900">
+									<td class="px-6 py-4 text-sm font-medium text-foreground">
 										{user.email}
 									</td>
-									<td class="px-6 py-4 text-sm text-gray-500">
+									<td class="px-6 py-4 text-sm text-muted-foreground">
 										<form method="POST" action="?/updateRole" use:enhance class="inline">
 											<input type="hidden" name="userId" value={user.id} />
 											<select
 												name="role"
 												value={user.role}
 												on:change={(e) => e.currentTarget.form?.requestSubmit()}
-												class="rounded-md border-gray-300 text-sm"
+												class="rounded-md border-border text-sm bg-background"
 											>
 												<option value="admin">Admin</option>
 												<option value="user">User</option>
@@ -64,15 +64,15 @@
 									</td>
 									<td class="px-6 py-4 text-sm">
 										<span class="inline-flex rounded-full px-2 text-xs font-semibold leading-5
-											{user.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}
+											{user.isActive ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400' : 'bg-destructive/10 text-destructive'}
 										">
 											{user.isActive ? 'Active' : 'Inactive'}
 										</span>
 									</td>
-									<td class="px-6 py-4 text-sm text-gray-500">
+									<td class="px-6 py-4 text-sm text-muted-foreground">
 										{formatDate(user.createdAt)}
 									</td>
-									<td class="px-6 py-4 text-sm text-gray-500">
+									<td class="px-6 py-4 text-sm text-muted-foreground">
 										{formatDate(user.updatedAt)}
 									</td>
 									<td class="px-6 py-4 text-right text-sm font-medium">
@@ -82,7 +82,7 @@
 													<input type="hidden" name="userId" value={user.id} />
 													<button
 														type="submit"
-														class="text-red-600 hover:text-red-900"
+														class="text-destructive hover:text-destructive/80"
 													>
 														Deactivate
 													</button>
@@ -92,7 +92,7 @@
 													<input type="hidden" name="userId" value={user.id} />
 													<button
 														type="submit"
-														class="text-green-600 hover:text-green-900"
+														class="text-green-600 hover:text-green-900 dark:text-green-400 dark:hover:text-green-300"
 													>
 														Activate
 													</button>

@@ -13,18 +13,18 @@
 	}
 </script>
 
-<div class="min-h-screen bg-slate-50 dark:bg-slate-900">
+<div class="min-h-screen bg-background">
 	<!-- Header -->
-	<header class="border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
+	<header class="border-b bg-card border-border">
 		<div class="flex h-16 items-center justify-between px-6">
 			<div class="flex items-center space-x-4">
-				<h1 class="text-xl font-bold text-slate-900 dark:text-slate-100">Clio</h1>
+				<h1 class="text-xl font-bold text-foreground">Clio</h1>
 				<nav class="hidden md:flex space-x-4">
-					<a href="/" class="text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100">
+					<a href="/" class="text-muted-foreground hover:text-foreground">
 						Search
 					</a>
 					{#if data.user.role === 'admin'}
-						<a href="/admin/users" class="text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100">
+						<a href="/admin/users" class="text-muted-foreground hover:text-foreground">
 							Admin
 						</a>
 					{/if}
@@ -32,9 +32,9 @@
 			</div>
 			
 			<div class="flex items-center space-x-4">
-				<span class="text-sm text-slate-600 dark:text-slate-300">
+				<span class="text-sm text-muted-foreground">
 					{data.user.email}
-					<span class="text-xs text-slate-500 dark:text-slate-400">({data.user.role})</span>
+					<span class="text-xs text-muted-foreground/80">({data.user.role})</span>
 				</span>
 				<Button variant="outline" size="sm" on:click={logout}>
 					Sign out

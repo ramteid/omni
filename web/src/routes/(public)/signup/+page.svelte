@@ -45,8 +45,8 @@
 				class="space-y-4"
 			>
 				{#if form?.error}
-					<div class="rounded-md bg-red-50 p-4 dark:bg-red-900/50">
-						<div class="text-sm text-red-800 dark:text-red-200">
+					<div class="rounded-md bg-destructive/10 p-4">
+						<div class="text-sm text-destructive">
 							{form.error}
 						</div>
 					</div>
@@ -76,7 +76,7 @@
 						required
 						disabled={loading}
 					/>
-					<p class="text-xs text-slate-500 dark:text-slate-400">
+					<p class="text-xs text-muted-foreground">
 						At least 8 characters
 					</p>
 				</div>
@@ -99,8 +99,8 @@
 			</form>
 
 			<div class="mt-6 text-center text-sm">
-				<span class="text-slate-600 dark:text-slate-400">Already have an account?</span>
-				<a href="/login" class="font-medium text-slate-900 hover:text-slate-700 dark:text-slate-100 dark:hover:text-slate-300">
+				<span class="text-muted-foreground">Already have an account?</span>
+				<a href="/login" class="font-medium text-foreground hover:text-foreground/80">
 					Sign in
 				</a>
 			</div>

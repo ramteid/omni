@@ -12,8 +12,8 @@
 
 <div class="container mx-auto px-4 py-8">
 	<div class="mb-8">
-		<h1 class="text-3xl font-bold text-slate-900 dark:text-slate-100">Welcome to Clio</h1>
-		<p class="mt-2 text-slate-600 dark:text-slate-400">
+		<h1 class="text-3xl font-bold text-foreground">Welcome to Clio</h1>
+		<p class="mt-2 text-muted-foreground">
 			Your unified enterprise search platform. Search across all your connected data sources.
 		</p>
 	</div>
@@ -26,7 +26,7 @@
 					<input
 						type="text"
 						placeholder="Search across all your data sources..."
-						class="w-full rounded-md border border-slate-300 px-4 py-3 text-lg focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+						class="w-full rounded-md border border-input bg-background px-4 py-3 text-lg focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring/20 text-foreground"
 					/>
 					<Button class="w-full sm:w-auto">
 						Search
@@ -43,8 +43,8 @@
 				<CardTitle class="text-lg">Connected Sources</CardTitle>
 			</CardHeader>
 			<CardContent>
-				<div class="text-2xl font-bold text-slate-900 dark:text-slate-100">0</div>
-				<p class="text-sm text-slate-600 dark:text-slate-400">Data sources connected</p>
+				<div class="text-2xl font-bold text-foreground">0</div>
+				<p class="text-sm text-muted-foreground">Data sources connected</p>
 			</CardContent>
 		</Card>
 
@@ -53,8 +53,8 @@
 				<CardTitle class="text-lg">Indexed Documents</CardTitle>
 			</CardHeader>
 			<CardContent>
-				<div class="text-2xl font-bold text-slate-900 dark:text-slate-100">0</div>
-				<p class="text-sm text-slate-600 dark:text-slate-400">Documents ready to search</p>
+				<div class="text-2xl font-bold text-foreground">0</div>
+				<p class="text-sm text-muted-foreground">Documents ready to search</p>
 			</CardContent>
 		</Card>
 
@@ -63,8 +63,8 @@
 				<CardTitle class="text-lg">Recent Searches</CardTitle>
 			</CardHeader>
 			<CardContent>
-				<div class="text-2xl font-bold text-slate-900 dark:text-slate-100">0</div>
-				<p class="text-sm text-slate-600 dark:text-slate-400">Searches performed today</p>
+				<div class="text-2xl font-bold text-foreground">0</div>
+				<p class="text-sm text-muted-foreground">Searches performed today</p>
 			</CardContent>
 		</Card>
 	</div>
