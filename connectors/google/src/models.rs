@@ -8,7 +8,6 @@ pub struct Source {
     pub name: String,
     pub source_type: String,
     pub config: serde_json::Value,
-    pub oauth_credentials: Option<serde_json::Value>,
     pub is_active: bool,
     pub last_sync_at: Option<DateTime<Utc>>,
     pub sync_status: Option<String>,
@@ -22,9 +21,13 @@ pub struct Source {
 pub struct GoogleDriveFile {
     pub id: String,
     pub name: String,
+    #[serde(rename = "mimeType")]
     pub mime_type: String,
+    #[serde(rename = "webViewLink")]
     pub web_view_link: Option<String>,
+    #[serde(rename = "createdTime")]
     pub created_time: Option<String>,
+    #[serde(rename = "modifiedTime")]
     pub modified_time: Option<String>,
     pub size: Option<String>,
     pub parents: Option<Vec<String>>,
@@ -35,7 +38,9 @@ pub struct GoogleDriveFile {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Permission {
     pub id: String,
-    pub r#type: String,
+    #[serde(rename = "type")]
+    pub permission_type: String,
+    #[serde(rename = "emailAddress")]
     pub email_address: Option<String>,
     pub role: String,
 }

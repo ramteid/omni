@@ -52,7 +52,17 @@ impl DriveClient {
             return Err(anyhow!("Failed to list files: {}", error_text));
         }
 
-        response.json().await.map_err(Into::into)
+        debug!("Drive API response status: {}", response.status());
+        let response_text = response.text().await?;
+        debug!("Drive API raw response: {}", response_text);
+
+        serde_json::from_str(&response_text).map_err(|e| {
+            anyhow!(
+                "Failed to parse Drive API response: {}. Raw response: {}",
+                e,
+                response_text
+            )
+        })
     }
 
     pub async fn get_file_content(&self, token: &str, file: &GoogleDriveFile) -> Result<String> {
@@ -83,7 +93,17 @@ impl DriveClient {
             return Err(anyhow!("Failed to get document content: {}", error_text));
         }
 
-        let doc: GoogleDocument = response.json().await?;
+        debug!("Google Docs API response status: {}", response.status());
+        let response_text = response.text().await?;
+        debug!("Google Docs API raw response: {}", response_text);
+
+        let doc: GoogleDocument = serde_json::from_str(&response_text).map_err(|e| {
+            anyhow!(
+                "Failed to parse Google Docs API response: {}. Raw response: {}",
+                e,
+                response_text
+            )
+        })?;
         Ok(extract_text_from_document(&doc))
     }
 

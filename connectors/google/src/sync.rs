@@ -3,7 +3,7 @@ use redis::{AsyncCommands, Client as RedisClient};
 use serde_json::json;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthManager, OAuthCredentials};
 use crate::drive::DriveClient;
@@ -69,7 +69,9 @@ impl SyncManager {
         let original_creds = creds.clone();
         self.auth_manager.ensure_valid_token(&mut creds).await?;
 
-        if creds.access_token != original_creds.access_token || creds.refresh_token != original_creds.refresh_token {
+        if creds.access_token != original_creds.access_token
+            || creds.refresh_token != original_creds.refresh_token
+        {
             self.update_oauth_credentials(&source.id, &creds).await?;
         }
 
@@ -78,10 +80,18 @@ impl SyncManager {
         let mut page_token: Option<String> = None;
 
         loop {
+            debug!(
+                "Calling Drive API list_files with page_token: {:?}",
+                page_token
+            );
             let response = self
                 .drive_client
                 .list_files(&creds.access_token, page_token.as_deref())
-                .await?;
+                .await
+                .map_err(|e| {
+                    error!("Drive API list_files call failed: {}", e);
+                    e
+                })?;
 
             for file in response.files {
                 current_files.insert(file.id.clone());
@@ -186,7 +196,7 @@ impl SyncManager {
         let row = sqlx::query(
             "SELECT access_token, refresh_token, token_type, expires_at 
              FROM oauth_credentials 
-             WHERE source_id = $1 AND provider = 'google'"
+             WHERE source_id = $1 AND provider = 'google'",
         )
         .bind(source_id)
         .fetch_one(&self.pool)
@@ -211,7 +221,8 @@ impl SyncManager {
         creds: &OAuthCredentials,
     ) -> Result<()> {
         let expires_at = chrono::DateTime::from_timestamp(creds.obtained_at / 1000, 0)
-            .unwrap_or(chrono::Utc::now()) + chrono::Duration::seconds(creds.expires_in);
+            .unwrap_or(chrono::Utc::now())
+            + chrono::Duration::seconds(creds.expires_in);
 
         sqlx::query(
             "UPDATE oauth_credentials 
