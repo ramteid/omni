@@ -1,0 +1,17 @@
+# Production-specific overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up
+
+services:
+  # Add vLLM dependency for AI service in production
+  ai:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+
+  # Enable vLLM in production
+  vllm:
+    profiles: []  # Remove profile to enable in production
