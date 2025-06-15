@@ -32,6 +32,7 @@ impl QueueProcessor {
         let mut poll_interval = interval(Duration::from_secs(60)); // Backup polling every minute
         let mut heartbeat_interval = interval(Duration::from_secs(30));
         let mut retry_interval = interval(Duration::from_secs(300)); // 5 minutes
+        let mut cleanup_interval = interval(Duration::from_secs(3600)); // 1 hour
         
         // Process any existing events first
         if let Err(e) = self.process_batch().await {
@@ -77,6 +78,16 @@ impl QueueProcessor {
                     if let Ok(retried) = self.event_queue.retry_failed_events().await {
                         if retried > 0 {
                             info!("Retried {} failed events", retried);
+                        }
+                    }
+                }
+                _ = cleanup_interval.tick() => {
+                    if let Ok(result) = self.event_queue.cleanup_old_events(7).await {
+                        if result.completed_deleted > 0 || result.dead_letter_deleted > 0 {
+                            info!(
+                                "Cleaned up old events - Completed: {}, Dead Letter: {}",
+                                result.completed_deleted, result.dead_letter_deleted
+                            );
                         }
                     }
                 }

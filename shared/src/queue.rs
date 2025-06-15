@@ -213,6 +213,47 @@ impl EventQueue {
             dead_letter,
         })
     }
+
+    pub async fn cleanup_old_events(&self, retention_days: i32) -> Result<CleanupResult> {
+        let mut tx = self.pool.begin().await?;
+
+        // Delete completed events older than retention period
+        let completed_result = sqlx::query(
+            r#"
+            DELETE FROM connector_events_queue
+            WHERE status = 'completed'
+            AND processed_at < NOW() - INTERVAL '1 day' * $1
+            "#
+        )
+        .bind(retention_days)
+        .execute(&mut *tx)
+        .await?;
+
+        // Delete dead letter events older than retention period (they're unlikely to be retried)
+        let dead_letter_result = sqlx::query(
+            r#"
+            DELETE FROM connector_events_queue
+            WHERE status = 'dead_letter'
+            AND created_at < NOW() - INTERVAL '1 day' * $1
+            "#
+        )
+        .bind(retention_days)
+        .execute(&mut *tx)
+        .await?;
+
+        // Run VACUUM to reclaim space (this will run after the transaction commits)
+        tx.commit().await?;
+        
+        // VACUUM cannot run inside a transaction, so we run it separately
+        sqlx::query("VACUUM ANALYZE connector_events_queue")
+            .execute(&self.pool)
+            .await?;
+
+        Ok(CleanupResult {
+            completed_deleted: completed_result.rows_affected(),
+            dead_letter_deleted: dead_letter_result.rows_affected(),
+        })
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -222,4 +263,10 @@ pub struct QueueStats {
     pub completed: i64,
     pub failed: i64,
     pub dead_letter: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CleanupResult {
+    pub completed_deleted: u64,
+    pub dead_letter_deleted: u64,
 }
