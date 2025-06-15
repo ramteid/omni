@@ -171,7 +171,7 @@ impl QueueProcessor {
         permissions: DocumentPermissions,
     ) -> Result<()> {
         info!(
-            "Processing document created: {} from source {}",
+            "Processing document created/updated: {} from source {}",
             document_id, source_id
         );
 
@@ -198,12 +198,12 @@ impl QueueProcessor {
         };
 
         let repo = DocumentRepository::new(self.state.db_pool.pool());
-        let created = repo.create(document).await?;
+        let upserted = repo.upsert(document).await?;
 
-        repo.update_search_vector(&created.id).await?;
-        repo.mark_as_indexed(&created.id).await?;
+        repo.update_search_vector(&upserted.id).await?;
+        repo.mark_as_indexed(&upserted.id).await?;
 
-        info!("Document created successfully: {}", document_id);
+        info!("Document upserted successfully: {}", document_id);
         Ok(())
     }
 

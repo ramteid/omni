@@ -184,4 +184,38 @@ impl DocumentRepository {
 
         Ok(())
     }
+
+    pub async fn upsert(&self, document: Document) -> Result<Document, DatabaseError> {
+        let upserted_document = sqlx::query_as::<_, Document>(
+            r#"
+            INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at, last_indexed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (source_id, external_id)
+            DO UPDATE SET
+                title = EXCLUDED.title,
+                content = EXCLUDED.content,
+                metadata = EXCLUDED.metadata,
+                permissions = EXCLUDED.permissions,
+                updated_at = EXCLUDED.updated_at,
+                last_indexed_at = EXCLUDED.last_indexed_at
+            RETURNING id, source_id, external_id, title, content, content_type,
+                      file_size, file_extension, url, parent_id,
+                      metadata, permissions, created_at, updated_at, last_indexed_at
+            "#
+        )
+        .bind(&document.id)
+        .bind(&document.source_id)
+        .bind(&document.external_id)
+        .bind(&document.title)
+        .bind(&document.content)
+        .bind(&document.metadata)
+        .bind(&document.permissions)
+        .bind(&document.created_at)
+        .bind(&document.updated_at)
+        .bind(&document.last_indexed_at)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(upserted_document)
+    }
 }
