@@ -4,7 +4,7 @@ CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
 -- Create materialized view for unique lexemes from all documents
 CREATE MATERIALIZED VIEW IF NOT EXISTS unique_lexemes AS
 SELECT word, ndoc, nentry
-FROM ts_stat('SELECT tsv_content FROM documents')
+FROM ts_stat('SELECT tsv_content FROM public.documents')
 WHERE length(word) >= 3  -- Only include words with 3+ characters
 ORDER BY ndoc DESC;
 

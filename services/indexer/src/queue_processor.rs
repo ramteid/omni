@@ -1,4 +1,4 @@
-use crate::AppState;
+use crate::{lexeme_refresh, AppState};
 use anyhow::Result;
 use shared::db::repositories::DocumentRepository;
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
@@ -101,12 +101,18 @@ impl QueueProcessor {
     async fn process_batch(&self) -> Result<()> {
         let events = self.event_queue.dequeue_batch(self.batch_size).await?;
 
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let mut processed_count = 0;
         for event_item in events {
             let event_id = event_item.id.clone();
 
             match self.process_event(&event_item.payload).await {
                 Ok(_) => {
                     self.event_queue.mark_completed(&event_id).await?;
+                    processed_count += 1;
                 }
                 Err(e) => {
                     error!("Failed to process event {}: {}", event_id, e);
@@ -114,6 +120,16 @@ impl QueueProcessor {
                         .mark_failed(&event_id, &e.to_string())
                         .await?;
                 }
+            }
+        }
+
+        // After processing events, refresh lexemes if any documents were processed
+        if processed_count > 0 {
+            info!("Refreshing lexemes after processing {} events", processed_count);
+            if let Err(e) = lexeme_refresh::refresh_lexemes(&self.state.db_pool).await {
+                error!("Failed to refresh lexemes after batch processing: {}", e);
+            } else {
+                info!("Lexeme refresh completed after batch processing");
             }
         }
 

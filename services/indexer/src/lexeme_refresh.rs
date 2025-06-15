@@ -18,7 +18,7 @@ pub async fn start_lexeme_refresh_task(db_pool: DatabasePool) {
     }
 }
 
-async fn refresh_lexemes(db_pool: &DatabasePool) -> Result<(), sqlx::Error> {
+pub async fn refresh_lexemes(db_pool: &DatabasePool) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT refresh_unique_lexemes()")
         .execute(db_pool.pool())
         .await?;
