@@ -21,6 +21,8 @@ impl EventQueue {
             ConnectorEvent::DocumentDeleted { .. } => "document_deleted",
         };
 
+        let mut tx = self.pool.begin().await?;
+        
         sqlx::query(
             r#"
             INSERT INTO connector_events_queue (id, source_id, event_type, payload)
@@ -31,8 +33,14 @@ impl EventQueue {
         .bind(source_id)
         .bind(event_type)
         .bind(serde_json::to_value(event)?)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        sqlx::query("NOTIFY indexer_queue")
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
 
         Ok(id)
     }

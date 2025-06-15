@@ -5,6 +5,7 @@ use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermiss
 use shared::queue::EventQueue;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
+use sqlx::postgres::PgListener;
 
 pub struct QueueProcessor {
     pub state: AppState,
@@ -25,15 +26,43 @@ impl QueueProcessor {
     pub async fn start(&self) -> Result<()> {
         info!("Starting queue processor with batch size: {}", self.batch_size);
 
-        let mut poll_interval = interval(Duration::from_secs(1));
+        let mut listener = PgListener::connect_with(self.state.db_pool.pool()).await?;
+        listener.listen("indexer_queue").await?;
+        
+        let mut poll_interval = interval(Duration::from_secs(60)); // Backup polling every minute
         let mut heartbeat_interval = interval(Duration::from_secs(30));
         let mut retry_interval = interval(Duration::from_secs(300)); // 5 minutes
+        
+        // Process any existing events first
+        if let Err(e) = self.process_batch().await {
+            error!("Failed to process initial batch: {}", e);
+        }
 
         loop {
             tokio::select! {
+                notification = listener.recv() => {
+                    match notification {
+                        Ok(_) => {
+                            if let Err(e) = self.process_batch().await {
+                                error!("Failed to process batch after notification: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to receive notification: {}", e);
+                            // Reconnect listener
+                            if let Ok(mut new_listener) = PgListener::connect_with(self.state.db_pool.pool()).await {
+                                if new_listener.listen("indexer_queue").await.is_ok() {
+                                    listener = new_listener;
+                                    info!("Reconnected to notification listener");
+                                }
+                            }
+                        }
+                    }
+                }
                 _ = poll_interval.tick() => {
+                    // Backup polling mechanism
                     if let Err(e) = self.process_batch().await {
-                        error!("Failed to process batch: {}", e);
+                        error!("Failed to process batch during backup poll: {}", e);
                     }
                 }
                 _ = heartbeat_interval.tick() => {
