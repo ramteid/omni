@@ -1,19 +1,19 @@
 mod common;
 
 use chrono::Utc;
-use clio_indexer::events::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use clio_indexer::processor::EventProcessor;
-use redis::AsyncCommands;
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use clio_indexer::QueueProcessor;
 use shared::db::repositories::DocumentRepository;
-use shared::CONNECTOR_EVENTS_CHANNEL;
+use shared::queue::EventQueue;
 use std::collections::HashMap;
 use tokio::time::{sleep, timeout, Duration};
 
 #[tokio::test]
-async fn test_event_processor_document_created() {
+async fn test_queue_processor_document_created() {
     let fixture = common::setup_test_fixture().await.unwrap();
 
-    let processor = EventProcessor::new(fixture.state.clone());
+    let processor = QueueProcessor::new(fixture.state.clone());
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
 
     let processor_handle = tokio::spawn(async move { processor.start().await });
 
@@ -45,17 +45,8 @@ async fn test_event_processor_document_created() {
         },
     };
 
-    let mut redis_conn = fixture
-        .state
-        .redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
-    let event_json = serde_json::to_string(&event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, event_json)
-        .await
-        .unwrap();
+    // Queue the event using PostgreSQL queue
+    event_queue.enqueue(&source_id, &event).await.unwrap();
 
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
     let document =
@@ -82,10 +73,11 @@ async fn test_event_processor_document_created() {
 }
 
 #[tokio::test]
-async fn test_event_processor_document_updated() {
+async fn test_queue_processor_document_updated() {
     let fixture = common::setup_test_fixture().await.unwrap();
 
-    let processor = EventProcessor::new(fixture.state.clone());
+    let processor = QueueProcessor::new(fixture.state.clone());
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
 
     let processor_handle = tokio::spawn(async move { processor.start().await });
 
@@ -116,17 +108,8 @@ async fn test_event_processor_document_updated() {
         },
     };
 
-    let mut redis_conn = fixture
-        .state
-        .redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
-    let create_json = serde_json::to_string(&create_event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, create_json)
-        .await
-        .unwrap();
+    // Queue the create event using PostgreSQL queue
+    event_queue.enqueue(&source_id, &create_event).await.unwrap();
 
     // Wait for document to be created before updating
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
@@ -161,11 +144,8 @@ async fn test_event_processor_document_updated() {
         }),
     };
 
-    let update_json = serde_json::to_string(&update_event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, update_json)
-        .await
-        .unwrap();
+    // Queue the update event using PostgreSQL queue
+    event_queue.enqueue(&source_id, &update_event).await.unwrap();
 
     // Wait for document to be updated (check for updated title)
     let updated_document = timeout(Duration::from_secs(5), async {
@@ -203,10 +183,11 @@ async fn test_event_processor_document_updated() {
 }
 
 #[tokio::test]
-async fn test_event_processor_document_deleted() {
+async fn test_queue_processor_document_deleted() {
     let fixture = common::setup_test_fixture().await.unwrap();
 
-    let processor = EventProcessor::new(fixture.state.clone());
+    let processor = QueueProcessor::new(fixture.state.clone());
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
 
     let processor_handle = tokio::spawn(async move { processor.start().await });
 
@@ -237,17 +218,8 @@ async fn test_event_processor_document_deleted() {
         },
     };
 
-    let mut redis_conn = fixture
-        .state
-        .redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
-    let create_json = serde_json::to_string(&create_event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, create_json)
-        .await
-        .unwrap();
+    // Queue the create event using PostgreSQL queue
+    event_queue.enqueue(&source_id, &create_event).await.unwrap();
 
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
     let _document =
@@ -260,11 +232,8 @@ async fn test_event_processor_document_deleted() {
         document_id: doc_id.to_string(),
     };
 
-    let delete_json = serde_json::to_string(&delete_event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, delete_json)
-        .await
-        .unwrap();
+    // Queue the delete event using PostgreSQL queue
+    event_queue.enqueue(&source_id, &delete_event).await.unwrap();
 
     common::wait_for_document_deleted(&repo, source_id, doc_id, Duration::from_secs(5))
         .await
@@ -274,21 +243,15 @@ async fn test_event_processor_document_deleted() {
 }
 
 #[tokio::test]
-async fn test_event_processor_multiple_events() {
+async fn test_queue_processor_multiple_events() {
     let fixture = common::setup_test_fixture().await.unwrap();
 
-    let processor = EventProcessor::new(fixture.state.clone());
+    let processor = QueueProcessor::new(fixture.state.clone());
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
 
     let processor_handle = tokio::spawn(async move { processor.start().await });
 
     sleep(Duration::from_millis(200)).await;
-
-    let mut redis_conn = fixture
-        .state
-        .redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
 
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
 
@@ -315,11 +278,8 @@ async fn test_event_processor_multiple_events() {
             },
         };
 
-        let event_json = serde_json::to_string(&event).unwrap();
-        let _: () = redis_conn
-            .publish(CONNECTOR_EVENTS_CHANNEL, event_json)
-            .await
-            .unwrap();
+        // Queue each event using PostgreSQL queue
+        event_queue.enqueue(&source_id, &event).await.unwrap();
     }
 
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
@@ -349,65 +309,60 @@ async fn test_event_processor_multiple_events() {
 }
 
 #[tokio::test]
-async fn test_event_processor_invalid_event_handling() {
+async fn test_queue_processor_batch_processing() {
     let fixture = common::setup_test_fixture().await.unwrap();
 
-    let processor = EventProcessor::new(fixture.state.clone());
+    let processor = QueueProcessor::new(fixture.state.clone());
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
 
     let processor_handle = tokio::spawn(async move { processor.start().await });
 
     sleep(Duration::from_millis(200)).await;
 
-    let mut redis_conn = fixture
-        .state
-        .redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
-
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, "invalid json")
-        .await
-        .unwrap();
-
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
-    let doc_id = "valid_doc";
 
-    let valid_event = ConnectorEvent::DocumentCreated {
-        source_id: source_id.to_string(),
-        document_id: doc_id.to_string(),
-        content: "Valid content".to_string(),
-        metadata: DocumentMetadata {
-            title: Some("Valid Document".to_string()),
-            author: None,
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
-            mime_type: None,
-            size: None,
-            url: None,
-            parent_id: None,
-            extra: HashMap::new(),
-        },
-        permissions: DocumentPermissions {
-            public: true,
-            users: vec![],
-            groups: vec![],
-        },
-    };
+    // Queue multiple events rapidly to test batch processing
+    for i in 0..15 {
+        let event = ConnectorEvent::DocumentCreated {
+            source_id: source_id.to_string(),
+            document_id: format!("batch_doc_{}", i),
+            content: format!("Batch content {}", i),
+            metadata: DocumentMetadata {
+                title: Some(format!("Batch Document {}", i)),
+                author: Some("Batch Author".to_string()),
+                created_at: Some(Utc::now()),
+                updated_at: Some(Utc::now()),
+                mime_type: Some("text/plain".to_string()),
+                size: Some(100),
+                url: None,
+                parent_id: None,
+                extra: HashMap::new(),
+            },
+            permissions: DocumentPermissions {
+                public: true,
+                users: vec![],
+                groups: vec![],
+            },
+        };
 
-    let valid_json = serde_json::to_string(&valid_event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, valid_json)
-        .await
-        .unwrap();
+        event_queue.enqueue(&source_id, &event).await.unwrap();
+    }
 
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
-    let document =
-        common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
-            .await
-            .expect("Valid document should be created despite previous error");
 
-    assert_eq!(document.title, "Valid Document");
+    // Wait for all documents to be processed
+    for i in 0..15 {
+        let document = common::wait_for_document_exists(
+            &repo,
+            source_id,
+            &format!("batch_doc_{}", i),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect(&format!("Batch document {} should exist", i));
+
+        assert_eq!(document.title, format!("Batch Document {}", i));
+    }
 
     processor_handle.abort();
 }

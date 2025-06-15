@@ -268,3 +268,32 @@ pub async fn wait_for_document_deleted(
         )),
     }
 }
+
+/// Wait for a document to exist with a specific title in the database with polling and timeout
+pub async fn wait_for_document_with_title(
+    repo: &DocumentRepository,
+    source_id: &str,
+    doc_id: &str,
+    expected_title: &str,
+    timeout_duration: Duration,
+) -> Result<Document, String> {
+    let result = timeout(timeout_duration, async {
+        loop {
+            if let Ok(Some(doc)) = repo.find_by_external_id(source_id, doc_id).await {
+                if doc.title == expected_title {
+                    return doc;
+                }
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    match result {
+        Ok(doc) => Ok(doc),
+        Err(_) => Err(format!(
+            "Document {}:{} with title '{}' not found within timeout",
+            source_id, doc_id, expected_title
+        )),
+    }
+}

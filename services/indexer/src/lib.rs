@@ -1,10 +1,8 @@
 pub mod error;
-pub mod processor;
 pub mod queue_processor;
 
 pub use error::{IndexerError, Result};
 pub use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-pub use processor::EventProcessor;
 pub use queue_processor::QueueProcessor;
 
 pub use axum::Router;

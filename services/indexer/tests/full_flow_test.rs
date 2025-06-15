@@ -1,11 +1,10 @@
 mod common;
 
 use chrono::Utc;
-use clio_indexer::events::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use clio_indexer::processor::EventProcessor;
-use redis::AsyncCommands;
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use clio_indexer::QueueProcessor;
 use shared::db::repositories::DocumentRepository;
-use shared::CONNECTOR_EVENTS_CHANNEL;
+use shared::queue::EventQueue;
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
@@ -14,24 +13,19 @@ async fn test_full_indexing_flow() {
     let fixture = common::setup_test_fixture().await.unwrap();
     let server = axum_test::TestServer::new(fixture.app().clone()).unwrap();
 
-    // Start event processor
-    let processor = EventProcessor::new(fixture.state.clone());
+    // Start queue processor
+    let processor = QueueProcessor::new(fixture.state.clone());
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
     let processor_handle = tokio::spawn(async move { processor.start().await });
 
     // Give processor time to start
     sleep(Duration::from_millis(100)).await;
 
-    // Simulate connector publishing events
-    let mut redis_conn = fixture
-        .state
-        .redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap();
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
 
     // 1. Create document via event
     let create_event = ConnectorEvent::DocumentCreated {
-        source_id: "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(), // Use the source ID from seed data
+        source_id: source_id.to_string(),
         document_id: "flow_doc_1".to_string(),
         content: "This is a complete flow test document".to_string(),
         metadata: DocumentMetadata {
@@ -50,59 +44,60 @@ async fn test_full_indexing_flow() {
         },
         permissions: DocumentPermissions {
             public: false,
-            users: vec!["user1".to_string(), "user2".to_string()],
-            groups: vec!["developers".to_string()],
+            users: vec!["test_user".to_string()],
+            groups: vec!["test_group".to_string()],
         },
     };
 
-    let event_json = serde_json::to_string(&create_event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, event_json)
-        .await
-        .unwrap();
+    // Queue the create event using PostgreSQL queue
+    event_queue.enqueue(&source_id, &create_event).await.unwrap();
 
-    // 2. Wait for document to be created and query via REST API
+    // Wait for document to be processed
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
-    let doc = common::wait_for_document_exists(
+    let document = common::wait_for_document_exists(
         &repo,
-        "01JGF7V3E0Y2R1X8P5Q7W9T4N7",
+        source_id,
         "flow_doc_1",
         Duration::from_secs(5),
     )
     .await
-    .expect("Document should be created via event");
+    .expect("Document should be created via event processing");
 
-    let response = server.get(&format!("/documents/{}", doc.id)).await;
-    assert_eq!(response.status_code(), axum::http::StatusCode::OK);
+    // 2. Verify document was created correctly
+    assert_eq!(document.title, "Flow Test Document");
+    assert_eq!(document.content, Some("This is a complete flow test document".to_string()));
+    assert_eq!(document.source_id, source_id);
+    assert_eq!(document.external_id, "flow_doc_1");
 
-    let fetched_doc: shared::models::Document = response.json();
-    assert_eq!(fetched_doc.title, "Flow Test Document");
-    assert_eq!(
-        fetched_doc.content,
-        Some("This is a complete flow test document".to_string())
-    );
+    let metadata = document.metadata.as_object().unwrap();
+    assert_eq!(metadata["author"].as_str().unwrap(), "Integration Test");
+    assert_eq!(metadata["category"].as_str().unwrap(), "test");
+    assert_eq!(metadata["priority"].as_str().unwrap(), "high");
 
-    // 3. Update via REST API
-    let update_request = serde_json::json!({
-        "title": "Updated Flow Test Document",
-        "content": "This content has been updated via REST API"
-    });
+    let permissions = document.permissions.as_object().unwrap();
+    assert_eq!(permissions["public"].as_bool().unwrap(), false);
+    assert_eq!(permissions["users"].as_array().unwrap().len(), 1);
+    assert_eq!(permissions["groups"].as_array().unwrap().len(), 1);
 
-    let update_response = server
-        .put(&format!("/documents/{}", doc.id))
-        .json(&update_request)
+    // 3. Test document retrieval via API
+    let response = server
+        .get(&format!("/documents/{}", document.id))
         .await;
 
-    assert_eq!(update_response.status_code(), axum::http::StatusCode::OK);
+    assert_eq!(response.status_code(), 200);
 
-    // 4. Update via event
+    let returned_doc: shared::models::Document = response.json();
+    assert_eq!(returned_doc.id, document.id);
+    assert_eq!(returned_doc.title, "Flow Test Document");
+
+    // 4. Update document via event
     let update_event = ConnectorEvent::DocumentUpdated {
-        source_id: "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(), // Use the source ID from seed data
+        source_id: source_id.to_string(),
         document_id: "flow_doc_1".to_string(),
-        content: "Final content updated via event".to_string(),
+        content: "This is updated content for the flow test".to_string(),
         metadata: DocumentMetadata {
-            title: Some("Final Flow Test Document".to_string()),
-            author: Some("Event Processor".to_string()),
+            title: Some("Updated Flow Test Document".to_string()),
+            author: Some("Integration Test Updated".to_string()),
             created_at: None,
             updated_at: Some(Utc::now()),
             mime_type: Some("text/markdown".to_string()),
@@ -111,72 +106,154 @@ async fn test_full_indexing_flow() {
             parent_id: None,
             extra: HashMap::from([
                 ("category".to_string(), serde_json::json!("test")),
-                ("priority".to_string(), serde_json::json!("critical")),
-                ("version".to_string(), serde_json::json!(2)),
+                ("priority".to_string(), serde_json::json!("medium")),
+                ("status".to_string(), serde_json::json!("updated")),
             ]),
         },
-        permissions: None,
+        permissions: Some(DocumentPermissions {
+            public: true,
+            users: vec!["test_user".to_string(), "admin_user".to_string()],
+            groups: vec!["test_group".to_string(), "admin_group".to_string()],
+        }),
     };
 
-    let update_json = serde_json::to_string(&update_event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, update_json)
-        .await
-        .unwrap();
+    // Queue the update event using PostgreSQL queue
+    event_queue.enqueue(&source_id, &update_event).await.unwrap();
 
-    // 5. Wait for update and verify final state
-    let final_doc = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let response = server.get(&format!("/documents/{}", doc.id)).await;
-            let doc: shared::models::Document = response.json();
-            if doc.title == "Final Flow Test Document" {
-                return doc;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    // Wait for document to be updated
+    let updated_document = common::wait_for_document_with_title(
+        &repo,
+        source_id,
+        "flow_doc_1",
+        "Updated Flow Test Document",
+        Duration::from_secs(5),
+    )
     .await
-    .expect("Document should be updated");
+    .expect("Document should be updated via event processing");
 
-    assert_eq!(final_doc.title, "Final Flow Test Document");
-    assert_eq!(
-        final_doc.content,
-        Some("Final content updated via event".to_string())
-    );
+    // 5. Verify document was updated correctly
+    assert_eq!(updated_document.title, "Updated Flow Test Document");
+    assert_eq!(updated_document.content, Some("This is updated content for the flow test".to_string()));
+    assert_eq!(updated_document.id, document.id); // Same document ID
 
-    let metadata = final_doc.metadata.as_object().unwrap();
-    assert_eq!(metadata["author"].as_str().unwrap(), "Event Processor");
-    assert_eq!(metadata["mime_type"].as_str().unwrap(), "text/markdown");
-    let extra = metadata["extra"].as_object().unwrap();
-    assert_eq!(extra["version"].as_i64().unwrap(), 2);
+    let updated_metadata = updated_document.metadata.as_object().unwrap();
+    assert_eq!(updated_metadata["author"].as_str().unwrap(), "Integration Test Updated");
+    assert_eq!(updated_metadata["priority"].as_str().unwrap(), "medium");
+    assert_eq!(updated_metadata["status"].as_str().unwrap(), "updated");
 
-    // 6. Clean up via event
+    let updated_permissions = updated_document.permissions.as_object().unwrap();
+    assert_eq!(updated_permissions["public"].as_bool().unwrap(), true);
+    assert_eq!(updated_permissions["users"].as_array().unwrap().len(), 2);
+    assert_eq!(updated_permissions["groups"].as_array().unwrap().len(), 2);
+
+    // 6. Test updated document retrieval via API
+    let updated_response = server
+        .get(&format!("/documents/{}", document.id))
+        .await;
+
+    assert_eq!(updated_response.status_code(), 200);
+
+    let updated_returned_doc: shared::models::Document = updated_response.json();
+    assert_eq!(updated_returned_doc.title, "Updated Flow Test Document");
+    assert_eq!(updated_returned_doc.content, Some("This is updated content for the flow test".to_string()));
+
+    // 7. Delete document via event
     let delete_event = ConnectorEvent::DocumentDeleted {
-        source_id: "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(), // Use the source ID from seed data
+        source_id: source_id.to_string(),
         document_id: "flow_doc_1".to_string(),
     };
 
-    let delete_json = serde_json::to_string(&delete_event).unwrap();
-    let _: () = redis_conn
-        .publish(CONNECTOR_EVENTS_CHANNEL, delete_json)
-        .await
-        .unwrap();
+    // Queue the delete event using PostgreSQL queue
+    event_queue.enqueue(&source_id, &delete_event).await.unwrap();
 
-    // Wait for deletion and verify
+    // Wait for document to be deleted
     common::wait_for_document_deleted(
         &repo,
-        "01JGF7V3E0Y2R1X8P5Q7W9T4N7",
+        source_id,
         "flow_doc_1",
         Duration::from_secs(5),
     )
     .await
-    .expect("Document should be deleted");
+    .expect("Document should be deleted via event processing");
 
-    let deleted_response = server.get(&format!("/documents/{}", doc.id)).await;
-    assert_eq!(
-        deleted_response.status_code(),
-        axum::http::StatusCode::NOT_FOUND
-    );
+    // 8. Verify document is no longer accessible via API
+    let deleted_response = server
+        .get(&format!("/documents/{}", document.id))
+        .await;
+
+    assert_eq!(deleted_response.status_code(), 404);
+
+    processor_handle.abort();
+}
+
+#[tokio::test]
+async fn test_concurrent_event_processing() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+
+    // Start queue processor
+    let processor = QueueProcessor::new(fixture.state.clone());
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
+    let processor_handle = tokio::spawn(async move { processor.start().await });
+
+    // Give processor time to start
+    sleep(Duration::from_millis(100)).await;
+
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
+
+    // Queue multiple events concurrently
+    let mut handles = vec![];
+    for i in 0..20 {
+        let queue = event_queue.clone();
+        let src_id = source_id.to_string();
+        let handle = tokio::spawn(async move {
+            let event = ConnectorEvent::DocumentCreated {
+                source_id: src_id.clone(),
+                document_id: format!("concurrent_doc_{}", i),
+                content: format!("Concurrent content {}", i),
+                metadata: DocumentMetadata {
+                    title: Some(format!("Concurrent Document {}", i)),
+                    author: Some("Concurrent Test".to_string()),
+                    created_at: Some(Utc::now()),
+                    updated_at: Some(Utc::now()),
+                    mime_type: Some("text/plain".to_string()),
+                    size: Some(100),
+                    url: None,
+                    parent_id: None,
+                    extra: HashMap::new(),
+                },
+                permissions: DocumentPermissions {
+                    public: true,
+                    users: vec![],
+                    groups: vec![],
+                },
+            };
+
+            queue.enqueue(&src_id, &event).await.unwrap();
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all events to be queued
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    let repo = DocumentRepository::new(fixture.state.db_pool.pool());
+
+    // Wait for all documents to be processed
+    for i in 0..20 {
+        let document = common::wait_for_document_exists(
+            &repo,
+            source_id,
+            &format!("concurrent_doc_{}", i),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect(&format!("Concurrent document {} should exist", i));
+
+        assert_eq!(document.title, format!("Concurrent Document {}", i));
+        assert_eq!(document.content, Some(format!("Concurrent content {}", i)));
+    }
 
     processor_handle.abort();
 }
