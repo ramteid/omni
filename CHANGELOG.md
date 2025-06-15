@@ -78,4 +78,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Admin integrations management page at /admin/integrations with organization-wide data source control
   - Modified OAuth flow to support org-level connections instead of per-user, with admin-only access controls
   - User settings page at /settings/integrations for read-only view of connected data sources
+- Switched from using Redis PubSub to Postgres table as message queue for indexing task processing
 

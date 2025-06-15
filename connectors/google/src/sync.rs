@@ -7,13 +7,14 @@ use tracing::{debug, error, info, warn};
 use crate::auth::{AuthManager, OAuthCredentials};
 use crate::drive::DriveClient;
 use shared::models::{ConnectorEvent, Source, SourceType};
-use shared::CONNECTOR_EVENTS_CHANNEL;
+use shared::queue::EventQueue;
 
 pub struct SyncManager {
     pool: PgPool,
     redis_client: RedisClient,
     auth_manager: AuthManager,
     drive_client: DriveClient,
+    event_queue: EventQueue,
 }
 
 pub struct SyncState {
@@ -45,23 +46,13 @@ impl SyncState {
         self.set_file_sync_state_with_expiry(source_id, file_id, modified_time, 30 * 24 * 60 * 60).await
     }
 
-    #[cfg(test)]
-    pub async fn set_file_sync_state_with_expiry(&self, source_id: &str, file_id: &str, modified_time: &str, expiry_seconds: u64) -> Result<()> {
+    async fn set_file_sync_state_with_expiry(&self, source_id: &str, file_id: &str, modified_time: &str, expiry_seconds: u64) -> Result<()> {
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let key = if cfg!(test) {
             self.get_test_file_sync_key(source_id, file_id)
         } else {
             self.get_file_sync_key(source_id, file_id)
         };
-        
-        let _: () = conn.set_ex(&key, modified_time, expiry_seconds).await?;
-        Ok(())
-    }
-
-    #[cfg(not(test))]
-    async fn set_file_sync_state_with_expiry(&self, source_id: &str, file_id: &str, modified_time: &str, expiry_seconds: u64) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_file_sync_key(source_id, file_id);
         
         let _: () = conn.set_ex(&key, modified_time, expiry_seconds).await?;
         Ok(())
@@ -107,12 +98,14 @@ impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
         let client_id = std::env::var("GOOGLE_CLIENT_ID")?;
         let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
+        let event_queue = EventQueue::new(pool.clone());
 
         Ok(Self {
             pool,
             redis_client,
             auth_manager: AuthManager::new(client_id, client_secret),
             drive_client: DriveClient::new(),
+            event_queue,
         })
     }
 
@@ -223,11 +216,18 @@ impl SyncManager {
                                         source.id.clone(),
                                         content,
                                     );
-                                    self.publish_connector_event(event).await?;
-                                    updated_count += 1;
-
-                                    if let Some(modified_time) = &file.modified_time {
-                                        sync_state.set_file_sync_state(&source.id, &file.id, modified_time).await?;
+                                    
+                                    // Only update sync state if event was successfully queued
+                                    match self.publish_connector_event(event).await {
+                                        Ok(_) => {
+                                            updated_count += 1;
+                                            if let Some(modified_time) = &file.modified_time {
+                                                sync_state.set_file_sync_state(&source.id, &file.id, modified_time).await?;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to queue event for file {}: {}", file.name, e);
+                                        }
                                     }
                                 }
                             }
@@ -276,10 +276,8 @@ impl SyncManager {
 
 
     async fn publish_connector_event(&self, event: ConnectorEvent) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-
-        conn.publish::<_, _, ()>(CONNECTOR_EVENTS_CHANNEL, serde_json::to_string(&event)?)
-            .await?;
+        let source_id = event.source_id();
+        self.event_queue.enqueue(source_id, &event).await?;
         Ok(())
     }
 

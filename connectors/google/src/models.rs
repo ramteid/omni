@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use sqlx::types::time::{self, OffsetDateTime};
 use std::collections::HashMap;
 
 
@@ -51,8 +50,8 @@ impl GoogleDriveFile {
         let metadata = DocumentMetadata {
             title: Some(self.name.clone()),
             author: None,
-            created_at: self.created_time.as_ref().and_then(|t| OffsetDateTime::parse(t, &time::format_description::well_known::Iso8601::DEFAULT).ok()),
-            updated_at: self.modified_time.as_ref().and_then(|t| OffsetDateTime::parse(t, &time::format_description::well_known::Iso8601::DEFAULT).ok()),
+            created_at: None, // TODO: Parse Google timestamps
+            updated_at: None, // TODO: Parse Google timestamps
             mime_type: Some(self.mime_type.clone()),
             size: self.size.clone(),
             url: self.web_view_link.clone(),

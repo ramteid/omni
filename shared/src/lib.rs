@@ -3,6 +3,7 @@ pub mod config;
 pub mod constants;
 pub mod db;
 pub mod models;
+pub mod queue;
 pub mod traits;
 
 pub mod test_utils;
@@ -15,6 +16,7 @@ pub use db::repositories::{
 };
 pub use db::{DatabaseError, DatabasePool};
 pub use models::*;
+pub use queue::{EventQueue, QueueStats};
 pub use traits::Repository;
 
 pub fn init() {

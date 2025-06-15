@@ -1,10 +1,11 @@
 pub mod error;
-pub mod events;
 pub mod processor;
+pub mod queue_processor;
 
 pub use error::{IndexerError, Result};
 pub use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 pub use processor::EventProcessor;
+pub use queue_processor::QueueProcessor;
 
 pub use axum::Router;
 pub use redis::Client as RedisClient;
@@ -401,10 +402,10 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     let app = create_app(app_state.clone());
 
-    let processor = processor::EventProcessor::new(app_state.clone());
+    let queue_processor = queue_processor::QueueProcessor::new(app_state.clone());
     let processor_handle = tokio::spawn(async move {
-        if let Err(e) = processor.start().await {
-            error!("Event processor failed: {}", e);
+        if let Err(e) = queue_processor.start().await {
+            error!("Queue processor failed: {}", e);
         }
     });
 

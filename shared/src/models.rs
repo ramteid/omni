@@ -167,3 +167,28 @@ impl ConnectorEvent {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+pub enum EventStatus {
+    Pending,
+    Processing,
+    Completed,
+    Failed,
+    #[serde(rename = "dead_letter")]
+    DeadLetter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ConnectorEventQueueItem {
+    pub id: String,
+    pub source_id: String,
+    pub event_type: String,
+    pub payload: JsonValue,
+    pub status: EventStatus,
+    pub retry_count: i32,
+    pub max_retries: i32,
+    pub created_at: OffsetDateTime,
+    pub processed_at: Option<OffsetDateTime>,
+    pub error_message: Option<String>,
+}
