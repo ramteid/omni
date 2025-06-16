@@ -4,6 +4,7 @@ import { eq, count } from 'drizzle-orm'
 import { db } from '$lib/server/db/index.js'
 import { user } from '$lib/server/db/schema.js'
 import { ulid } from 'ulid'
+import { generateSessionToken, createSession, setSessionTokenCookie } from '$lib/server/auth.js'
 import type { Actions, PageServerLoad } from './$types.js'
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -14,7 +15,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 }
 
 export const actions: Actions = {
-    default: async ({ request }) => {
+    default: async ({ request, cookies }) => {
         const formData = await request.formData()
         const email = formData.get('email') as string
         const password = formData.get('password') as string
@@ -90,8 +91,9 @@ export const actions: Actions = {
             })
 
             // Create user
+            const newUserId = ulid()
             await db.insert(user).values({
-                id: ulid(),
+                id: newUserId,
                 email: email.toLowerCase(),
                 passwordHash,
                 role: isFirstUser ? 'admin' : 'user',
@@ -99,12 +101,10 @@ export const actions: Actions = {
                 createdAt: new Date(),
             })
 
-            return {
-                success: true,
-                message: isFirstUser
-                    ? 'Account created successfully! You can now sign in as the admin.'
-                    : 'Account created successfully! You can now sign in.',
-            }
+            // Create session and log the user in
+            const sessionToken = generateSessionToken()
+            const session = await createSession(sessionToken, newUserId)
+            setSessionTokenCookie(cookies, sessionToken, session.expiresAt)
         } catch (error) {
             console.error('Registration error:', error)
             return fail(500, {
@@ -112,5 +112,8 @@ export const actions: Actions = {
                 email,
             })
         }
+
+        // Redirect to home page after successful signup and login
+        throw redirect(302, '/')
     },
 }
