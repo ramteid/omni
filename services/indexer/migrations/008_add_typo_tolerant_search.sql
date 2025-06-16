@@ -9,7 +9,7 @@ WHERE length(word) >= 3  -- Only include words with 3+ characters
 ORDER BY ndoc DESC;
 
 -- Create indexes for efficient lookups
-CREATE INDEX IF NOT EXISTS idx_unique_lexemes_word ON unique_lexemes(word);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_lexemes_word ON unique_lexemes(word);
 CREATE INDEX IF NOT EXISTS idx_unique_lexemes_word_lower ON unique_lexemes(lower(word));
 
 -- Create function to refresh the materialized view
