@@ -22,6 +22,8 @@ pub struct SearcherConfig {
     pub typo_tolerance_enabled: bool,
     pub typo_tolerance_max_distance: i32,
     pub typo_tolerance_min_word_length: usize,
+    pub hybrid_search_fts_weight: f32,
+    pub hybrid_search_semantic_weight: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +191,22 @@ impl SearcherConfig {
                     process::exit(1);
                 });
 
+        let hybrid_search_fts_weight = get_optional_env("HYBRID_SEARCH_FTS_WEIGHT", "0.6")
+            .parse::<f32>()
+            .unwrap_or_else(|_| {
+                eprintln!("ERROR: Invalid value for HYBRID_SEARCH_FTS_WEIGHT");
+                eprintln!("Must be a float between 0.0 and 1.0");
+                process::exit(1);
+            });
+
+        let hybrid_search_semantic_weight = get_optional_env("HYBRID_SEARCH_SEMANTIC_WEIGHT", "0.4")
+            .parse::<f32>()
+            .unwrap_or_else(|_| {
+                eprintln!("ERROR: Invalid value for HYBRID_SEARCH_SEMANTIC_WEIGHT");
+                eprintln!("Must be a float between 0.0 and 1.0");
+                process::exit(1);
+            });
+
         Self {
             database,
             redis,
@@ -197,6 +215,8 @@ impl SearcherConfig {
             typo_tolerance_enabled,
             typo_tolerance_max_distance,
             typo_tolerance_min_word_length,
+            hybrid_search_fts_weight,
+            hybrid_search_semantic_weight,
         }
     }
 }

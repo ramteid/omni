@@ -5,7 +5,8 @@
     import { Input } from '$lib/components/ui/input/index.js'
     import { Search, FileText, Calendar, User, Filter } from '@lucide/svelte'
     import type { PageData } from './$types.js'
-    import type { SearchResponse } from '$lib/types/search.js'
+    import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
+    import AIAnswer from '$lib/components/AIAnswer.svelte'
 
     let { data }: { data: PageData } = $props()
 
@@ -165,7 +166,7 @@
             </div>
         </div>
 
-        {#if filteredResults}
+        {#if filteredResults && data.searchResults}
             <div class="text-sm text-gray-600">
                 Found {filteredResults.total_count} results in {data.searchResults.query_time_ms}ms for "{data.searchResults.query}"
                 {#if getTotalSelectedFilters() > 0}
@@ -227,6 +228,16 @@
         </div>
     {/if}
 
+    <!-- AI Answer Section -->
+    {#if filteredResults && searchQuery.trim()}
+        <AIAnswer searchRequest={{
+            query: searchQuery,
+            limit: 20,
+            offset: 0,
+            mode: 'hybrid'
+        }} />
+    {/if}
+
     <div class="flex gap-6">
         <!-- Search Results -->
         <div class="flex-1">
@@ -286,7 +297,7 @@
                     </div>
 
                     <!-- Pagination -->
-                    {#if data.searchResults.has_more}
+                    {#if data.searchResults?.has_more}
                         <div class="mt-8 text-center">
                             <Button variant="outline">Load More Results</Button>
                         </div>

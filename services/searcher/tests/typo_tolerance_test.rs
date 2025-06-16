@@ -15,6 +15,7 @@ mod tests {
                 original: "orginal".to_string(),
                 corrected: "original".to_string(),
             }]),
+            facets: vec![],
         };
 
         assert_eq!(response.corrected_query, Some("original query".to_string()));
@@ -37,6 +38,7 @@ mod tests {
             query: "correct query".to_string(),
             corrected_query: None,
             corrections: None,
+            facets: vec![],
         };
 
         assert!(response.corrected_query.is_none());
@@ -69,6 +71,7 @@ mod tests {
             query: "test".to_string(),
             corrected_query: None,
             corrections: None,
+            facets: vec![],
         };
 
         let json = serde_json::to_string(&response).unwrap();

@@ -69,6 +69,7 @@ pub fn create_app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health_check))
         .route("/search", post(handlers::search))
+        .route("/search/ai-answer", post(handlers::ai_answer))
         .route("/suggestions", get(handlers::suggestions))
         .layer(
             ServiceBuilder::new()

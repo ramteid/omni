@@ -4,9 +4,10 @@ use axum::{
     http::{Method, Request, StatusCode},
     Router,
 };
-use searcher::{create_app, AppState};
+use clio_searcher::{create_app, AppState};
 use serde_json::{json, Value};
 use shared::test_utils::{create_test_documents_with_embeddings, BaseTestFixture};
+use shared::{AIClient, SearcherConfig};
 use std::env;
 use tower::ServiceExt;
 
@@ -23,9 +24,25 @@ impl SearcherTestFixture {
 
         let base = BaseTestFixture::new().await?;
 
+        // Create test AI client and config
+        let ai_client = AIClient::new("http://localhost:8000".to_string());
+        let config = SearcherConfig {
+            port: 8002,
+            database: base.database_config().clone(),
+            redis: base.redis_config().clone(),
+            ai_service_url: "http://localhost:8000".to_string(),
+            typo_tolerance_enabled: true,
+            typo_tolerance_max_distance: 2,
+            typo_tolerance_min_word_length: 4,
+            hybrid_search_fts_weight: 0.6,
+            hybrid_search_semantic_weight: 0.4,
+        };
+
         let app_state = AppState {
-            db_pool: base.db_pool().pool().clone(),
+            db_pool: base.db_pool().clone(),
             redis_client: base.redis_client().clone(),
+            ai_client,
+            config,
         };
 
         let app = create_app(app_state);

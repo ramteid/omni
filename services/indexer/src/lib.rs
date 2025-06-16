@@ -11,6 +11,7 @@ pub use redis::Client as RedisClient;
 pub use serde::{Deserialize, Serialize};
 pub use serde_json::Value;
 pub use shared::db::pool::DatabasePool;
+pub use shared::AIClient;
 
 use axum::{
     extract::{Path, State},
@@ -31,6 +32,7 @@ use ulid::Ulid;
 pub struct AppState {
     pub db_pool: DatabasePool,
     pub redis_client: RedisClient,
+    pub ai_client: AIClient,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -394,9 +396,13 @@ pub async fn run_server() -> anyhow::Result<()> {
     let redis_client = RedisClient::open(config.redis.redis_url)?;
     info!("Redis client initialized");
 
+    let ai_client = AIClient::new(config.ai_service_url.clone());
+    info!("AI client initialized");
+
     let app_state = AppState {
         db_pool,
         redis_client,
+        ai_client,
     };
 
     let app = create_app(app_state.clone());

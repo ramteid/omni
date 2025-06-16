@@ -65,6 +65,8 @@ pub struct Document {
 pub struct Embedding {
     pub id: String,
     pub document_id: String,
+    pub chunk_index: i32,
+    pub chunk_text: String,
     pub embedding: Vector,
     pub model_name: String,
     pub created_at: OffsetDateTime,
@@ -167,6 +169,73 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentUpdated { document_id, .. } => document_id,
             ConnectorEvent::DocumentDeleted { document_id, .. } => document_id,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DocumentChunk {
+    pub text: String,
+    pub index: i32,
+}
+
+impl Document {
+    /// Chunk document content into smaller pieces for embedding generation
+    pub fn chunk_content(&self, max_chunk_size: usize) -> Vec<DocumentChunk> {
+        let content = match &self.content {
+            Some(content) => content,
+            None => return vec![], // No content to chunk
+        };
+
+        if content.len() <= max_chunk_size {
+            return vec![DocumentChunk {
+                text: content.clone(),
+                index: 0,
+            }];
+        }
+
+        let mut chunks = Vec::new();
+        let mut current_pos = 0;
+        let mut chunk_index = 0;
+
+        while current_pos < content.len() {
+            let end_pos = std::cmp::min(current_pos + max_chunk_size, content.len());
+            
+            // Try to break at sentence boundaries for better semantic coherence
+            let chunk_text = if end_pos < content.len() {
+                // Look for sentence endings within the last 100 characters
+                let search_start = std::cmp::max(current_pos, end_pos.saturating_sub(100));
+                let search_slice = &content[search_start..end_pos];
+                
+                if let Some(sentence_end) = search_slice.rfind('.') {
+                    let actual_end = search_start + sentence_end + 1;
+                    content[current_pos..actual_end].to_string()
+                } else if let Some(paragraph_end) = search_slice.rfind('\n') {
+                    let actual_end = search_start + paragraph_end + 1;
+                    content[current_pos..actual_end].to_string()
+                } else {
+                    // Fallback to character boundary
+                    content[current_pos..end_pos].to_string()
+                }
+            } else {
+                content[current_pos..end_pos].to_string()
+            };
+
+            let chunk_end = current_pos + chunk_text.len();
+            chunks.push(DocumentChunk {
+                text: chunk_text,
+                index: chunk_index,
+            });
+
+            current_pos = chunk_end;
+            chunk_index += 1;
+
+            // Prevent infinite loops
+            if current_pos >= content.len() {
+                break;
+            }
+        }
+
+        chunks
     }
 }
 

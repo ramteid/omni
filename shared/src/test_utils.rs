@@ -41,6 +41,23 @@ impl BaseTestFixture {
         &self.redis_client
     }
 
+    /// Get database config for tests
+    pub fn database_config(&self) -> crate::config::DatabaseConfig {
+        crate::config::DatabaseConfig {
+            database_url: format!("postgresql://clio:clio_password@localhost:5432/{}", &self.db_name),
+            max_connections: 5,
+            acquire_timeout_seconds: 30,
+        }
+    }
+
+    /// Get Redis config for tests  
+    pub fn redis_config(&self) -> crate::config::RedisConfig {
+        crate::config::RedisConfig {
+            redis_url: env::var("REDIS_URL")
+                .unwrap_or_else(|_| "redis://localhost:6379/1".to_string()),
+        }
+    }
+
     /// Manually cleanup the test database (automatically called on drop)
     pub async fn cleanup(&self) -> Result<()> {
         let base_url = env::var("DATABASE_URL")
@@ -391,8 +408,8 @@ pub async fn create_test_documents_with_embeddings(pool: &PgPool) -> Result<Vec<
         // In real usage, documents would be split into chunks
         sqlx::query(
             r#"
-            INSERT INTO embeddings (id, document_id, chunk_index, chunk_text, embedding, created_at)
-            VALUES ($1, $2, $3, $4, $5, NOW())
+            INSERT INTO embeddings (id, document_id, chunk_index, chunk_text, embedding, model_name, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
             "#,
         )
         .bind(embedding_id)
@@ -400,6 +417,7 @@ pub async fn create_test_documents_with_embeddings(pool: &PgPool) -> Result<Vec<
         .bind(0) // chunk_index
         .bind("Sample chunk text for testing") // chunk_text
         .bind(embedding)
+        .bind("intfloat/e5-large-v2") // model_name
         .execute(pool)
         .await?;
     }

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use searcher::models::{SearchMode, SearchRequest};
+    use clio_searcher::models::{SearchMode, SearchRequest};
 
     #[test]
     fn test_search_request_defaults() {
@@ -11,6 +11,7 @@ mod tests {
             limit: None,
             offset: None,
             mode: None,
+            include_facets: None,
         };
 
         assert_eq!(request.limit(), 20);
@@ -27,6 +28,7 @@ mod tests {
             limit: Some(200),
             offset: Some(-10),
             mode: None,
+            include_facets: None,
         };
 
         assert_eq!(request.limit(), 100); // Should be capped at 100
@@ -49,6 +51,7 @@ mod tests {
                 limit: None,
                 offset: None,
                 mode: Some(mode.clone()),
+                include_facets: None,
             };
 
             match (request.search_mode(), &mode) {
@@ -62,7 +65,7 @@ mod tests {
 
     #[test]
     fn test_suggestions_query_defaults() {
-        use searcher::models::SuggestionsQuery;
+        use clio_searcher::models::SuggestionsQuery;
 
         let query = SuggestionsQuery {
             q: "test".to_string(),
@@ -74,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_suggestions_query_limit_cap() {
-        use searcher::models::SuggestionsQuery;
+        use clio_searcher::models::SuggestionsQuery;
 
         let query = SuggestionsQuery {
             q: "test".to_string(),

@@ -15,7 +15,7 @@ export const load = async ({ url, fetch }) => {
             query: query.trim(),
             limit: 20,
             offset: 0,
-            mode: 'fulltext'
+            mode: 'hybrid'
         }
 
         const response = await fetch(`${SEARCHER_URL}/search`, {

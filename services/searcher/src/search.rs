@@ -261,7 +261,7 @@ impl SearchEngine {
                 doc_id,
                 SearchResult {
                     document: self.truncate_document_content(result.document),
-                    score: normalized_score * 0.6, // Weight FTS at 60%
+                    score: normalized_score * self.config.hybrid_search_fts_weight,
                     highlights: result.highlights,
                     match_type: "hybrid".to_string(),
                 },
@@ -271,12 +271,11 @@ impl SearchEngine {
         // Add or update with semantic results
         for result in semantic_results {
             let doc_id = result.document.id.clone();
-            let semantic_weight = 0.4; // Weight semantic at 40%
 
             match combined_results.get_mut(&doc_id) {
                 Some(existing) => {
                     // Combine scores for documents found in both searches
-                    existing.score += result.score * semantic_weight;
+                    existing.score += result.score * self.config.hybrid_search_semantic_weight;
                 }
                 None => {
                     // Add new semantic-only result
@@ -284,7 +283,7 @@ impl SearchEngine {
                         doc_id,
                         SearchResult {
                             document: self.truncate_document_content(result.document),
-                            score: result.score * semantic_weight,
+                            score: result.score * self.config.hybrid_search_semantic_weight,
                             highlights: result.highlights,
                             match_type: "hybrid".to_string(),
                         },
@@ -445,5 +444,49 @@ impl SearchEngine {
             suggestions,
             query: query.to_string(),
         })
+    }
+
+    /// Generate RAG context from search request by running hybrid search
+    pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
+        info!("Generating RAG context for query: '{}'", request.query);
+        
+        // Always use hybrid search for RAG to get best context
+        let (results, _) = self.hybrid_search(request).await?;
+        
+        // Take top 5 results for RAG context
+        let context_results: Vec<SearchResult> = results.into_iter().take(5).collect();
+        
+        info!("Generated RAG context with {} documents", context_results.len());
+        Ok(context_results)
+    }
+
+    /// Build RAG prompt with context documents and citation instructions
+    pub fn build_rag_prompt(&self, query: &str, context: &[SearchResult]) -> String {
+        let mut prompt = String::new();
+        
+        prompt.push_str("You are a helpful AI assistant that answers questions based on the provided context documents. ");
+        prompt.push_str("Please provide a comprehensive answer using the information from the documents. ");
+        prompt.push_str("When referencing information from a document, cite it using the format [Source: Document Title]. ");
+        prompt.push_str("If the context doesn't contain enough information to answer the question, say so.\n\n");
+        
+        prompt.push_str("Context Documents:\n");
+        for (i, result) in context.iter().enumerate() {
+            prompt.push_str(&format!("Document {}: {}\n", i + 1, result.document.title));
+            if let Some(content) = &result.document.content {
+                // Truncate content for context (keep more than search results)
+                let truncated_content = if content.len() > 2000 {
+                    format!("{}...", &content[..2000])
+                } else {
+                    content.clone()
+                };
+                prompt.push_str(&format!("Content: {}\n", truncated_content));
+            }
+            prompt.push_str("\n");
+        }
+        
+        prompt.push_str(&format!("Question: {}\n\n", query));
+        prompt.push_str("Answer:");
+        
+        prompt
     }
 }

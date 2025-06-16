@@ -1,11 +1,13 @@
 import os
 import sys
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
 import asyncio
 import httpx
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 from embeddings import (
@@ -96,6 +98,7 @@ class PromptRequest(BaseModel):
     max_tokens: Optional[int] = 512
     temperature: Optional[float] = 0.7
     top_p: Optional[float] = 0.9
+    stream: Optional[bool] = True
 
 
 class PromptResponse(BaseModel):
@@ -167,33 +170,111 @@ async def rag_inference(request: RAGRequest):
     )
 
 
-@app.post("/prompt", response_model=PromptResponse)
+@app.post("/prompt")
 async def generate_response(request: PromptRequest):
-    """Generate a response from the vLLM model for any given prompt"""
-    logger.info(f"Generating response for prompt: {request.prompt[:50]}...")
+    """Generate a response from the vLLM model for any given prompt with streaming support"""
+    logger.info(f"Generating response for prompt: {request.prompt[:50]}... (stream={request.stream})")
     
+    if not request.stream:
+        # Non-streaming response (keep for backward compatibility)
+        return await generate_non_streaming_response(request)
+    
+    # Streaming response
+    async def stream_generator():
+        try:
+            # Prepare the request payload for vLLM OpenAI-compatible API
+            vllm_payload = {
+                "model": "placeholder",  # vLLM ignores this but requires it
+                "messages": [{"role": "user", "content": request.prompt}],
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "stream": True
+            }
+            
+            # Make streaming request to vLLM service
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{VLLM_URL}/v1/chat/completions",
+                    json=vllm_payload,
+                    headers={"Accept": "text/event-stream"}
+                ) as response:
+                    response.raise_for_status()
+                    
+                    async for chunk in response.aiter_lines():
+                        if chunk:
+                            # Skip empty lines and "data: " prefix
+                            if chunk.startswith("data: "):
+                                chunk_data = chunk[6:]  # Remove "data: " prefix
+                                
+                                # Skip [DONE] signal
+                                if chunk_data == "[DONE]":
+                                    break
+                                
+                                try:
+                                    # Parse the JSON chunk
+                                    chunk_json = json.loads(chunk_data)
+                                    
+                                    # Extract content from OpenAI format
+                                    choices = chunk_json.get("choices", [])
+                                    if choices and len(choices) > 0:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        if content:
+                                            yield content
+                                            
+                                except json.JSONDecodeError:
+                                    # Skip malformed JSON chunks
+                                    continue
+                                    
+        except httpx.TimeoutException:
+            logger.error("Timeout while calling vLLM service")
+            yield "Error: Request timeout"
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error from vLLM service: {e.response.status_code}")
+            yield f"Error: vLLM service error ({e.response.status_code})"
+        except Exception as e:
+            logger.error(f"Failed to generate response: {str(e)}")
+            yield f"Error: {str(e)}"
+    
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/plain",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    )
+
+
+async def generate_non_streaming_response(request: PromptRequest) -> PromptResponse:
+    """Generate non-streaming response for backward compatibility"""
     try:
-        # Prepare the request payload for vLLM
+        # Prepare the request payload for vLLM OpenAI-compatible API
         vllm_payload = {
-            "prompt": request.prompt,
+            "model": "placeholder",  # vLLM ignores this but requires it
+            "messages": [{"role": "user", "content": request.prompt}],
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "top_p": request.top_p,
+            "stream": False
         }
         
         # Make request to vLLM service
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{VLLM_URL}/generate",
+                f"{VLLM_URL}/v1/chat/completions",
                 json=vllm_payload
             )
             response.raise_for_status()
             
             vllm_response = response.json()
             
-            # Extract the generated text from vLLM response
-            # vLLM typically returns {"text": [generated_text]}
-            generated_text = vllm_response.get("text", [""])[0] if "text" in vllm_response else ""
+            # Extract the generated text from OpenAI format
+            choices = vllm_response.get("choices", [])
+            if not choices:
+                raise HTTPException(status_code=500, detail="No choices in vLLM response")
+            
+            message = choices[0].get("message", {})
+            generated_text = message.get("content", "")
             
             if not generated_text:
                 raise HTTPException(status_code=500, detail="Empty response from vLLM service")
@@ -205,7 +286,7 @@ async def generate_response(request: PromptRequest):
         logger.error("Timeout while calling vLLM service")
         raise HTTPException(status_code=504, detail="Request to vLLM service timed out")
     except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error from vLLM service: {e.response.status_code} - {e.response.text}")
+        logger.error(f"HTTP error from vLLM service: {e.response.status_code}")
         raise HTTPException(
             status_code=502, 
             detail=f"vLLM service error: {e.response.status_code}"
