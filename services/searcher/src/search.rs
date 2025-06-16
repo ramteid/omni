@@ -66,24 +66,14 @@ impl SearchEngine {
         let repo = DocumentRepository::new(self.db_pool.pool());
         let limit = request.limit();
 
-        let (results, corrected_query) = if request.query.trim().is_empty() {
-            let documents = repo.find_all(limit, request.offset()).await?;
-            let results = documents
-                .into_iter()
-                .map(|doc| SearchResult {
-                    document: self.truncate_document_content(doc),
-                    score: 1.0,
-                    highlights: vec![],
-                    match_type: "listing".to_string(),
-                })
-                .collect();
-            (results, None)
-        } else {
-            match request.search_mode() {
-                SearchMode::Fulltext => self.fulltext_search(&repo, &request).await?,
-                SearchMode::Semantic => (self.semantic_search(&request).await?, None),
-                SearchMode::Hybrid => self.hybrid_search(&request).await?,
-            }
+        if request.query.trim().is_empty() {
+            return Err(anyhow::anyhow!("Search query cannot be empty"));
+        }
+
+        let (results, corrected_query) = match request.search_mode() {
+            SearchMode::Fulltext => self.fulltext_search(&repo, &request).await?,
+            SearchMode::Semantic => (self.semantic_search(&request).await?, None),
+            SearchMode::Hybrid => self.hybrid_search(&request).await?,
         };
 
         let total_count = results.len() as i64;
@@ -96,6 +86,18 @@ impl SearchEngine {
             results.len()
         );
 
+        // Get facets if requested
+        let facets = if request.include_facets() {
+            repo.get_facet_counts(&request.query)
+                .await
+                .unwrap_or_else(|e| {
+                    info!("Failed to get facet counts: {}", e);
+                    vec![]
+                })
+        } else {
+            vec![]
+        };
+
         let response = SearchResponse {
             results,
             total_count,
@@ -104,6 +106,7 @@ impl SearchEngine {
             query: request.query,
             corrected_query,
             corrections: None, // TODO: implement word-level corrections tracking
+            facets,
         };
 
         // Cache the response for 5 minutes
@@ -333,6 +336,8 @@ impl SearchEngine {
                 ct.hash(&mut hasher);
             }
         }
+
+        request.include_facets().hash(&mut hasher);
 
         format!("search:{:x}", hasher.finish())
     }

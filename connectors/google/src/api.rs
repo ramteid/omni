@@ -44,20 +44,32 @@ async fn trigger_sync(
 
     let sync_manager = state.sync_manager.clone();
     let source_id_clone = source_id.clone();
-    
+
     tokio::spawn(async move {
-        match sync_manager.sync_source_by_id(source_id_clone.clone()).await {
+        match sync_manager
+            .sync_source_by_id(source_id_clone.clone())
+            .await
+        {
             Ok(_) => {
-                info!("Successfully completed sync for source: {}", source_id_clone);
+                info!(
+                    "Successfully completed sync for source: {}",
+                    source_id_clone
+                );
             }
             Err(e) => {
-                error!("Failed to complete sync for source {}: {}", source_id_clone, e);
+                error!(
+                    "Failed to complete sync for source {}: {}",
+                    source_id_clone, e
+                );
             }
         }
     });
 
     Json(SyncResponse {
         success: true,
-        message: format!("Sync triggered successfully for source: {}. Running in background.", source_id),
+        message: format!(
+            "Sync triggered successfully for source: {}. Running in background.",
+            source_id
+        ),
     })
 }

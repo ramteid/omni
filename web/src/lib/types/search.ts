@@ -16,12 +16,23 @@ export interface SearchResult {
     match_type: string
 }
 
+export interface FacetValue {
+    value: string
+    count: number
+}
+
+export interface Facet {
+    name: string
+    values: FacetValue[]
+}
+
 export interface SearchResponse {
     results: SearchResult[]
     total_count: number
     query_time_ms: number
     has_more: boolean
     query: string
+    facets?: Facet[]
 }
 
 export interface SearchRequest {

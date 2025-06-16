@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use shared::models::Document;
+use shared::models::{Document, Facet};
 
 #[derive(Debug, Clone, Deserialize, Serialize, Hash, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +17,7 @@ pub struct SearchRequest {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub mode: Option<SearchMode>,
+    pub include_facets: Option<bool>,
 }
 
 impl SearchRequest {
@@ -31,6 +32,10 @@ impl SearchRequest {
     pub fn search_mode(&self) -> &SearchMode {
         self.mode.as_ref().unwrap_or(&SearchMode::Fulltext)
     }
+
+    pub fn include_facets(&self) -> bool {
+        self.include_facets.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,6 +49,8 @@ pub struct SearchResponse {
     pub corrected_query: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corrections: Option<Vec<WordCorrection>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub facets: Vec<Facet>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

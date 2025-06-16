@@ -91,4 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - SearchResponse enhanced with corrected_query and corrections fields for user feedback
   - Background task in indexer to periodically refresh lexeme dictionary
   - Integration with existing fulltext and hybrid search modes
+- Search facets for filtering and result counts
+  - Added facet support with counts for source_type, content_type, last_updated time buckets, and owner
+  - GIN indexes on documents.metadata and permissions fields for efficient facet queries
 

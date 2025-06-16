@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     let port = std::env::var("PORT")?.parse::<u16>()?;
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    
+
     info!("HTTP server listening on {}", addr);
 
     // Run HTTP server and sync loop concurrently
@@ -76,6 +76,6 @@ async fn main() -> Result<()> {
             error!("Sync loop stopped unexpectedly");
         }
     }
-    
+
     Ok(())
 }

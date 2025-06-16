@@ -15,53 +15,61 @@
         searchQuery = $page.url.searchParams.get('q') || ''
     })
     let isLoading = $state(false)
-    let selectedSources = $state<Set<string>>(new Set())
+    let selectedFilters = $state<Map<string, Set<string>>>(new Map())
+
+    const facetDisplayNames: Record<string, string> = {
+        'source_type': 'Source Type'
+    }
 
     const sourceDisplayNames: Record<string, string> = {
         'google_drive': 'Google Drive',
-        'google_docs': 'Google Docs',
-        'google_sheets': 'Google Sheets',
         'gmail': 'Gmail',
-        'slack': 'Slack',
-        'confluence': 'Confluence',
+        'confluence': 'Confluence',  
         'jira': 'JIRA',
-        'github': 'GitHub'
+        'slack': 'Slack',
+        'github': 'GitHub',
+        'local_files': 'Local Files'
     }
 
-    let sourceFacets = $derived(data.searchResults ? extractSourceFacets(data.searchResults) : [])
-    let filteredResults = $derived(data.searchResults ? filterResults(data.searchResults, selectedSources) : null)
+    let allFacets = $derived(data.searchResults?.facets || [])
+    let sourceFacet = $derived(allFacets.find(f => f.name === 'source_type'))
+    let otherFacets = $derived(allFacets.filter(f => f.name !== 'source_type'))
+    let filteredResults = $derived(data.searchResults ? filterResults(data.searchResults, selectedFilters) : null)
 
-    interface SourceFacet {
-        source: string
-        displayName: string
-        count: number
+    function getDisplayValue(facetField: string, value: string): string {
+        if (facetField === 'source_type') {
+            return sourceDisplayNames[value] || value
+        }
+        return value
     }
 
-    function extractSourceFacets(searchResults: SearchResponse): SourceFacet[] {
-        const sourceCounts = new Map<string, number>()
-        
-        searchResults.results.forEach(result => {
-            const source = result.document.source
-            sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1)
-        })
-        
-        return Array.from(sourceCounts.entries())
-            .map(([source, count]) => ({
-                source,
-                displayName: sourceDisplayNames[source] || source,
-                count
-            }))
-            .sort((a, b) => b.count - a.count)
-    }
-
-    function filterResults(searchResults: SearchResponse, selectedSources: Set<string>): SearchResponse {
-        if (selectedSources.size === 0) {
+    function filterResults(searchResults: SearchResponse, selectedFilters: Map<string, Set<string>>): SearchResponse {
+        if (selectedFilters.size === 0) {
             return searchResults
         }
         
-        const filteredResults = searchResults.results.filter(result => 
-            selectedSources.has(result.document.source)
-        )
+        const filteredResults = searchResults.results.filter(result => {
+            // Check if result matches all selected filters
+            for (const [facetField, selectedValues] of selectedFilters) {
+                if (selectedValues.size === 0) continue
+                
+                let fieldValue: string
+                switch (facetField) {
+                    case 'source_type':
+                        // For now, we'll need to map source_id to source_type
+                        // This is a simplified approach - in practice we'd need the actual source_type from the backend
+                        fieldValue = result.document.source
+                        break
+                    default:
+                        continue
+                }
+                
+                if (!selectedValues.has(fieldValue)) {
+                    return false
+                }
+            }
+            return true
+        })
         
         return {
             ...searchResults,
@@ -70,17 +78,40 @@
         }
     }
 
-    function toggleSource(source: string) {
-        if (selectedSources.has(source)) {
-            selectedSources.delete(source)
+
+    function toggleFilter(facetField: string, value: string) {
+        const currentFilters = selectedFilters.get(facetField) || new Set()
+        
+        if (currentFilters.has(value)) {
+            currentFilters.delete(value)
         } else {
-            selectedSources.add(source)
+            currentFilters.add(value)
         }
-        selectedSources = new Set(selectedSources)
+        
+        if (currentFilters.size === 0) {
+            selectedFilters.delete(facetField)
+        } else {
+            selectedFilters.set(facetField, currentFilters)
+        }
+        
+        selectedFilters = new Map(selectedFilters)
     }
 
     function clearFilters() {
-        selectedSources = new Set()
+        selectedFilters = new Map()
+    }
+
+    function clearFacetFilters(facetField: string) {
+        selectedFilters.delete(facetField)
+        selectedFilters = new Map(selectedFilters)
+    }
+
+    function getTotalSelectedFilters(): number {
+        let total = 0
+        for (const filterSet of selectedFilters.values()) {
+            total += filterSet.size
+        }
+        return total
     }
 
     function handleSearch() {
@@ -137,12 +168,64 @@
         {#if filteredResults}
             <div class="text-sm text-gray-600">
                 Found {filteredResults.total_count} results in {data.searchResults.query_time_ms}ms for "{data.searchResults.query}"
-                {#if selectedSources.size > 0}
-                    <span class="ml-2">• Filtered by {selectedSources.size} source{selectedSources.size > 1 ? 's' : ''}</span>
+                {#if getTotalSelectedFilters() > 0}
+                    <span class="ml-2">• {getTotalSelectedFilters()} filter{getTotalSelectedFilters() > 1 ? 's' : ''} applied</span>
                 {/if}
             </div>
         {/if}
     </div>
+
+    <!-- Other Facets (above search results) -->
+    {#if filteredResults && otherFacets.length > 0}
+        <div class="mb-6">
+            <div class="flex flex-wrap gap-4">
+                {#each otherFacets as facet}
+                    <div class="bg-white border rounded-lg p-4 min-w-48">
+                        <div class="flex items-center justify-between mb-3">
+                            <h3 class="text-sm font-medium text-gray-900">
+                                {facetDisplayNames[facet.name] || facet.name}
+                            </h3>
+                            {#if selectedFilters.has(facet.name) && selectedFilters.get(facet.name)?.size > 0}
+                                <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    onclick={() => clearFacetFilters(facet.name)}
+                                    class="text-xs h-6 px-2"
+                                >
+                                    Clear
+                                </Button>
+                            {/if}
+                        </div>
+                        <div class="space-y-2 max-h-32 overflow-y-auto">
+                            {#each facet.values.slice(0, 5) as facetValue}
+                                <label class="flex items-center justify-between cursor-pointer hover:bg-gray-50 p-1 rounded text-xs">
+                                    <div class="flex items-center gap-2">
+                                        <input 
+                                            type="checkbox"
+                                            checked={selectedFilters.get(facet.name)?.has(facetValue.value) || false}
+                                            onchange={() => toggleFilter(facet.name, facetValue.value)}
+                                            class="h-3 w-3 text-blue-600 rounded border-gray-300"
+                                        />
+                                        <span class="text-gray-700 truncate">
+                                            {getDisplayValue(facet.name, facetValue.value)}
+                                        </span>
+                                    </div>
+                                    <span class="text-gray-500 bg-gray-100 px-1 py-0.5 rounded text-xs ml-2">
+                                        {facetValue.count}
+                                    </span>
+                                </label>
+                            {/each}
+                            {#if facet.values.length > 5}
+                                <div class="text-xs text-gray-500 text-center pt-1">
+                                    +{facet.values.length - 5} more
+                                </div>
+                            {/if}
+                        </div>
+                    </div>
+                {/each}
+            </div>
+        </div>
+    {/if}
 
     <div class="flex gap-6">
         <!-- Search Results -->
@@ -213,13 +296,13 @@
                         <Search class="h-12 w-12 text-gray-400 mx-auto mb-4" />
                         <h3 class="text-lg font-medium text-gray-900 mb-2">No results found</h3>
                         <p class="text-gray-600 mb-4">
-                            {#if selectedSources.size > 0}
-                                No results found in the selected sources. Try clearing filters or adjusting your search.
+                            {#if getTotalSelectedFilters() > 0}
+                                No results found with the current filters. Try clearing filters or adjusting your search.
                             {:else}
                                 Try adjusting your search terms or check if your data sources are connected and indexed.
                             {/if}
                         </p>
-                        {#if selectedSources.size > 0}
+                        {#if getTotalSelectedFilters() > 0}
                             <Button variant="outline" onclick={clearFilters} class="mr-2">
                                 Clear Filters
                             </Button>
@@ -245,8 +328,8 @@
             {/if}
         </div>
 
-        <!-- Facets Sidebar -->
-        {#if data.searchResults && data.searchResults.results.length > 0}
+        <!-- Source Facets Sidebar -->
+        {#if data.searchResults && sourceFacet}
             <div class="w-80">
                 <Card>
                     <CardHeader>
@@ -255,39 +338,52 @@
                                 <Filter class="h-4 w-4" />
                                 Filter by Source
                             </CardTitle>
-                            {#if selectedSources.size > 0}
+                            {#if selectedFilters.has('source_type') && selectedFilters.get('source_type')?.size > 0}
                                 <Button 
                                     variant="ghost" 
                                     size="sm" 
-                                    onclick={clearFilters}
+                                    onclick={() => clearFacetFilters('source_type')}
                                     class="text-xs"
                                 >
-                                    Clear all
+                                    Clear
                                 </Button>
                             {/if}
                         </div>
                     </CardHeader>
                     <CardContent class="space-y-3">
-                        {#each sourceFacets as facet}
+                        {#each sourceFacet.values as facetValue}
                             <label class="flex items-center justify-between cursor-pointer hover:bg-gray-50 p-2 rounded">
                                 <div class="flex items-center gap-2">
                                     <input 
                                         type="checkbox"
-                                        checked={selectedSources.has(facet.source)}
-                                        onchange={() => toggleSource(facet.source)}
+                                        checked={selectedFilters.get('source_type')?.has(facetValue.value) || false}
+                                        onchange={() => toggleFilter('source_type', facetValue.value)}
                                         class="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
                                     />
                                     <span class="text-sm font-medium text-gray-700">
-                                        {facet.displayName}
+                                        {getDisplayValue('source_type', facetValue.value)}
                                     </span>
                                 </div>
                                 <span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                                    {facet.count}
+                                    {facetValue.count}
                                 </span>
                             </label>
                         {/each}
                     </CardContent>
                 </Card>
+                
+                {#if getTotalSelectedFilters() > 0}
+                    <div class="mt-4">
+                        <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onclick={clearFilters}
+                            class="w-full"
+                        >
+                            Clear All Filters
+                        </Button>
+                    </div>
+                {/if}
             </div>
         {/if}
     </div>

@@ -35,6 +35,7 @@ export const load = async ({ url, fetch }) => {
         }
 
         const searchResults: SearchResponse = await response.json()
+        console.log('Search results: ', JSON.stringify(searchResults, null, 2))
 
         return {
             searchResults

@@ -1,4 +1,7 @@
-use crate::{db::error::DatabaseError, models::Document};
+use crate::{
+    db::error::DatabaseError,
+    models::{Document, Facet, FacetValue},
+};
 use sqlx::PgPool;
 
 pub struct DocumentRepository {
@@ -316,5 +319,40 @@ impl DocumentRepository {
         .await?;
 
         Ok(upserted_document)
+    }
+
+    pub async fn get_facet_counts(&self, query: &str) -> Result<Vec<Facet>, DatabaseError> {
+        let facet_rows = sqlx::query_as::<_, (String, String, i64)>(
+            r#"
+            SELECT 'source_type' as facet, s.source_type as value, count(*) as count
+            FROM documents d 
+            JOIN sources s ON d.source_id = s.id
+            WHERE d.tsv_content @@ websearch_to_tsquery('english', $1::text)
+            GROUP BY s.source_type 
+            ORDER BY count DESC
+            "#,
+        )
+        .bind(query)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Group the results by facet name
+        let mut facets_map: std::collections::HashMap<String, Vec<FacetValue>> =
+            std::collections::HashMap::new();
+
+        for (facet_name, value, count) in facet_rows {
+            facets_map
+                .entry(facet_name)
+                .or_insert_with(Vec::new)
+                .push(FacetValue { value, count });
+        }
+
+        // Convert to Vec<Facet>
+        let facets: Vec<Facet> = facets_map
+            .into_iter()
+            .map(|(name, values)| Facet { name, values })
+            .collect();
+
+        Ok(facets)
     }
 }

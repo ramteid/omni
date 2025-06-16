@@ -170,6 +170,18 @@ impl ConnectorEvent {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FacetValue {
+    pub value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Facet {
+    pub name: String,
+    pub values: Vec<FacetValue>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "text", rename_all = "lowercase")]
 pub enum EventStatus {
