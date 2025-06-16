@@ -52,7 +52,7 @@ Clio is a self-hosted enterprise search platform that unifies your organization'
 
 Clio uses a simple microservices architecture built for scalability and maintainability:
 
-![clio-arch-transparent-2](https://github.com/user-attachments/assets/b9dd07ea-6bc6-4339-a621-15727a5f560b)
+![clio-arch-3](https://github.com/user-attachments/assets/862986af-6bb0-4bd2-a2a8-e3a051ae9a22)
 
 ### Core Components
 
