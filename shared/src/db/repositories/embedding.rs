@@ -157,6 +157,109 @@ impl EmbeddingRepository {
         Ok(documents_with_scores)
     }
 
+    pub async fn find_similar_with_filters(
+        &self,
+        embedding: Vec<f32>,
+        sources: Option<&[String]>,
+        content_types: Option<&[String]>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<(Document, f32)>, DatabaseError> {
+        let vector = Vector::from(embedding);
+
+        let mut where_conditions = Vec::new();
+        where_conditions.push("re.rn = 1".to_string());
+
+        let mut bind_index = 3; // Starting after $1 (vector) and $2 (limit)
+
+        if let Some(src) = sources {
+            if !src.is_empty() {
+                where_conditions.push(format!("d.source_id = ANY(${})", bind_index));
+                bind_index += 1;
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
+                bind_index += 1;
+            }
+        }
+
+        let where_clause = where_conditions.join(" AND ");
+
+        let query_str = format!(
+            r#"
+            WITH ranked_embeddings AS (
+                SELECT 
+                    e.document_id,
+                    e.embedding <=> $1 as distance,
+                    e.chunk_text,
+                    ROW_NUMBER() OVER (PARTITION BY e.document_id ORDER BY e.embedding <=> $1) as rn
+                FROM embeddings e
+            )
+            SELECT 
+                d.id, d.source_id, d.external_id, d.title, d.content,
+                d.content_type, d.file_size, d.file_extension, d.url, d.parent_id,
+                d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
+                re.distance,
+                re.chunk_text
+            FROM ranked_embeddings re
+            JOIN documents d ON re.document_id = d.id
+            WHERE {}
+            ORDER BY re.distance
+            LIMIT $2 OFFSET ${}
+            "#,
+            where_clause, bind_index
+        );
+
+        let mut query = sqlx::query(&query_str).bind(&vector).bind(limit);
+
+        if let Some(src) = sources {
+            if !src.is_empty() {
+                query = query.bind(src);
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                query = query.bind(ct);
+            }
+        }
+
+        query = query.bind(offset);
+
+        let results = query.fetch_all(&self.pool).await?;
+
+        let documents_with_scores = results
+            .into_iter()
+            .map(|row| {
+                let doc = Document {
+                    id: row.get("id"),
+                    source_id: row.get("source_id"),
+                    external_id: row.get("external_id"),
+                    title: row.get("title"),
+                    content: row.get("content"),
+                    content_type: row.get("content_type"),
+                    file_size: row.get("file_size"),
+                    file_extension: row.get("file_extension"),
+                    url: row.get("url"),
+                    parent_id: row.get("parent_id"),
+                    metadata: row.get("metadata"),
+                    permissions: row.get("permissions"),
+                    created_at: row.get("created_at"),
+                    updated_at: row.get("updated_at"),
+                    last_indexed_at: row.get("last_indexed_at"),
+                };
+                let distance: Option<f32> = row.get("distance");
+                let similarity = 1.0 - distance.unwrap_or(1.0);
+                (doc, similarity)
+            })
+            .collect();
+
+        Ok(documents_with_scores)
+    }
+
     pub async fn find_similar_chunks(
         &self,
         embedding: Vec<f32>,

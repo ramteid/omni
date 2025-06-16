@@ -69,6 +69,73 @@ impl DocumentRepository {
         Ok(documents)
     }
 
+    pub async fn search_with_filters(
+        &self,
+        query: &str,
+        sources: Option<&[String]>,
+        content_types: Option<&[String]>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Document>, DatabaseError> {
+        let base_query = r#"
+            SELECT id, source_id, external_id, title, content, content_type,
+                   file_size, file_extension, url, parent_id,
+                   metadata, permissions, created_at, updated_at, last_indexed_at
+            FROM documents
+            WHERE tsv_content @@ websearch_to_tsquery('english', $1)
+        "#;
+
+        let has_sources = sources.map_or(false, |s| !s.is_empty());
+        let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
+
+        let source_filter = if has_sources {
+            " AND source_id = ANY($2)"
+        } else {
+            ""
+        };
+
+        let content_type_filter = if has_content_types {
+            if has_sources {
+                " AND content_type = ANY($3)"
+            } else {
+                " AND content_type = ANY($2)"
+            }
+        } else {
+            ""
+        };
+
+        let (limit_param, offset_param) = match (has_sources, has_content_types) {
+            (true, true) => ("$4", "$5"),
+            (true, false) | (false, true) => ("$3", "$4"),
+            (false, false) => ("$2", "$3"),
+        };
+
+        let full_query = format!(
+            "{}{}{} ORDER BY ts_rank(tsv_content, websearch_to_tsquery('english', $1)) DESC LIMIT {} OFFSET {}",
+            base_query, source_filter, content_type_filter, limit_param, offset_param
+        );
+
+        let mut query = sqlx::query_as::<_, Document>(&full_query).bind(query);
+
+        if let Some(src) = sources {
+            if !src.is_empty() {
+                query = query.bind(src);
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                query = query.bind(ct);
+            }
+        }
+
+        query = query.bind(limit).bind(offset);
+
+        let documents = query.fetch_all(&self.pool).await?;
+
+        Ok(documents)
+    }
+
     pub async fn find_similar_words(
         &self,
         word: &str,
@@ -154,6 +221,84 @@ impl DocumentRepository {
 
         // Search with corrected query
         let corrected_results = self.search(&corrected_query, limit).await?;
+
+        // Return the better result set
+        if corrected_results.len() > original_results.len() {
+            Ok((corrected_results, Some(corrected_query)))
+        } else {
+            Ok((original_results, None))
+        }
+    }
+
+    pub async fn search_with_typo_tolerance_and_filters(
+        &self,
+        query: &str,
+        sources: Option<&[String]>,
+        content_types: Option<&[String]>,
+        limit: i64,
+        offset: i64,
+        max_distance: i32,
+        min_word_length: usize,
+    ) -> Result<(Vec<Document>, Option<String>), DatabaseError> {
+        // First, try to search with the original query
+        let original_results = self
+            .search_with_filters(query, sources, content_types, limit, offset)
+            .await?;
+
+        // If we get reasonable results, return them without correction
+        if !original_results.is_empty() && original_results.len() >= (limit / 2) as usize {
+            return Ok((original_results, None));
+        }
+
+        // Tokenize the query
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let mut corrected_words = Vec::new();
+        let mut any_correction_made = false;
+
+        // For each word, check if it exists in our lexeme dictionary
+        for word in words {
+            // Skip very short words
+            if word.len() < min_word_length {
+                corrected_words.push(word.to_string());
+                continue;
+            }
+
+            // Check if the word exists in our lexeme dictionary
+            let exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM unique_lexemes WHERE lower(word) = lower($1))",
+            )
+            .bind(word)
+            .fetch_one(&self.pool)
+            .await?;
+
+            if exists {
+                corrected_words.push(word.to_string());
+            } else {
+                // Find similar words
+                let similar = self.find_similar_words(word, max_distance).await?;
+
+                if let Some((corrected_word, _)) = similar.first() {
+                    corrected_words.push(corrected_word.clone());
+                    any_correction_made = true;
+                } else {
+                    // No correction found, use original word
+                    corrected_words.push(word.to_string());
+                }
+            }
+        }
+
+        // If no corrections were made, return original results
+        if !any_correction_made {
+            return Ok((original_results, None));
+        }
+
+        // Construct corrected query
+        let corrected_query = corrected_words.join(" ");
+
+        // Search with corrected query
+        let corrected_results = self
+            .search_with_filters(&corrected_query, sources, content_types, limit, offset)
+            .await?;
 
         // Return the better result set
         if corrected_results.len() > original_results.len() {
@@ -335,6 +480,79 @@ impl DocumentRepository {
         .bind(query)
         .fetch_all(&self.pool)
         .await?;
+
+        // Group the results by facet name
+        let mut facets_map: std::collections::HashMap<String, Vec<FacetValue>> =
+            std::collections::HashMap::new();
+
+        for (facet_name, value, count) in facet_rows {
+            facets_map
+                .entry(facet_name)
+                .or_insert_with(Vec::new)
+                .push(FacetValue { value, count });
+        }
+
+        // Convert to Vec<Facet>
+        let facets: Vec<Facet> = facets_map
+            .into_iter()
+            .map(|(name, values)| Facet { name, values })
+            .collect();
+
+        Ok(facets)
+    }
+
+    pub async fn get_facet_counts_with_filters(
+        &self,
+        query: &str,
+        sources: Option<&[String]>,
+        content_types: Option<&[String]>,
+    ) -> Result<Vec<Facet>, DatabaseError> {
+        let mut where_conditions =
+            vec!["d.tsv_content @@ websearch_to_tsquery('english', $1::text)".to_string()];
+        let mut bind_index = 2;
+
+        if let Some(src) = sources {
+            if !src.is_empty() {
+                where_conditions.push(format!("d.source_id = ANY(${})", bind_index));
+                bind_index += 1;
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
+            }
+        }
+
+        let where_clause = where_conditions.join(" AND ");
+
+        let query_str = format!(
+            r#"
+            SELECT 'source_type' as facet, s.source_type as value, count(*) as count
+            FROM documents d 
+            JOIN sources s ON d.source_id = s.id
+            WHERE {}
+            GROUP BY s.source_type 
+            ORDER BY count DESC
+            "#,
+            where_clause
+        );
+
+        let mut query = sqlx::query_as::<_, (String, String, i64)>(&query_str).bind(query);
+
+        if let Some(src) = sources {
+            if !src.is_empty() {
+                query = query.bind(src);
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                query = query.bind(ct);
+            }
+        }
+
+        let facet_rows = query.fetch_all(&self.pool).await?;
 
         // Group the results by facet name
         let mut facets_map: std::collections::HashMap<String, Vec<FacetValue>> =

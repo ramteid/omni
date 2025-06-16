@@ -88,7 +88,10 @@ impl SearchEngine {
 
         // Get facets if requested
         let facets = if request.include_facets() {
-            repo.get_facet_counts(&request.query)
+            let sources = request.sources.as_deref();
+            let content_types = request.content_types.as_deref();
+
+            repo.get_facet_counts_with_filters(&request.query, sources, content_types)
                 .await
                 .unwrap_or_else(|e| {
                     info!("Failed to get facet counts: {}", e);
@@ -124,43 +127,33 @@ impl SearchEngine {
         repo: &DocumentRepository,
         request: &SearchRequest,
     ) -> Result<(Vec<SearchResult>, Option<String>)> {
-        let (mut documents, corrected_query) = if self.config.typo_tolerance_enabled {
-            repo.search_with_typo_tolerance(
+        let sources = request.sources.as_deref();
+        let content_types = request.content_types.as_deref();
+
+        let (documents, corrected_query) = if self.config.typo_tolerance_enabled {
+            repo.search_with_typo_tolerance_and_filters(
                 &request.query,
+                sources,
+                content_types,
                 request.limit(),
+                request.offset(),
                 self.config.typo_tolerance_max_distance,
                 self.config.typo_tolerance_min_word_length,
             )
             .await?
         } else {
-            (repo.search(&request.query, request.limit()).await?, None)
+            (
+                repo.search_with_filters(
+                    &request.query,
+                    sources,
+                    content_types,
+                    request.limit(),
+                    request.offset(),
+                )
+                .await?,
+                None,
+            )
         };
-
-        if let Some(sources) = &request.sources {
-            if !sources.is_empty() {
-                documents.retain(|doc| sources.contains(&doc.source_id));
-            }
-        }
-
-        if let Some(content_types) = &request.content_types {
-            if !content_types.is_empty() {
-                documents.retain(|doc| {
-                    doc.content_type
-                        .as_ref()
-                        .map(|ct| content_types.contains(ct))
-                        .unwrap_or(false)
-                });
-            }
-        }
-
-        if request.offset() > 0 {
-            let offset = request.offset() as usize;
-            if offset < documents.len() {
-                documents = documents[offset..].to_vec();
-            } else {
-                documents.clear();
-            }
-        }
 
         let results = documents
             .into_iter()
@@ -188,11 +181,21 @@ impl SearchEngine {
         let query_embedding = self.generate_query_embedding(&request.query).await?;
 
         let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
+
+        let sources = request.sources.as_deref();
+        let content_types = request.content_types.as_deref();
+
         let documents_with_scores = embedding_repo
-            .find_similar(query_embedding, request.limit())
+            .find_similar_with_filters(
+                query_embedding,
+                sources,
+                content_types,
+                request.limit(),
+                request.offset(),
+            )
             .await?;
 
-        let mut results: Vec<SearchResult> = documents_with_scores
+        let results: Vec<SearchResult> = documents_with_scores
             .into_iter()
             .map(|(doc, score)| SearchResult {
                 document: self.truncate_document_content(doc),
@@ -201,36 +204,6 @@ impl SearchEngine {
                 match_type: "semantic".to_string(),
             })
             .collect();
-
-        // Apply filters
-        if let Some(sources) = &request.sources {
-            if !sources.is_empty() {
-                results.retain(|result| sources.contains(&result.document.source_id));
-            }
-        }
-
-        if let Some(content_types) = &request.content_types {
-            if !content_types.is_empty() {
-                results.retain(|result| {
-                    result
-                        .document
-                        .content_type
-                        .as_ref()
-                        .map(|ct| content_types.contains(ct))
-                        .unwrap_or(false)
-                });
-            }
-        }
-
-        // Apply offset
-        if request.offset() > 0 {
-            let offset = request.offset() as usize;
-            if offset < results.len() {
-                results = results[offset..].to_vec();
-            } else {
-                results.clear();
-            }
-        }
 
         Ok(results)
     }
