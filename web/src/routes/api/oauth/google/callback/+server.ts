@@ -4,7 +4,7 @@ import { getRedisClient } from '$lib/server/redis'
 import { db } from '$lib/server/db'
 import { sources, oauthCredentials } from '$lib/server/db/schema'
 import { eq } from 'drizzle-orm'
-import { oauth } from '$lib/server/config'
+import { oauth, config } from '$lib/server/config'
 import { SourceType, OAuthProvider } from '$lib/types'
 import crypto from 'crypto'
 import { ulid } from 'ulid'
@@ -143,6 +143,26 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                 obtained_at: Date.now(),
             },
         })
+
+        // Trigger sync for this source
+        try {
+            const googleConnectorUrl = config.services.googleConnectorUrl
+            const syncResponse = await fetch(`${googleConnectorUrl}/sync/${sourceId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+
+            if (!syncResponse.ok) {
+                console.error(`Failed to trigger sync for source ${sourceId}: ${syncResponse.status}`)
+            } else {
+                console.log(`Successfully triggered sync for source ${sourceId}`)
+            }
+        } catch (syncError) {
+            // Log but don't fail the OAuth flow
+            console.error(`Error triggering sync for source ${sourceId}:`, syncError)
+        }
 
     } catch (err) {
         console.error('OAuth callback error:', err)

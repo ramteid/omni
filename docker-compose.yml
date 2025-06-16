@@ -153,6 +153,8 @@ services:
     networks:
       - clio-network
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -209,6 +211,7 @@ services:
       - SEARCHER_URL=${SEARCHER_URL}
       - INDEXER_URL=${INDEXER_URL}
       - AI_SERVICE_URL=${AI_SERVICE_URL}
+      - GOOGLE_CONNECTOR_URL=${GOOGLE_CONNECTOR_URL}
       - SESSION_SECRET=${SESSION_SECRET}
       - SESSION_COOKIE_NAME=${SESSION_COOKIE_NAME}
       - SESSION_DURATION_DAYS=${SESSION_DURATION_DAYS}

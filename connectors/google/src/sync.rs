@@ -375,4 +375,26 @@ impl SyncManager {
 
         Ok(())
     }
+
+    pub async fn sync_source_by_id(&self, source_id: String) -> Result<()> {
+        info!("Manually triggered sync for source: {}", source_id);
+
+        let source = sqlx::query_as::<_, Source>(
+            "SELECT * FROM sources WHERE id = $1 AND source_type = $2"
+        )
+        .bind(&source_id)
+        .bind(SourceType::GoogleDrive)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match source {
+            Some(source) => {
+                if !source.is_active {
+                    return Err(anyhow::anyhow!("Source {} is not active", source_id));
+                }
+                self.sync_source(&source).await
+            }
+            None => Err(anyhow::anyhow!("Source {} not found", source_id))
+        }
+    }
 }

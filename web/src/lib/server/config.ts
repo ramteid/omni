@@ -11,6 +11,7 @@ export interface AppConfig {
         searcherUrl: string
         indexerUrl: string
         aiServiceUrl: string
+        googleConnectorUrl: string
     }
     session: {
         secret: string
@@ -92,6 +93,7 @@ function loadConfig(): AppConfig {
                 searcherUrl: 'http://placeholder',
                 indexerUrl: 'http://placeholder',
                 aiServiceUrl: 'http://placeholder',
+                googleConnectorUrl: 'http://placeholder',
             },
             session: {
                 secret: 'placeholder',
@@ -123,9 +125,11 @@ function loadConfig(): AppConfig {
     const searcherUrl = getRequiredEnv('SEARCHER_URL')
     const indexerUrl = getRequiredEnv('INDEXER_URL')
     const aiServiceUrl = getRequiredEnv('AI_SERVICE_URL')
+    const googleConnectorUrl = getRequiredEnv('GOOGLE_CONNECTOR_URL')
     validateUrl(searcherUrl, 'SEARCHER_URL')
     validateUrl(indexerUrl, 'INDEXER_URL')
     validateUrl(aiServiceUrl, 'AI_SERVICE_URL')
+    validateUrl(googleConnectorUrl, 'GOOGLE_CONNECTOR_URL')
 
     // Session configuration
     const sessionSecret = getRequiredEnv('SESSION_SECRET')
@@ -166,6 +170,7 @@ function loadConfig(): AppConfig {
             searcherUrl,
             indexerUrl,
             aiServiceUrl,
+            googleConnectorUrl,
         },
         session: {
             secret: sessionSecret,
