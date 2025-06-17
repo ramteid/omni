@@ -34,8 +34,9 @@ impl SearchEngine {
     ) -> shared::models::Document {
         const MAX_CONTENT_LENGTH: usize = 500;
         if let Some(content) = &doc.content {
-            if content.len() > MAX_CONTENT_LENGTH {
-                doc.content = Some(format!("{}...", &content[..MAX_CONTENT_LENGTH]));
+            if content.chars().count() > MAX_CONTENT_LENGTH {
+                let truncated: String = content.chars().take(MAX_CONTENT_LENGTH).collect();
+                doc.content = Some(format!("{}...", truncated));
             }
         }
         doc
@@ -437,8 +438,9 @@ impl SearchEngine {
 
         // Join contexts and limit total length
         let combined = contexts.join(" ... ");
-        if combined.len() > 1000 {
-            format!("{}...", &combined[..1000])
+        if combined.chars().count() > 1000 {
+            let truncated: String = combined.chars().take(1000).collect();
+            format!("{}...", truncated)
         } else {
             combined
         }
@@ -584,8 +586,9 @@ impl SearchEngine {
                 _ => {
                     // Fallback to truncated content
                     if let Some(content) = &result.document.content {
-                        let truncated_content = if content.len() > 800 {
-                            format!("{}...", &content[..800])
+                        let truncated_content = if content.chars().count() > 800 {
+                            let truncated: String = content.chars().take(800).collect();
+                            format!("{}...", truncated)
                         } else {
                             content.clone()
                         };

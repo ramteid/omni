@@ -14,7 +14,7 @@ impl EmbeddingRepository {
         Self { pool: pool.clone() }
     }
 
-    /// Extract chunk text from document content using character offsets
+    /// Extract chunk text from document content using byte offsets
     pub fn extract_chunk_text(
         document_content: &str,
         start_offset: i32,
@@ -23,11 +23,29 @@ impl EmbeddingRepository {
         let start = start_offset as usize;
         let end = end_offset as usize;
 
-        if start >= document_content.len() || end > document_content.len() || start >= end {
+        let bytes = document_content.as_bytes();
+
+        if start >= bytes.len() || end > bytes.len() || start >= end {
             return String::new();
         }
 
-        document_content[start..end].to_string()
+        // Find the nearest character boundary at or after start
+        let mut actual_start = start;
+        while actual_start < bytes.len() && !document_content.is_char_boundary(actual_start) {
+            actual_start += 1;
+        }
+
+        // Find the nearest character boundary at or before end
+        let mut actual_end = end;
+        while actual_end > actual_start && !document_content.is_char_boundary(actual_end) {
+            actual_end -= 1;
+        }
+
+        if actual_start >= actual_end {
+            return String::new();
+        }
+
+        document_content[actual_start..actual_end].to_string()
     }
 
     pub async fn find_by_document_id(

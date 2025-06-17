@@ -50,8 +50,13 @@ impl AIClient {
     }
 
     pub async fn generate_embeddings(&self, texts: &[String]) -> Result<Vec<TextEmbedding>> {
-        self.generate_embeddings_with_options(texts, None, None, None)
-            .await
+        self.generate_embeddings_with_options(
+            texts,
+            Some("retrieval.query".to_string()),
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn generate_embeddings_with_options(
