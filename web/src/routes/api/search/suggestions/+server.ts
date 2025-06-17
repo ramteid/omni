@@ -21,20 +21,25 @@ export const GET: RequestHandler = async ({ url, fetch }) => {
 
         if (!response.ok) {
             console.error('Suggestions service error:', response.status, response.statusText)
-            return json({ 
-                error: 'Suggestions service unavailable',
-                details: `Status: ${response.status}`
-            }, { status: 502 })
+            return json(
+                {
+                    error: 'Suggestions service unavailable',
+                    details: `Status: ${response.status}`,
+                },
+                { status: 502 },
+            )
         }
 
         const suggestions = await response.json()
         return json(suggestions)
-
     } catch (error) {
         console.error('Error calling suggestions service:', error)
-        return json({ 
-            error: 'Failed to get suggestions',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        }, { status: 500 })
+        return json(
+            {
+                error: 'Failed to get suggestions',
+                details: error instanceof Error ? error.message : 'Unknown error',
+            },
+            { status: 500 },
+        )
     }
 }

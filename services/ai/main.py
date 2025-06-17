@@ -3,7 +3,7 @@ import sys
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import logging
 import asyncio
 import httpx
@@ -16,18 +16,25 @@ from embeddings import (
     TASK,
 )
 
+
 def get_required_env(key: str) -> str:
     """Get required environment variable with validation"""
     value = os.getenv(key)
     if not value:
-        print(f"ERROR: Required environment variable '{key}' is not set", file=sys.stderr)
-        print("Please set this variable in your .env file or environment", file=sys.stderr)
+        print(
+            f"ERROR: Required environment variable '{key}' is not set", file=sys.stderr
+        )
+        print(
+            "Please set this variable in your .env file or environment", file=sys.stderr
+        )
         sys.exit(1)
     return value
+
 
 def get_optional_env(key: str, default: str) -> str:
     """Get optional environment variable with default"""
     return os.getenv(key, default)
+
 
 def validate_port(port_str: str) -> int:
     """Validate port number"""
@@ -40,6 +47,7 @@ def validate_port(port_str: str) -> int:
         print(f"ERROR: Invalid port number '{port_str}': {e}", file=sys.stderr)
         sys.exit(1)
 
+
 def validate_embedding_dimensions(dims_str: str) -> int:
     """Validate embedding dimensions"""
     try:
@@ -51,11 +59,14 @@ def validate_embedding_dimensions(dims_str: str) -> int:
         print(f"ERROR: Invalid embedding dimensions '{dims_str}': {e}", file=sys.stderr)
         sys.exit(1)
 
+
 # Load and validate configuration
 PORT = validate_port(get_required_env("PORT"))
 MODEL_PATH = get_required_env("MODEL_PATH")
 EMBEDDING_MODEL = get_required_env("EMBEDDING_MODEL")
-EMBEDDING_DIMENSIONS = validate_embedding_dimensions(get_required_env("EMBEDDING_DIMENSIONS"))
+EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
+    get_required_env("EMBEDDING_DIMENSIONS")
+)
 VLLM_URL = get_required_env("VLLM_URL")
 REDIS_URL = get_required_env("REDIS_URL")
 DATABASE_URL = get_required_env("DATABASE_URL")
@@ -81,6 +92,7 @@ class EmbeddingRequest(BaseModel):
 class EmbeddingResponse(BaseModel):
     embeddings: List[List[List[float]]]
     chunks_count: List[int]  # Number of chunks per text
+    chunks: List[List[Tuple[int, int]]]  # Token offset spans for each chunk
 
 
 class RAGRequest(BaseModel):
@@ -115,11 +127,11 @@ async def startup_event():
 async def health_check():
     """Health check endpoint"""
     return {
-        "status": "healthy", 
-        "service": "ai", 
+        "status": "healthy",
+        "service": "ai",
         "model": EMBEDDING_MODEL,
         "port": PORT,
-        "embedding_dimensions": EMBEDDING_DIMENSIONS
+        "embedding_dimensions": EMBEDDING_DIMENSIONS,
     }
 
 
@@ -131,16 +143,20 @@ async def generate_embeddings(request: EmbeddingRequest):
     )
 
     # Validate chunking method
-    valid_chunking_modes = ["sentence", "fixed"]
+    valid_chunking_modes = ["sentence", "fixed", "semantic"]
     if request.chunking_mode not in valid_chunking_modes:
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid chunking_mode: {request.chunking_mode}. Must be one of: {valid_chunking_modes}"
+            detail=f"Invalid chunking_mode: {request.chunking_mode}. Must be one of: {valid_chunking_modes}",
         )
 
     try:
         # Run embedding generation in thread pool to avoid blocking
-        embeddings, chunks_count = await asyncio.get_event_loop().run_in_executor(
+        (
+            embeddings,
+            chunks_count,
+            chunk_spans,
+        ) = await asyncio.get_event_loop().run_in_executor(
             _executor,
             generate_embeddings_sync,
             request.texts,
@@ -150,7 +166,9 @@ async def generate_embeddings(request: EmbeddingRequest):
         )
 
         logger.info(f"Generated embeddings with chunks: {chunks_count}")
-        return EmbeddingResponse(embeddings=embeddings, chunks_count=chunks_count)
+        return EmbeddingResponse(
+            embeddings=embeddings, chunks_count=chunks_count, chunks=chunk_spans
+        )
 
     except Exception as e:
         logger.error(f"Failed to generate embeddings: {str(e)}")
@@ -173,12 +191,14 @@ async def rag_inference(request: RAGRequest):
 @app.post("/prompt")
 async def generate_response(request: PromptRequest):
     """Generate a response from the vLLM model for any given prompt with streaming support"""
-    logger.info(f"Generating response for prompt: {request.prompt[:50]}... (stream={request.stream})")
-    
+    logger.info(
+        f"Generating response for prompt: {request.prompt[:50]}... (stream={request.stream})"
+    )
+
     if not request.stream:
         # Non-streaming response (keep for backward compatibility)
         return await generate_non_streaming_response(request)
-    
+
     # Streaming response
     async def stream_generator():
         try:
@@ -189,33 +209,33 @@ async def generate_response(request: PromptRequest):
                 "max_tokens": request.max_tokens,
                 "temperature": request.temperature,
                 "top_p": request.top_p,
-                "stream": True
+                "stream": True,
             }
-            
+
             # Make streaming request to vLLM service
             async with httpx.AsyncClient(timeout=60.0) as client:
                 async with client.stream(
                     "POST",
                     f"{VLLM_URL}/v1/chat/completions",
                     json=vllm_payload,
-                    headers={"Accept": "text/event-stream"}
+                    headers={"Accept": "text/event-stream"},
                 ) as response:
                     response.raise_for_status()
-                    
+
                     async for chunk in response.aiter_lines():
                         if chunk:
                             # Skip empty lines and "data: " prefix
                             if chunk.startswith("data: "):
                                 chunk_data = chunk[6:]  # Remove "data: " prefix
-                                
+
                                 # Skip [DONE] signal
                                 if chunk_data == "[DONE]":
                                     break
-                                
+
                                 try:
                                     # Parse the JSON chunk
                                     chunk_json = json.loads(chunk_data)
-                                    
+
                                     # Extract content from OpenAI format
                                     choices = chunk_json.get("choices", [])
                                     if choices and len(choices) > 0:
@@ -223,11 +243,11 @@ async def generate_response(request: PromptRequest):
                                         content = delta.get("content", "")
                                         if content:
                                             yield content
-                                            
+
                                 except json.JSONDecodeError:
                                     # Skip malformed JSON chunks
                                     continue
-                                    
+
         except httpx.TimeoutException:
             logger.error("Timeout while calling vLLM service")
             yield "Error: Request timeout"
@@ -237,11 +257,11 @@ async def generate_response(request: PromptRequest):
         except Exception as e:
             logger.error(f"Failed to generate response: {str(e)}")
             yield f"Error: {str(e)}"
-    
+
     return StreamingResponse(
         stream_generator(),
         media_type="text/plain",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 
@@ -255,50 +275,56 @@ async def generate_non_streaming_response(request: PromptRequest) -> PromptRespo
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "top_p": request.top_p,
-            "stream": False
+            "stream": False,
         }
-        
+
         # Make request to vLLM service
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{VLLM_URL}/v1/chat/completions",
-                json=vllm_payload
+                f"{VLLM_URL}/v1/chat/completions", json=vllm_payload
             )
             response.raise_for_status()
-            
+
             vllm_response = response.json()
-            
+
             # Extract the generated text from OpenAI format
             choices = vllm_response.get("choices", [])
             if not choices:
-                raise HTTPException(status_code=500, detail="No choices in vLLM response")
-            
+                raise HTTPException(
+                    status_code=500, detail="No choices in vLLM response"
+                )
+
             message = choices[0].get("message", {})
             generated_text = message.get("content", "")
-            
+
             if not generated_text:
-                raise HTTPException(status_code=500, detail="Empty response from vLLM service")
-            
-            logger.info(f"Successfully generated response of length: {len(generated_text)}")
+                raise HTTPException(
+                    status_code=500, detail="Empty response from vLLM service"
+                )
+
+            logger.info(
+                f"Successfully generated response of length: {len(generated_text)}"
+            )
             return PromptResponse(response=generated_text)
-            
+
     except httpx.TimeoutException:
         logger.error("Timeout while calling vLLM service")
         raise HTTPException(status_code=504, detail="Request to vLLM service timed out")
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error from vLLM service: {e.response.status_code}")
         raise HTTPException(
-            status_code=502, 
-            detail=f"vLLM service error: {e.response.status_code}"
+            status_code=502, detail=f"vLLM service error: {e.response.status_code}"
         )
     except Exception as e:
         logger.error(f"Failed to generate response: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate response: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate response: {str(e)}"
+        )
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     logger.info(f"Starting AI service on port {PORT}")
     logger.info(f"Using embedding model: {EMBEDDING_MODEL}")
     logger.info(f"Model path: {MODEL_PATH}")

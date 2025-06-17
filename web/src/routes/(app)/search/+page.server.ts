@@ -3,10 +3,10 @@ import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
 
 export const load = async ({ url, fetch }) => {
     const query = url.searchParams.get('q')
-    
+
     if (!query || query.trim() === '') {
         return {
-            searchResults: null
+            searchResults: null,
         }
     }
 
@@ -15,7 +15,7 @@ export const load = async ({ url, fetch }) => {
             query: query.trim(),
             limit: 20,
             offset: 0,
-            mode: 'hybrid'
+            mode: 'hybrid',
         }
 
         const response = await fetch(`${SEARCHER_URL}/search`, {
@@ -23,14 +23,14 @@ export const load = async ({ url, fetch }) => {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify(searchRequest)
+            body: JSON.stringify(searchRequest),
         })
 
         if (!response.ok) {
             console.error('Search request failed:', response.status, response.statusText)
             return {
                 searchResults: null,
-                error: 'Search service unavailable'
+                error: 'Search service unavailable',
             }
         }
 
@@ -38,13 +38,13 @@ export const load = async ({ url, fetch }) => {
         console.log('Search results: ', JSON.stringify(searchResults, null, 2))
 
         return {
-            searchResults
+            searchResults,
         }
     } catch (error) {
         console.error('Error performing search:', error)
         return {
             searchResults: null,
-            error: 'Failed to perform search'
+            error: 'Failed to perform search',
         }
     }
 }

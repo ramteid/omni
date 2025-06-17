@@ -28,26 +28,31 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
                 content_types: searchRequest.content_types,
                 limit: searchRequest.limit || 20,
                 offset: searchRequest.offset || 0,
-                mode: searchRequest.mode || 'fulltext'
-            })
+                mode: searchRequest.mode || 'fulltext',
+            }),
         })
 
         if (!response.ok) {
             console.error('Search service error:', response.status, response.statusText)
-            return json({ 
-                error: 'Search service unavailable',
-                details: `Status: ${response.status}`
-            }, { status: 502 })
+            return json(
+                {
+                    error: 'Search service unavailable',
+                    details: `Status: ${response.status}`,
+                },
+                { status: 502 },
+            )
         }
 
         const searchResults = await response.json()
         return json(searchResults)
-
     } catch (error) {
         console.error('Error calling search service:', error)
-        return json({ 
-            error: 'Failed to perform search',
-            details: error instanceof Error ? error.message : 'Unknown error'
-        }, { status: 500 })
+        return json(
+            {
+                error: 'Failed to perform search',
+                details: error instanceof Error ? error.message : 'Unknown error',
+            },
+            { status: 500 },
+        )
     }
 }

@@ -42,9 +42,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 
     // Delete OAuth credentials
     if (credentials) {
-        await db
-            .delete(oauthCredentials)
-            .where(eq(oauthCredentials.sourceId, sourceId))
+        await db.delete(oauthCredentials).where(eq(oauthCredentials.sourceId, sourceId))
     }
 
     // Update source status

@@ -50,7 +50,7 @@
                     class="text-md md:text-md flex-1 rounded-full border-none bg-transparent px-0 py-4 shadow-none focus:border-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
                     onkeypress={handleKeyPress}
                 />
-                <Button 
+                <Button
                     class="m-2 cursor-pointer rounded-full px-6 py-2"
                     onclick={handleSearch}
                     disabled={!searchQuery.trim()}

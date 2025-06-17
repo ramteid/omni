@@ -17,7 +17,10 @@ export const load: PageServerLoad = async ({ locals }) => {
                 name: 'Google Workspace',
                 description: 'Google Drive, Docs, Gmail, and more',
                 icon: '🔗',
-                connected: connectedSources.some((source) => source.sourceType === 'google_drive' || source.sourceType === 'gmail'),
+                connected: connectedSources.some(
+                    (source) =>
+                        source.sourceType === 'google_drive' || source.sourceType === 'gmail',
+                ),
             },
             {
                 id: 'slack',
@@ -31,7 +34,9 @@ export const load: PageServerLoad = async ({ locals }) => {
                 name: 'Atlassian',
                 description: 'Confluence and Jira',
                 icon: '📚',
-                connected: connectedSources.some((source) => source.sourceType === 'confluence' || source.sourceType === 'jira'),
+                connected: connectedSources.some(
+                    (source) => source.sourceType === 'confluence' || source.sourceType === 'jira',
+                ),
             },
         ],
     }

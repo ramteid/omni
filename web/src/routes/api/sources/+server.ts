@@ -14,15 +14,16 @@ export const GET: RequestHandler = async ({ locals }) => {
     })
 
     // Get OAuth credentials for all sources
-    const sourceIds = userSources.map(s => s.id)
-    const credentials = sourceIds.length > 0 
-        ? await db.query.oauthCredentials.findMany({
-            where: inArray(oauthCredentials.sourceId, sourceIds),
-        })
-        : []
+    const sourceIds = userSources.map((s) => s.id)
+    const credentials =
+        sourceIds.length > 0
+            ? await db.query.oauthCredentials.findMany({
+                  where: inArray(oauthCredentials.sourceId, sourceIds),
+              })
+            : []
 
     // Create a map of source ID to whether it has credentials
-    const credentialsMap = new Map(credentials.map(c => [c.sourceId, true]))
+    const credentialsMap = new Map(credentials.map((c) => [c.sourceId, true]))
 
     const sanitizedSources = userSources.map((source) => ({
         id: source.id,

@@ -41,9 +41,14 @@ services:
       - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
 
   ai:
+    ports:
+      - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     environment:
       - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
       - VLLM_URL=http://localhost:8000  # Dummy URL for dev
+    volumes:
+      - ./services/ai:/app
+    command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
   google-connector:
     environment:

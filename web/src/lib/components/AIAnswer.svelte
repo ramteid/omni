@@ -31,7 +31,7 @@
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(searchRequest)
+                body: JSON.stringify(searchRequest),
             })
 
             if (!response.ok) {
@@ -47,7 +47,7 @@
 
             while (true) {
                 const { done, value } = await reader.read()
-                
+
                 if (done) {
                     break
                 }
@@ -57,7 +57,6 @@
             }
 
             isLoading = false
-
         } catch (err) {
             console.error('Error streaming AI answer:', err)
             error = 'Failed to generate AI answer. Please try again.'
@@ -82,7 +81,10 @@
 
     function formatAnswerWithCitations(text: string): string {
         // Convert [Source: Title] to clickable links
-        return text.replace(/\[Source: ([^\]]+)\]/g, '<span class="citation" data-source="$1">[Source: $1]</span>')
+        return text.replace(
+            /\[Source: ([^\]]+)\]/g,
+            '<span class="citation" data-source="$1">[Source: $1]</span>',
+        )
     }
 
     // Use runes instead of legacy reactive statements
@@ -112,13 +114,15 @@
                 <!-- Use innerHTML to render citations as styled spans -->
                 {@html formattedAnswer}
             </div>
-            
+
             {#if parsedAnswer.citations.length > 0}
-                <div class="mt-4 pt-3 border-t border-blue-200">
-                    <h4 class="text-sm font-medium text-gray-700 mb-2">Sources:</h4>
+                <div class="mt-4 border-t border-blue-200 pt-3">
+                    <h4 class="mb-2 text-sm font-medium text-gray-700">Sources:</h4>
                     <div class="flex flex-wrap gap-2">
                         {#each parsedAnswer.citations as citation}
-                            <span class="inline-flex items-center gap-1 px-2 py-1 text-xs bg-white border border-blue-200 rounded-md text-blue-700">
+                            <span
+                                class="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-white px-2 py-1 text-xs text-blue-700"
+                            >
                                 <ExternalLink class="h-3 w-3" />
                                 {citation}
                             </span>
@@ -127,9 +131,7 @@
                 </div>
             {/if}
         {:else}
-            <div class="text-gray-500">
-                No answer generated.
-            </div>
+            <div class="text-gray-500">No answer generated.</div>
         {/if}
     </CardContent>
 </Card>
@@ -150,7 +152,7 @@
         transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
         transition-duration: 150ms;
     }
-    
+
     :global(.citation:hover) {
         background-color: rgb(191 219 254);
     }

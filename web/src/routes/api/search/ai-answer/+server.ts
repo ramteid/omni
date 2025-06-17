@@ -29,8 +29,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
                 content_types: searchRequest.content_types,
                 limit: searchRequest.limit || 20,
                 offset: searchRequest.offset || 0,
-                mode: 'hybrid' // Always use hybrid for AI answers
-            })
+                mode: 'hybrid', // Always use hybrid for AI answers
+            }),
         })
 
         if (!response.ok) {
@@ -44,14 +44,13 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
             headers: {
                 'Content-Type': 'text/plain; charset=utf-8',
                 'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
+                Connection: 'keep-alive',
                 // Add CORS headers if needed
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'POST',
-                'Access-Control-Allow-Headers': 'Content-Type'
-            }
+                'Access-Control-Allow-Headers': 'Content-Type',
+            },
         })
-
     } catch (err) {
         console.error('Error calling AI answer service:', err)
         if (err instanceof Error && 'status' in err) {

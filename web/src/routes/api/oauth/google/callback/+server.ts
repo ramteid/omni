@@ -90,7 +90,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
         if (existingSource) {
             sourceId = existingSource.id
-            
+
             // Update existing org-level connection
             await db
                 .update(sources)
@@ -106,9 +106,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                 .where(eq(sources.id, existingSource.id))
 
             // Delete existing OAuth credentials for this source
-            await db
-                .delete(oauthCredentials)
-                .where(eq(oauthCredentials.sourceId, sourceId))
+            await db.delete(oauthCredentials).where(eq(oauthCredentials.sourceId, sourceId))
         } else {
             // Create new org-level Google connection
             sourceId = ulid()
@@ -155,7 +153,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             })
 
             if (!syncResponse.ok) {
-                console.error(`Failed to trigger sync for source ${sourceId}: ${syncResponse.status}`)
+                console.error(
+                    `Failed to trigger sync for source ${sourceId}: ${syncResponse.status}`,
+                )
             } else {
                 console.log(`Successfully triggered sync for source ${sourceId}`)
             }
@@ -163,7 +163,6 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             // Log but don't fail the OAuth flow
             console.error(`Error triggering sync for source ${sourceId}:`, syncError)
         }
-
     } catch (err) {
         console.error('OAuth callback error:', err)
         throw error(500, 'OAuth callback failed')

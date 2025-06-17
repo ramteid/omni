@@ -12,12 +12,12 @@
     function getSourceByType(providerId: string) {
         // Map OAuth provider IDs to their associated source types
         if (providerId === 'google') {
-            return data.connectedSources.find((source) => 
-                source.sourceType === 'google_drive' || source.sourceType === 'gmail'
+            return data.connectedSources.find(
+                (source) => source.sourceType === 'google_drive' || source.sourceType === 'gmail',
             )
         } else if (providerId === 'atlassian') {
-            return data.connectedSources.find((source) => 
-                source.sourceType === 'confluence' || source.sourceType === 'jira'
+            return data.connectedSources.find(
+                (source) => source.sourceType === 'confluence' || source.sourceType === 'jira',
             )
         }
         // For other providers, the ID matches the source type
