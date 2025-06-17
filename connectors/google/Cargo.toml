@@ -9,6 +9,10 @@ license.workspace = true
 name = "clio-google-connector"
 path = "src/main.rs"
 
+[lib]
+name = "clio_google_connector"
+path = "src/lib.rs"
+
 [dependencies]
 tokio = { workspace = true }
 shared = { path = "../../shared" }

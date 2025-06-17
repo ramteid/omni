@@ -1,4 +1,4 @@
-use google_connector::sync::SyncState;
+use clio_google_connector::sync::SyncState;
 use redis::Client as RedisClient;
 use std::collections::HashSet;
 

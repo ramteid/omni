@@ -56,7 +56,7 @@ impl SyncState {
             .await
     }
 
-    async fn set_file_sync_state_with_expiry(
+    pub async fn set_file_sync_state_with_expiry(
         &self,
         source_id: &str,
         file_id: &str,

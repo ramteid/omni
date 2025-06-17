@@ -12,7 +12,6 @@ pub mod test_environment;
 
 pub use clients::ai::AIClient;
 pub use config::*;
-pub use constants::*;
 pub use db::repositories::{
     DocumentRepository, EmbeddingRepository, SourceRepository, UserRepository,
 };

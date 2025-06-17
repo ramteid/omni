@@ -6,7 +6,7 @@ use testcontainers::{
     runners::AsyncRunner,
     ContainerAsync, GenericImage, ImageExt,
 };
-use testcontainers_modules::{postgres::Postgres, redis::Redis};
+use testcontainers_modules::redis::Redis;
 use tokio::time::{sleep, Duration};
 
 use crate::{

@@ -169,8 +169,8 @@ impl EmbeddingRepository {
                     updated_at: row.get("updated_at"),
                     last_indexed_at: row.get("last_indexed_at"),
                 };
-                let distance: Option<f32> = row.get("distance");
-                let similarity = 1.0 - distance.unwrap_or(1.0);
+                let distance: Option<f64> = row.get("distance");
+                let similarity = (1.0 - distance.unwrap_or(1.0)) as f32;
                 (doc, similarity)
             })
             .collect();
@@ -225,7 +225,8 @@ impl EmbeddingRepository {
                 d.content_type, d.file_size, d.file_extension, d.url, d.parent_id,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 re.distance,
-                re.chunk_text
+                re.chunk_start_offset,
+                re.chunk_end_offset
             FROM ranked_embeddings re
             JOIN documents d ON re.document_id = d.id
             WHERE {}
@@ -273,8 +274,8 @@ impl EmbeddingRepository {
                     updated_at: row.get("updated_at"),
                     last_indexed_at: row.get("last_indexed_at"),
                 };
-                let distance: Option<f32> = row.get("distance");
-                let similarity = 1.0 - distance.unwrap_or(1.0);
+                let distance: Option<f64> = row.get("distance");
+                let similarity = (1.0 - distance.unwrap_or(1.0)) as f32;
                 (doc, similarity)
             })
             .collect();
@@ -329,8 +330,8 @@ impl EmbeddingRepository {
                     updated_at: row.get("updated_at"),
                     last_indexed_at: row.get("last_indexed_at"),
                 };
-                let distance: Option<f32> = row.get("distance");
-                let similarity = 1.0 - distance.unwrap_or(1.0);
+                let distance: Option<f64> = row.get("distance");
+                let similarity = (1.0 - distance.unwrap_or(1.0)) as f32;
                 // Extract chunk text from document content using offsets
                 let chunk_start_offset: i32 = row.get("chunk_start_offset");
                 let chunk_end_offset: i32 = row.get("chunk_end_offset");
@@ -411,8 +412,8 @@ impl EmbeddingRepository {
                     updated_at: row.get("updated_at"),
                     last_indexed_at: row.get("last_indexed_at"),
                 };
-                let distance: Option<f32> = row.get("distance");
-                let similarity = 1.0 - distance.unwrap_or(1.0);
+                let distance: Option<f64> = row.get("distance");
+                let similarity = (1.0 - distance.unwrap_or(1.0)) as f32;
                 // Extract chunk text from document content using offsets
                 let chunk_start_offset: i32 = row.get("chunk_start_offset");
                 let chunk_end_offset: i32 = row.get("chunk_end_offset");
