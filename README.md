@@ -35,8 +35,8 @@ Clio is a self-hosted enterprise search platform that unifies your organization'
 - Real-time indexing with sub-second response times
 
 ### AI-Driven Intelligence
-- AI answers powered by local LLMs (no external APIs)
-- Semantic search with state-of-the-art embeddings
+- AI answers powered by open-weight LLMs (no external APIs)
+- State-of-the-art, open embedding models
 
 ### Enterprise-Ready Security
 - Role-based access control (RBAC) with source-level permissions
@@ -52,7 +52,7 @@ Clio is a self-hosted enterprise search platform that unifies your organization'
 
 Clio uses a simple microservices architecture built for scalability and maintainability:
 
-![clio-arch-3](https://github.com/user-attachments/assets/862986af-6bb0-4bd2-a2a8-e3a051ae9a22)
+![clio-arch-5](https://github.com/user-attachments/assets/543c7bad-d27d-48c8-af79-a25fb1fbda82)
 
 ### Core Components
 
