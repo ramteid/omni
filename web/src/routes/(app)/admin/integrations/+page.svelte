@@ -1,7 +1,11 @@
 <script lang="ts">
     import type { PageData } from './$types'
+    import { onMount, onDestroy } from 'svelte'
 
     export let data: PageData
+
+    let liveIndexingStatus = data.indexingStatus
+    let eventSource: EventSource | null = null
 
     function formatDate(date: Date | null) {
         if (!date) return 'N/A'
@@ -22,6 +26,74 @@
         // For other providers, the ID matches the source type
         return data.connectedSources.find((source) => source.sourceType === providerId)
     }
+
+    function getIndexingStatus(sourceId: string) {
+        const status = liveIndexingStatus[sourceId] || {}
+        return {
+            pending: status.pending || 0,
+            processing: status.processing || 0,
+            completed: status.completed || 0,
+            failed: status.failed || 0,
+            total:
+                (status.pending || 0) +
+                (status.processing || 0) +
+                (status.completed || 0) +
+                (status.failed || 0),
+        }
+    }
+
+    function getStatusColor(status: string) {
+        switch (status) {
+            case 'processing':
+                return 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400'
+            case 'completed':
+                return 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+            case 'failed':
+                return 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
+            case 'pending':
+                return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400'
+            default:
+                return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
+        }
+    }
+
+    function getOverallStats() {
+        let overall = { pending: 0, processing: 0, completed: 0, failed: 0, total: 0 }
+        Object.values(liveIndexingStatus).forEach((sourceStatus: any) => {
+            overall.pending += sourceStatus.pending || 0
+            overall.processing += sourceStatus.processing || 0
+            overall.completed += sourceStatus.completed || 0
+            overall.failed += sourceStatus.failed || 0
+        })
+        overall.total = overall.pending + overall.processing + overall.completed + overall.failed
+        return overall
+    }
+
+    onMount(() => {
+        // Start listening to SSE updates
+        eventSource = new EventSource('/api/indexing/status')
+
+        eventSource.onmessage = (event) => {
+            try {
+                const statusData = JSON.parse(event.data)
+                if (statusData.sources) {
+                    liveIndexingStatus = statusData.sources
+                }
+            } catch (error) {
+                console.error('Error parsing SSE data:', error)
+            }
+        }
+
+        eventSource.onerror = (error) => {
+            console.error('SSE connection error:', error)
+        }
+    })
+
+    onDestroy(() => {
+        if (eventSource) {
+            eventSource.close()
+        }
+    })
 </script>
 
 <div class="bg-background min-h-screen">
@@ -46,6 +118,69 @@
     </nav>
 
     <main class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <!-- Overall Indexing Status Summary -->
+        {#if getOverallStats().total > 0}
+            {@const overallStats = getOverallStats()}
+            <div class="bg-card mb-6 rounded-lg border shadow">
+                <div class="px-4 py-5 sm:p-6">
+                    <h2 class="text-foreground mb-2 text-lg font-medium">System Indexing Status</h2>
+                    <p class="text-muted-foreground mb-4 text-sm">
+                        Real-time indexing progress across all connected data sources.
+                    </p>
+
+                    <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                        <div class="text-center">
+                            <div class="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
+                                {overallStats.pending}
+                            </div>
+                            <div class="text-muted-foreground text-sm">Pending</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-2xl font-bold text-blue-600 dark:text-blue-400">
+                                {overallStats.processing}
+                            </div>
+                            <div class="text-muted-foreground text-sm">Processing</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-2xl font-bold text-green-600 dark:text-green-400">
+                                {overallStats.completed}
+                            </div>
+                            <div class="text-muted-foreground text-sm">Completed</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-2xl font-bold text-red-600 dark:text-red-400">
+                                {overallStats.failed}
+                            </div>
+                            <div class="text-muted-foreground text-sm">Failed</div>
+                        </div>
+                    </div>
+
+                    {#if overallStats.total > 0}
+                        {@const completedPercentage =
+                            ((overallStats.completed + overallStats.failed) / overallStats.total) *
+                            100}
+                        <div class="mt-4">
+                            <div class="text-muted-foreground mb-1 flex justify-between text-sm">
+                                <span>Overall Progress</span>
+                                <span
+                                    >{Math.round(completedPercentage)}% ({overallStats.completed +
+                                        overallStats.failed} of {overallStats.total})</span
+                                >
+                            </div>
+                            <div
+                                class="h-3 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"
+                            >
+                                <div
+                                    class="h-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-500 ease-in-out"
+                                    style="width: {completedPercentage}%"
+                                ></div>
+                            </div>
+                        </div>
+                    {/if}
+                </div>
+            </div>
+        {/if}
+
         <div class="bg-card rounded-lg border shadow">
             <div class="px-4 py-5 sm:p-6">
                 <h2 class="text-foreground mb-2 text-lg font-medium">Data Source Integrations</h2>
@@ -92,6 +227,7 @@
                             </p>
 
                             {#if integration.connected && connectedSource}
+                                {@const indexingStats = getIndexingStatus(connectedSource.id)}
                                 <div class="mb-4 space-y-2 text-sm">
                                     <div class="flex justify-between">
                                         <span class="text-muted-foreground">Last Sync:</span>
@@ -116,6 +252,76 @@
                                         >
                                     </div>
                                 </div>
+
+                                <!-- Indexing Status Section -->
+                                {#if indexingStats.total > 0}
+                                    <div class="bg-muted/20 mb-4 rounded-md border p-3">
+                                        <div class="mb-2 flex items-center justify-between">
+                                            <span class="text-foreground text-sm font-medium"
+                                                >Indexing Progress</span
+                                            >
+                                            <span class="text-muted-foreground text-xs"
+                                                >{indexingStats.total} items</span
+                                            >
+                                        </div>
+
+                                        <!-- Progress Bar -->
+                                        {#if indexingStats.total > 0}
+                                            {@const completedPercentage =
+                                                ((indexingStats.completed + indexingStats.failed) /
+                                                    indexingStats.total) *
+                                                100}
+                                            <div
+                                                class="mb-2 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"
+                                            >
+                                                <div
+                                                    class="h-full bg-blue-500 transition-all duration-300 ease-in-out"
+                                                    style="width: {completedPercentage}%"
+                                                ></div>
+                                            </div>
+                                        {/if}
+
+                                        <!-- Status Badges -->
+                                        <div class="flex flex-wrap gap-1">
+                                            {#if indexingStats.processing > 0}
+                                                <span
+                                                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {getStatusColor(
+                                                        'processing',
+                                                    )}"
+                                                >
+                                                    Processing: {indexingStats.processing}
+                                                </span>
+                                            {/if}
+                                            {#if indexingStats.pending > 0}
+                                                <span
+                                                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {getStatusColor(
+                                                        'pending',
+                                                    )}"
+                                                >
+                                                    Pending: {indexingStats.pending}
+                                                </span>
+                                            {/if}
+                                            {#if indexingStats.completed > 0}
+                                                <span
+                                                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {getStatusColor(
+                                                        'completed',
+                                                    )}"
+                                                >
+                                                    Completed: {indexingStats.completed}
+                                                </span>
+                                            {/if}
+                                            {#if indexingStats.failed > 0}
+                                                <span
+                                                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {getStatusColor(
+                                                        'failed',
+                                                    )}"
+                                                >
+                                                    Failed: {indexingStats.failed}
+                                                </span>
+                                            {/if}
+                                        </div>
+                                    </div>
+                                {/if}
 
                                 <div class="flex space-x-2">
                                     <button

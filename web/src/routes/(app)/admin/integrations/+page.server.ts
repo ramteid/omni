@@ -1,6 +1,7 @@
 import { requireAdmin } from '$lib/server/authHelpers'
 import { db } from '$lib/server/db'
-import { sources } from '$lib/server/db/schema'
+import { sources, connectorEventsQueue } from '$lib/server/db/schema'
+import { sql, eq } from 'drizzle-orm'
 import type { PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -9,8 +10,31 @@ export const load: PageServerLoad = async ({ locals }) => {
     // Get all organization-level connected sources
     const connectedSources = await db.select().from(sources)
 
+    // Get initial indexing status for each source
+    const indexingStatus = await db
+        .select({
+            sourceId: connectorEventsQueue.sourceId,
+            status: connectorEventsQueue.status,
+            count: sql<number>`count(*)::int`,
+        })
+        .from(connectorEventsQueue)
+        .groupBy(connectorEventsQueue.sourceId, connectorEventsQueue.status)
+
+    // Transform indexing status into a more usable format
+    const statusBySource = indexingStatus.reduce(
+        (acc, item) => {
+            if (!acc[item.sourceId]) {
+                acc[item.sourceId] = {}
+            }
+            acc[item.sourceId][item.status] = item.count
+            return acc
+        },
+        {} as Record<string, Record<string, number>>,
+    )
+
     return {
         connectedSources,
+        indexingStatus: statusBySource,
         availableIntegrations: [
             {
                 id: 'google',

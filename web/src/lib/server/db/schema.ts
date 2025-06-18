@@ -76,8 +76,22 @@ export const oauthCredentials = pgTable('oauth_credentials', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const connectorEventsQueue = pgTable('connector_events_queue', {
+    id: text('id').primaryKey(),
+    sourceId: text('source_id').notNull(),
+    eventType: text('event_type').notNull(),
+    payload: jsonb('payload').notNull(),
+    status: text('status').notNull().default('pending'),
+    retryCount: integer('retry_count').default(0),
+    maxRetries: integer('max_retries').default(3),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    processedAt: timestamp('processed_at', { withTimezone: true, mode: 'date' }),
+    errorMessage: text('error_message'),
+})
+
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
 export type Embedding = typeof embeddings.$inferSelect
 export type OAuthCredentials = typeof oauthCredentials.$inferSelect
+export type ConnectorEventsQueue = typeof connectorEventsQueue.$inferSelect

@@ -105,4 +105,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - TestEnvironment struct providing isolated test databases and cleanup for each test suite
   - GitHub Actions CI/CD workflow with parallel test execution and dependency caching
 - PDF text extraction support in Google Drive connector using pdfium-render library
+- Real-time indexing status display on admin integrations page with Server-Sent Events for live progress tracking
 
