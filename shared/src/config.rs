@@ -70,8 +70,10 @@ pub struct SlackConnectorConfig {
 #[derive(Debug, Clone)]
 pub struct AtlassianConnectorConfig {
     pub base: ConnectorConfig,
-    pub client_id: String,
-    pub client_secret: String,
+    pub database: DatabaseConfig,
+    pub base_url: String,
+    pub user_email: String,
+    pub api_token: String,
 }
 
 fn get_required_env(key: &str) -> String {
@@ -355,27 +357,36 @@ impl SlackConnectorConfig {
 impl AtlassianConnectorConfig {
     pub fn from_env() -> Self {
         let base = ConnectorConfig::from_env();
+        let database = DatabaseConfig::from_env();
 
-        let client_id = get_required_env("ATLASSIAN_CLIENT_ID");
-        if client_id.trim().is_empty() || client_id == "your-atlassian-client-id" {
-            eprintln!(
-                "ERROR: ATLASSIAN_CLIENT_ID must be set to a valid Atlassian OAuth client ID"
-            );
-            eprintln!("Please configure your Atlassian OAuth credentials");
+        let base_url = get_required_env("ATLASSIAN_BASE_URL");
+        let base_url = validate_url(&base_url, "ATLASSIAN_BASE_URL");
+        if !base_url.contains("atlassian.net") && !base_url.contains("atlassian.com") {
+            eprintln!("ERROR: ATLASSIAN_BASE_URL should be your Atlassian instance URL");
+            eprintln!("Example: https://your-company.atlassian.net");
             process::exit(1);
         }
 
-        let client_secret = get_required_env("ATLASSIAN_CLIENT_SECRET");
-        if client_secret.trim().is_empty() || client_secret == "your-atlassian-client-secret" {
-            eprintln!("ERROR: ATLASSIAN_CLIENT_SECRET must be set to a valid Atlassian OAuth client secret");
-            eprintln!("Please configure your Atlassian OAuth credentials");
+        let user_email = get_required_env("ATLASSIAN_USER_EMAIL");
+        if user_email.trim().is_empty() || !user_email.contains('@') {
+            eprintln!("ERROR: ATLASSIAN_USER_EMAIL must be set to a valid email address");
+            eprintln!("This should be the email of the service account user");
+            process::exit(1);
+        }
+
+        let api_token = get_required_env("ATLASSIAN_API_TOKEN");
+        if api_token.trim().is_empty() {
+            eprintln!("ERROR: ATLASSIAN_API_TOKEN must be set to a valid Atlassian API token");
+            eprintln!("Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens");
             process::exit(1);
         }
 
         Self {
             base,
-            client_id,
-            client_secret,
+            database,
+            base_url,
+            user_email,
+            api_token,
         }
     }
 }

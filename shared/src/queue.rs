@@ -4,6 +4,7 @@ use ulid::Ulid;
 
 use crate::models::{ConnectorEvent, ConnectorEventQueueItem};
 
+#[derive(Clone)]
 pub struct EventQueue {
     pool: PgPool,
 }

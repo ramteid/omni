@@ -196,14 +196,19 @@ services:
     container_name: clio-atlassian-connector
     environment:
       - DATABASE_URL=${DATABASE_URL}
+      - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
+      - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${ATLASSIAN_CONNECTOR_PORT}
-      - ATLASSIAN_CLIENT_ID=${ATLASSIAN_CLIENT_ID}
-      - ATLASSIAN_CLIENT_SECRET=${ATLASSIAN_CLIENT_SECRET}
+      - ATLASSIAN_BASE_URL=${ATLASSIAN_BASE_URL}
+      - ATLASSIAN_USER_EMAIL=${ATLASSIAN_USER_EMAIL}
+      - ATLASSIAN_API_TOKEN=${ATLASSIAN_API_TOKEN}
     networks:
       - clio-network
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
