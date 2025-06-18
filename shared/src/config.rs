@@ -63,8 +63,7 @@ pub struct GoogleConnectorConfig {
 #[derive(Debug, Clone)]
 pub struct SlackConnectorConfig {
     pub base: ConnectorConfig,
-    pub client_id: String,
-    pub client_secret: String,
+    pub database: DatabaseConfig,
     pub bot_token: String,
 }
 
@@ -335,34 +334,19 @@ impl GoogleConnectorConfig {
 impl SlackConnectorConfig {
     pub fn from_env() -> Self {
         let base = ConnectorConfig::from_env();
-
-        let client_id = get_required_env("SLACK_CLIENT_ID");
-        if client_id.trim().is_empty() || client_id == "your-slack-client-id" {
-            eprintln!("ERROR: SLACK_CLIENT_ID must be set to a valid Slack OAuth client ID");
-            eprintln!("Please configure your Slack OAuth credentials");
-            process::exit(1);
-        }
-
-        let client_secret = get_required_env("SLACK_CLIENT_SECRET");
-        if client_secret.trim().is_empty() || client_secret == "your-slack-client-secret" {
-            eprintln!(
-                "ERROR: SLACK_CLIENT_SECRET must be set to a valid Slack OAuth client secret"
-            );
-            eprintln!("Please configure your Slack OAuth credentials");
-            process::exit(1);
-        }
+        let database = DatabaseConfig::from_env();
 
         let bot_token = get_required_env("SLACK_BOT_TOKEN");
-        if bot_token.trim().is_empty() || bot_token == "your-slack-bot-token" {
+        if bot_token.trim().is_empty() || !bot_token.starts_with("xoxb-") {
             eprintln!("ERROR: SLACK_BOT_TOKEN must be set to a valid Slack bot token");
-            eprintln!("Please configure your Slack bot token");
+            eprintln!("Bot tokens should start with 'xoxb-'");
+            eprintln!("Please install your Slack app and obtain the bot token");
             process::exit(1);
         }
 
         Self {
             base,
-            client_id,
-            client_secret,
+            database,
             bot_token,
         }
     }
