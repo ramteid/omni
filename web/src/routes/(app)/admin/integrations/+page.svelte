@@ -3,12 +3,14 @@
     import { onMount, onDestroy } from 'svelte'
     import { Button } from '$lib/components/ui/button'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
+    import { toast } from 'svelte-sonner'
 
     export let data: PageData
 
     let liveIndexingStatus = data.indexingStatus
     let eventSource: EventSource | null = null
     let disconnectingSourceId: string | null = null
+    let syncingSourceId: string | null = null
 
     function formatDate(date: Date | null) {
         if (!date) return 'N/A'
@@ -83,13 +85,37 @@
                 throw new Error('Failed to disconnect source')
             }
 
+            toast.success('Source disconnected successfully')
             // Refresh the page to show updated connection status
             window.location.reload()
         } catch (error) {
             console.error('Error disconnecting source:', error)
-            alert('Failed to disconnect source. Please try again.')
+            toast.error('Failed to disconnect source. Please try again.')
         } finally {
             disconnectingSourceId = null
+        }
+    }
+
+    async function syncSource(sourceId: string) {
+        if (syncingSourceId) return // Prevent multiple syncs
+
+        syncingSourceId = sourceId
+        try {
+            const response = await fetch(`/api/sources/${sourceId}/sync`, {
+                method: 'POST',
+            })
+
+            if (!response.ok) {
+                throw new Error('Failed to trigger sync')
+            }
+
+            const result = await response.json()
+            toast.success('Sync triggered successfully')
+        } catch (error) {
+            console.error('Error triggering sync:', error)
+            toast.error('Failed to trigger sync. Please try again.')
+        } finally {
+            syncingSourceId = null
         }
     }
 
@@ -373,8 +399,15 @@
                                 {/if}
 
                                 <div class="flex space-x-2">
-                                    <Button variant="secondary" class="flex-1 cursor-pointer">
-                                        Sync Now
+                                    <Button
+                                        variant="secondary"
+                                        class="flex-1"
+                                        disabled={syncingSourceId === connectedSource.id}
+                                        onclick={() => syncSource(connectedSource.id)}
+                                    >
+                                        {syncingSourceId === connectedSource.id
+                                            ? 'Working...'
+                                            : 'Sync Now'}
                                     </Button>
                                     <AlertDialog.Root>
                                         <AlertDialog.Trigger>

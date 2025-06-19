@@ -12,6 +12,8 @@ export interface AppConfig {
         indexerUrl: string
         aiServiceUrl: string
         googleConnectorUrl: string
+        slackConnectorUrl: string
+        atlassianConnectorUrl: string
     }
     session: {
         secret: string
@@ -126,10 +128,17 @@ function loadConfig(): AppConfig {
     const indexerUrl = getRequiredEnv('INDEXER_URL')
     const aiServiceUrl = getRequiredEnv('AI_SERVICE_URL')
     const googleConnectorUrl = getRequiredEnv('GOOGLE_CONNECTOR_URL')
+    const slackConnectorUrl = getOptionalEnv('SLACK_CONNECTOR_URL', 'http://slack-connector:4002')
+    const atlassianConnectorUrl = getOptionalEnv(
+        'ATLASSIAN_CONNECTOR_URL',
+        'http://atlassian-connector:4003',
+    )
     validateUrl(searcherUrl, 'SEARCHER_URL')
     validateUrl(indexerUrl, 'INDEXER_URL')
     validateUrl(aiServiceUrl, 'AI_SERVICE_URL')
     validateUrl(googleConnectorUrl, 'GOOGLE_CONNECTOR_URL')
+    validateUrl(slackConnectorUrl, 'SLACK_CONNECTOR_URL')
+    validateUrl(atlassianConnectorUrl, 'ATLASSIAN_CONNECTOR_URL')
 
     // Session configuration
     const sessionSecret = getRequiredEnv('SESSION_SECRET')
@@ -171,6 +180,8 @@ function loadConfig(): AppConfig {
             indexerUrl,
             aiServiceUrl,
             googleConnectorUrl,
+            slackConnectorUrl,
+            atlassianConnectorUrl,
         },
         session: {
             secret: sessionSecret,
