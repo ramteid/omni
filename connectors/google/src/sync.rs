@@ -507,6 +507,11 @@ impl SyncManager {
         .execute(&self.pool)
         .await?;
 
+        // Notify listeners about sync run completion
+        sqlx::query("NOTIFY sync_run_update")
+            .execute(&self.pool)
+            .await?;
+
         Ok(())
     }
 
@@ -522,6 +527,11 @@ impl SyncManager {
         .bind(sync_run_id)
         .execute(&self.pool)
         .await?;
+
+        // Notify listeners about sync run failure
+        sqlx::query("NOTIFY sync_run_update")
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }

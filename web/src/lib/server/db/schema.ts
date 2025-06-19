@@ -89,9 +89,26 @@ export const connectorEventsQueue = pgTable('connector_events_queue', {
     errorMessage: text('error_message'),
 })
 
+export const syncRuns = pgTable('sync_runs', {
+    id: text('id').primaryKey(),
+    sourceId: text('source_id')
+        .notNull()
+        .references(() => sources.id, { onDelete: 'cascade' }),
+    syncType: text('sync_type').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+    status: text('status').notNull().default('running'),
+    documentsProcessed: integer('documents_processed').default(0),
+    documentsUpdated: integer('documents_updated').default(0),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
 export type Embedding = typeof embeddings.$inferSelect
 export type OAuthCredentials = typeof oauthCredentials.$inferSelect
 export type ConnectorEventsQueue = typeof connectorEventsQueue.$inferSelect
+export type SyncRun = typeof syncRuns.$inferSelect

@@ -1,13 +1,16 @@
 import { db } from '$lib/server/db/index.js'
-import { connectorEventsQueue, sources } from '$lib/server/db/schema.js'
+import { syncRuns, sources } from '$lib/server/db/schema.js'
 import { sql, eq, desc } from 'drizzle-orm'
 import type { RequestHandler } from './$types.js'
+import { Client } from 'pg'
+import { DATABASE_URL } from '$env/static/private'
 
 export const GET: RequestHandler = async ({ url }) => {
     const stream = new ReadableStream({
-        start(controller) {
+        async start(controller) {
             const encoder = new TextEncoder()
             let isClosed = false
+            let pgClient: Client | null = null
 
             // Function to send data to client
             const sendData = (data: any) => {
@@ -27,54 +30,55 @@ export const GET: RequestHandler = async ({ url }) => {
                 if (isClosed) return
 
                 try {
-                    // Get overall status counts
-                    const statusCounts = await db
+                    // Get currently running sync runs (these are actively being updated by indexer)
+                    const runningSyncRuns = await db
                         .select({
-                            status: connectorEventsQueue.status,
-                            count: sql<number>`count(*)::int`,
-                        })
-                        .from(connectorEventsQueue)
-                        .groupBy(connectorEventsQueue.status)
-
-                    // Get per-source status counts
-                    const sourceStatus = await db
-                        .select({
-                            sourceId: connectorEventsQueue.sourceId,
+                            id: syncRuns.id,
+                            sourceId: syncRuns.sourceId,
                             sourceName: sources.name,
                             sourceType: sources.sourceType,
-                            status: connectorEventsQueue.status,
-                            count: sql<number>`count(*)::int`,
+                            syncType: syncRuns.syncType,
+                            documentsProcessed: syncRuns.documentsProcessed,
+                            documentsUpdated: syncRuns.documentsUpdated,
+                            startedAt: syncRuns.startedAt,
+                            errorMessage: syncRuns.errorMessage,
                         })
-                        .from(connectorEventsQueue)
-                        .leftJoin(sources, eq(connectorEventsQueue.sourceId, sources.id))
-                        .groupBy(
-                            connectorEventsQueue.sourceId,
-                            sources.name,
-                            sources.sourceType,
-                            connectorEventsQueue.status,
-                        )
+                        .from(syncRuns)
+                        .leftJoin(sources, eq(syncRuns.sourceId, sources.id))
+                        .where(eq(syncRuns.status, 'running'))
+                        .orderBy(desc(syncRuns.startedAt))
 
-                    // Get recent activity (last 10 processed events)
-                    const recentActivity = await db
+                    // Get recently completed or failed sync runs for context
+                    const recentCompletedRuns = await db
                         .select({
-                            id: connectorEventsQueue.id,
-                            sourceId: connectorEventsQueue.sourceId,
+                            id: syncRuns.id,
+                            sourceId: syncRuns.sourceId,
                             sourceName: sources.name,
-                            eventType: connectorEventsQueue.eventType,
-                            status: connectorEventsQueue.status,
-                            processedAt: connectorEventsQueue.processedAt,
-                            errorMessage: connectorEventsQueue.errorMessage,
+                            sourceType: sources.sourceType,  
+                            syncType: syncRuns.syncType,
+                            status: syncRuns.status,
+                            documentsProcessed: syncRuns.documentsProcessed,
+                            documentsUpdated: syncRuns.documentsUpdated,
+                            startedAt: syncRuns.startedAt,
+                            completedAt: syncRuns.completedAt,
+                            errorMessage: syncRuns.errorMessage,
                         })
-                        .from(connectorEventsQueue)
-                        .leftJoin(sources, eq(connectorEventsQueue.sourceId, sources.id))
-                        .where(
-                            sql`${connectorEventsQueue.status} IN ('completed', 'failed', 'processing')`,
-                        )
-                        .orderBy(desc(connectorEventsQueue.processedAt))
+                        .from(syncRuns)
+                        .leftJoin(sources, eq(syncRuns.sourceId, sources.id))
+                        .where(sql`${syncRuns.status} IN ('completed', 'failed')`)
+                        .orderBy(desc(syncRuns.completedAt))
                         .limit(10)
 
-                    // Transform data for easier consumption
-                    const statusMap = statusCounts.reduce(
+                    // Get overall status counts
+                    const overallStatus = await db
+                        .select({
+                            status: syncRuns.status,
+                            count: sql<number>`count(*)::int`,
+                        })
+                        .from(syncRuns)
+                        .groupBy(syncRuns.status)
+
+                    const overallStatusMap = overallStatus.reduce(
                         (acc, item) => {
                             acc[item.status] = item.count
                             return acc
@@ -82,33 +86,15 @@ export const GET: RequestHandler = async ({ url }) => {
                         {} as Record<string, number>,
                     )
 
-                    const sourceStatusMap = sourceStatus.reduce(
-                        (acc, item) => {
-                            if (!acc[item.sourceId]) {
-                                acc[item.sourceId] = {
-                                    pending: 0,
-                                    processing: 0,
-                                    completed: 0,
-                                    failed: 0,
-                                }
-                            }
-                            acc[item.sourceId][item.status] = item.count
-                            return acc
-                        },
-                        {} as Record<string, any>,
-                    )
-
                     const statusData = {
                         timestamp: Date.now(),
                         overall: {
-                            pending: statusMap.pending || 0,
-                            processing: statusMap.processing || 0,
-                            completed: statusMap.completed || 0,
-                            failed: statusMap.failed || 0,
-                            dead_letter: statusMap.dead_letter || 0,
+                            running: overallStatusMap.running || 0,
+                            completed: overallStatusMap.completed || 0,
+                            failed: overallStatusMap.failed || 0,
                         },
-                        sources: sourceStatusMap,
-                        recentActivity,
+                        runningSyncs: runningSyncRuns,
+                        recentActivity: recentCompletedRuns,
                     }
 
                     sendData(statusData)
@@ -120,16 +106,46 @@ export const GET: RequestHandler = async ({ url }) => {
                 }
             }
 
-            // Send initial data
-            fetchStatus()
+            // Setup PostgreSQL LISTEN/NOTIFY for real-time updates
+            const setupNotifications = async () => {
+                try {
+                    pgClient = new Client({
+                        connectionString: DATABASE_URL,
+                    })
+                    await pgClient.connect()
+                    
+                    // Listen for sync_runs updates
+                    await pgClient.query('LISTEN sync_run_update')
+                    
+                    pgClient.on('notification', async (msg) => {
+                        if (msg.channel === 'sync_run_update' && !isClosed) {
+                            // Fetch and send updated status when we receive notification
+                            await fetchStatus()
+                        }
+                    })
+                } catch (error) {
+                    console.error('Error setting up PostgreSQL notifications:', error)
+                    // Fall back to polling if LISTEN/NOTIFY fails
+                    const interval = setInterval(fetchStatus, 5000)
+                    return () => clearInterval(interval)
+                }
+            }
 
-            // Send updates every 3 seconds
-            const interval = setInterval(fetchStatus, 3000)
+            // Send initial data
+            await fetchStatus()
+
+            // Setup real-time notifications
+            const cleanupNotifications = await setupNotifications()
 
             // Cleanup on connection close
             return () => {
                 isClosed = true
-                clearInterval(interval)
+                if (pgClient) {
+                    pgClient.end().catch(console.error)
+                }
+                if (cleanupNotifications) {
+                    cleanupNotifications()
+                }
                 try {
                     controller.close()
                 } catch (error) {

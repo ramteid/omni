@@ -532,6 +532,11 @@ impl ProcessorContext {
         .execute(self.state.db_pool.pool())
         .await?;
 
+        // Notify listeners about sync run progress update
+        sqlx::query("NOTIFY sync_run_update")
+            .execute(self.state.db_pool.pool())
+            .await?;
+
         Ok(())
     }
 }
