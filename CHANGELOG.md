@@ -120,4 +120,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-threaded queue processor for faster document indexing with automatic CPU-based parallelism
 - Enhanced sync run progress tracking with sync_run_id in queue events for real-time indexing progress visibility
 - Google Drive webhook integration for real-time document sync with automatic HTTPS configuration and channel persistence
+- Separated database migrations into dedicated container service for cleaner architecture and faster startup times
 

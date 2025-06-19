@@ -365,11 +365,6 @@ async fn process_delete_operation(state: &AppState, id: String) -> anyhow::Resul
     Ok(())
 }
 
-pub async fn run_migrations(pool: &PgPool) -> anyhow::Result<()> {
-    sqlx::migrate!("./migrations").run(pool).await?;
-    Ok(())
-}
-
 pub async fn run_server() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
@@ -383,15 +378,8 @@ pub async fn run_server() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create database pool: {}", e))?;
 
-    // TODO: Ideally this should be done outside of this service
-    info!("Running database migrations...");
-    match run_migrations(db_pool.pool()).await {
-        Ok(_) => info!("Database migrations completed successfully"),
-        Err(e) => {
-            error!("Failed to run migrations: {}", e);
-            return Err(e);
-        }
-    }
+    // Migrations are now handled by a separate migrator container
+    info!("Database migrations handled by migrator container");
 
     let redis_client = RedisClient::open(config.redis.redis_url)?;
     info!("Redis client initialized");
