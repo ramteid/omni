@@ -496,7 +496,7 @@ impl SyncManager {
         sqlx::query(
             "UPDATE sync_runs 
              SET status = $1, completed_at = CURRENT_TIMESTAMP, 
-                 files_processed = $2, files_updated = $3,
+                 documents_processed = $2, documents_updated = $3,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $4",
         )

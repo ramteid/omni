@@ -521,7 +521,7 @@ impl ProcessorContext {
     async fn increment_sync_run_progress(&self, sync_run_id: &str) -> Result<()> {
         sqlx::query(
             "UPDATE sync_runs 
-             SET files_processed = files_processed + 1, 
+             SET documents_processed = documents_processed + 1, 
                  updated_at = CURRENT_TIMESTAMP 
              WHERE id = $1",
         )

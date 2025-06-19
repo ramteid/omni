@@ -47,7 +47,7 @@ async fn test_sync_run_tracking() -> Result<()> {
     let completed_at = Utc::now() - Duration::minutes(30);
 
     sqlx::query(
-        "INSERT INTO sync_runs (id, source_id, sync_type, status, completed_at, files_processed, files_updated) 
+        "INSERT INTO sync_runs (id, source_id, sync_type, status, completed_at, documents_processed, documents_updated) 
          VALUES ($1, $2, $3, $4, $5, 10, 5)"
     )
     .bind(&sync_run_id)
@@ -100,8 +100,8 @@ async fn test_sync_run_tracking() -> Result<()> {
     assert!(updated_sync_run.is_some(), "Updated sync run should exist");
     let updated_sync_run = updated_sync_run.unwrap();
     assert_eq!(updated_sync_run.status, SyncStatus::Completed);
-    assert_eq!(updated_sync_run.files_processed, 100);
-    assert_eq!(updated_sync_run.files_updated, 50);
+    assert_eq!(updated_sync_run.documents_processed, 100);
+    assert_eq!(updated_sync_run.documents_updated, 50);
     assert!(
         updated_sync_run.completed_at.is_some(),
         "Should have completed_at timestamp"
