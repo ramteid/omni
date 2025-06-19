@@ -2,7 +2,7 @@ import { db } from '$lib/server/db/index.js'
 import { syncRuns, sources } from '$lib/server/db/schema.js'
 import { sql, eq, desc } from 'drizzle-orm'
 import type { RequestHandler } from './$types.js'
-import { Client } from 'pg'
+import postgres from 'postgres'
 import { DATABASE_URL } from '$env/static/private'
 
 export const GET: RequestHandler = async ({ url }) => {
@@ -10,7 +10,7 @@ export const GET: RequestHandler = async ({ url }) => {
         async start(controller) {
             const encoder = new TextEncoder()
             let isClosed = false
-            let pgClient: Client | null = null
+            let listenSql: any = null
 
             // Function to send data to client
             const sendData = (data: any) => {
@@ -109,16 +109,11 @@ export const GET: RequestHandler = async ({ url }) => {
             // Setup PostgreSQL LISTEN/NOTIFY for real-time updates
             const setupNotifications = async () => {
                 try {
-                    pgClient = new Client({
-                        connectionString: DATABASE_URL,
-                    })
-                    await pgClient.connect()
+                    listenSql = postgres(DATABASE_URL)
 
                     // Listen for sync_runs updates
-                    await pgClient.query('LISTEN sync_run_update')
-
-                    pgClient.on('notification', async (msg) => {
-                        if (msg.channel === 'sync_run_update' && !isClosed) {
+                    await listenSql.listen('sync_run_update', async () => {
+                        if (!isClosed) {
                             // Fetch and send updated status when we receive notification
                             await fetchStatus()
                         }
@@ -140,8 +135,8 @@ export const GET: RequestHandler = async ({ url }) => {
             // Cleanup on connection close
             return () => {
                 isClosed = true
-                if (pgClient) {
-                    pgClient.end().catch(console.error)
+                if (listenSql) {
+                    listenSql.end().catch(console.error)
                 }
                 if (cleanupNotifications) {
                     cleanupNotifications()
