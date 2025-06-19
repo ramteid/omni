@@ -1115,4 +1115,57 @@ impl SyncManager {
 
         Ok(())
     }
+
+    pub async fn auto_register_webhooks(&self) -> Result<()> {
+        info!("Starting automatic webhook registration for all sources");
+
+        let webhook_url = match std::env::var("GOOGLE_WEBHOOK_URL") {
+            Ok(url) if !url.is_empty() => url,
+            _ => {
+                info!("GOOGLE_WEBHOOK_URL not set, skipping automatic webhook registration");
+                return Ok(());
+            }
+        };
+
+        let sources = self.get_active_sources().await?;
+        info!(
+            "Found {} active Google Drive sources for webhook registration",
+            sources.len()
+        );
+
+        for source in sources {
+            match self.get_webhook_channel_by_source_id(&source.id).await? {
+                Some(_existing_channel) => {
+                    info!(
+                        "Webhook already exists for source {}, skipping registration",
+                        source.id
+                    );
+                }
+                None => {
+                    info!(
+                        "No webhook found for source {}, registering new webhook",
+                        source.id
+                    );
+                    match self
+                        .register_webhook_for_source(&source.id, webhook_url.clone())
+                        .await
+                    {
+                        Ok(response) => {
+                            info!(
+                                "Successfully registered webhook for source {}: channel_id={}",
+                                source.id, response.id
+                            );
+                        }
+                        Err(e) => {
+                            error!("Failed to register webhook for source {}: {}", source.id, e);
+                            // Continue with other sources even if one fails
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("Completed automatic webhook registration");
+        Ok(())
+    }
 }

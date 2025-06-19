@@ -69,6 +69,15 @@ async fn main() -> Result<()> {
             }
         });
 
+        // Auto-register webhooks on startup
+        info!("Auto-registering webhooks on startup");
+        let sync_manager_clone = Arc::clone(&sync_manager);
+        tokio::spawn(async move {
+            if let Err(e) = sync_manager_clone.auto_register_webhooks().await {
+                error!("Auto webhook registration failed: {}", e);
+            }
+        });
+
         // Continue with regular interval syncs
         let mut sync_interval = interval(Duration::from_secs(sync_interval_seconds));
         loop {

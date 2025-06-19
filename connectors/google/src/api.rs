@@ -30,6 +30,8 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/sync/:source_id", post(trigger_sync))
         .route("/sync", post(trigger_full_sync))
         .route("/webhook", post(handle_webhook))
+        // Manual webhook management endpoints (primarily for debugging/operations)
+        // Note: Webhooks are automatically registered on startup if GOOGLE_WEBHOOK_URL is set
         .route("/webhook/register/:source_id", post(register_webhook))
         .route("/webhook/stop/:source_id", post(stop_webhook))
         .with_state(state)
