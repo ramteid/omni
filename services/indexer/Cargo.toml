@@ -33,6 +33,8 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 ulid = { workspace = true }
 bytes = "1.0"
+futures = "0.3"
+num_cpus = "1.0"
 shared = { path = "../../shared" }
 
 [dev-dependencies]

@@ -117,4 +117,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Complete Atlassian connector implementation for Confluence and JIRA integration
   - Service account authentication using API tokens instead of OAuth for simplified self-hosted deployment
 - Persistent sync run tracking for Google connector to prevent redundant full syncs on connector restarts
+- Multi-threaded queue processor for faster document indexing with automatic CPU-based parallelism
 

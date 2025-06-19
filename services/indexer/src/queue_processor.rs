@@ -1,10 +1,13 @@
 use crate::{lexeme_refresh, AppState};
 use anyhow::Result;
+use futures::future::join_all;
 use pgvector::Vector;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions, Embedding};
 use shared::queue::EventQueue;
 use sqlx::postgres::PgListener;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 use ulid::Ulid;
@@ -13,22 +16,34 @@ pub struct QueueProcessor {
     pub state: AppState,
     pub event_queue: EventQueue,
     pub batch_size: i32,
+    pub parallelism: usize,
+    semaphore: Arc<Semaphore>,
 }
 
 impl QueueProcessor {
     pub fn new(state: AppState) -> Self {
         let event_queue = EventQueue::new(state.db_pool.pool().clone());
+        let parallelism = (num_cpus::get() / 2).max(1); // Half the CPU cores, minimum 1
+        let semaphore = Arc::new(Semaphore::new(parallelism));
         Self {
             state,
             event_queue,
             batch_size: 10,
+            parallelism,
+            semaphore,
         }
+    }
+
+    pub fn with_parallelism(mut self, parallelism: usize) -> Self {
+        self.parallelism = parallelism;
+        self.semaphore = Arc::new(Semaphore::new(parallelism));
+        self
     }
 
     pub async fn start(&self) -> Result<()> {
         info!(
-            "Starting queue processor with batch size: {}",
-            self.batch_size
+            "Starting queue processor with batch size: {}, parallelism: {}",
+            self.batch_size, self.parallelism
         );
 
         let mut listener = PgListener::connect_with(self.state.db_pool.pool()).await?;
@@ -107,23 +122,58 @@ impl QueueProcessor {
             return Ok(());
         }
 
-        let mut processed_count = 0;
+        info!("Processing batch of {} events with parallelism: {}", events.len(), self.parallelism);
+
+        // Process events concurrently
+        let mut tasks = Vec::new();
+
         for event_item in events {
             let event_id = event_item.id.clone();
+            let payload = event_item.payload.clone();
+            let state = self.state.clone();
+            let event_queue = self.event_queue.clone();
+            let semaphore = self.semaphore.clone();
 
-            match self.process_event(&event_item.payload).await {
-                Ok(_) => {
-                    self.event_queue.mark_completed(&event_id).await?;
-                    processed_count += 1;
+            let task = tokio::spawn(async move {
+                // Acquire semaphore permit to limit concurrency
+                let _permit = semaphore.acquire().await.unwrap();
+                
+                info!("Processing event {} on task thread", event_id);
+
+                let processor = ProcessorContext::new(state);
+                match processor.process_event(&payload).await {
+                    Ok(_) => {
+                        if let Err(e) = event_queue.mark_completed(&event_id).await {
+                            error!("Failed to mark event {} as completed: {}", event_id, e);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to process event {}: {}", event_id, e);
+                        if let Err(mark_err) =
+                            event_queue.mark_failed(&event_id, &e.to_string()).await
+                        {
+                            error!("Failed to mark event {} as failed: {}", event_id, mark_err);
+                        }
+                        false
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to process event {}: {}", event_id, e);
-                    self.event_queue
-                        .mark_failed(&event_id, &e.to_string())
-                        .await?;
-                }
-            }
+            });
+
+            tasks.push(task);
         }
+
+        // Wait for all tasks to complete
+        let results = join_all(tasks).await;
+
+        // Count successful processes
+        let processed_count = results
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .filter(|&&success| success)
+            .count();
 
         // After processing events, refresh lexemes if any documents were processed
         if processed_count > 0 {
@@ -139,6 +189,17 @@ impl QueueProcessor {
         }
 
         Ok(())
+    }
+}
+
+// Context for processing individual events concurrently
+struct ProcessorContext {
+    state: AppState,
+}
+
+impl ProcessorContext {
+    fn new(state: AppState) -> Self {
+        Self { state }
     }
 
     async fn process_event(&self, payload: &serde_json::Value) -> Result<()> {
