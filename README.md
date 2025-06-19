@@ -1,6 +1,6 @@
-# Clio
-
 <div align="center">
+
+<img height="100" src="https://github.com/user-attachments/assets/edf396cb-00ca-4dd6-aa57-af6eeed659f6" alt="Clio">
 
 **The Open-Source Enterprise AI Search Platform**
 
