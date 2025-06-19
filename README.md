@@ -1,6 +1,6 @@
 <div align="center">
 
-<img height="100" src="https://github.com/user-attachments/assets/edf396cb-00ca-4dd6-aa57-af6eeed659f6" alt="Clio">
+<img height="100" src="https://github.com/user-attachments/assets/db27a7ed-375b-4715-b43e-e80f52b4a305" alt="Clio">
 
 **The Open-Source Enterprise AI Search Platform**
 
@@ -20,23 +20,27 @@
 
 ## What is Clio?
 
-Clio is a self-hosted enterprise search platform that unifies your organization's knowledge across multiple data sources.
+Clio is a search platform that unifies your organization's knowledge across multiple data sources.
 
 - **Privacy-first**: Your data never leaves your infrastructure
 - **Lightning-fast**: Sub-second search across millions of documents
 - **AI-powered**: Semantic search and AI-powered answers using local LLMs
 - **Easy setup**: Up and running in minutes with Docker Compose
 
+## Getting Started
+
+*Detailed deployment instructions coming soon! We're finalizing the docker/k8s setup*
+
 ## Features
 
 ### Unified Search
 - Search across Google Workspace, Slack, Confluence, GitHub, and more
 - Combined full-text and semantic search with PostgreSQL + pgvector
-- Real-time indexing with sub-second response times
+- Real-time indexing
 
 ### AI-Driven Intelligence
 - AI answers powered by open-weight LLMs (no external APIs)
-- State-of-the-art, open embedding models
+- Open, state-of-the-art embedding models for vector similarity search
 
 ### Enterprise-Ready Security
 - Role-based access control (RBAC) with source-level permissions
@@ -52,7 +56,7 @@ Clio is a self-hosted enterprise search platform that unifies your organization'
 
 Clio uses a simple microservices architecture built for scalability and maintainability:
 
-![clio-arch-5](https://github.com/user-attachments/assets/543c7bad-d27d-48c8-af79-a25fb1fbda82)
+![clio-arch-6](https://github.com/user-attachments/assets/28d3fdaa-8ec6-4536-97fc-c1ac9d2ffe78)
 
 ### Core Components
 
@@ -61,10 +65,6 @@ Clio uses a simple microservices architecture built for scalability and maintain
 - **clio-ai** (Python): Embedding generation, RAG orchestration
 - **clio-web** (SvelteKit + Typescript): Frontend
 - **Connectors** (Rust): Independent microservices for each data source
-
-## Quick Start
-
-*Detailed deployment instructions coming soon! We're finalizing the docker/k8s setup*
 
 ## Supported Integrations
 
