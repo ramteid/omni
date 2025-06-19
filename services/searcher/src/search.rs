@@ -231,7 +231,12 @@ impl SearchEngine {
         // Get results from both FTS and semantic search
         let repo = DocumentRepository::new(self.db_pool.pool());
         let (fts_results, corrected_query) = self.fulltext_search(&repo, request).await?;
+        info!("Retrieved {} results from FTS", fts_results.len());
         let semantic_results = self.semantic_search(request).await?;
+        info!(
+            "Retrieved {} results from semantic search",
+            semantic_results.len()
+        );
 
         // Combine and deduplicate results
         let mut combined_results = std::collections::HashMap::new();
@@ -350,16 +355,39 @@ impl SearchEngine {
                 let context_start = absolute_pos.saturating_sub(50);
                 let context_end = (absolute_pos + term.len() + 50).min(content.len());
 
-                // Find word boundaries
-                let start = content[..context_start]
-                    .rfind(char::is_whitespace)
-                    .map(|i| i + 1)
-                    .unwrap_or(context_start);
+                // Find word boundaries, ensuring we respect UTF-8 char boundaries
+                let start = if context_start == 0 {
+                    0
+                } else {
+                    // Find a safe position that's on a char boundary
+                    let safe_start = content
+                        .char_indices()
+                        .take_while(|(i, _)| *i <= context_start)
+                        .last()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
 
-                let end = content[context_end..]
-                    .find(char::is_whitespace)
-                    .map(|i| context_end + i)
-                    .unwrap_or(context_end);
+                    content[..safe_start]
+                        .rfind(char::is_whitespace)
+                        .map(|i| i + 1)
+                        .unwrap_or(safe_start)
+                };
+
+                let end = if context_end >= content.len() {
+                    content.len()
+                } else {
+                    // Find a safe position that's on a char boundary
+                    let safe_end = content
+                        .char_indices()
+                        .find(|(i, _)| *i >= context_end)
+                        .map(|(i, _)| i)
+                        .unwrap_or(content.len());
+
+                    content[safe_end..]
+                        .find(char::is_whitespace)
+                        .map(|i| safe_end + i)
+                        .unwrap_or(safe_end)
+                };
 
                 let mut snippet = String::new();
                 if start > 0 {
@@ -418,16 +446,39 @@ impl SearchEngine {
                 let context_start = pos.saturating_sub(200);
                 let context_end = (pos + term.len() + 200).min(content.len());
 
-                // Find sentence boundaries for cleaner context
-                let start = content[..context_start]
-                    .rfind('.')
-                    .map(|i| i + 1)
-                    .unwrap_or(context_start);
+                // Find sentence boundaries for cleaner context, ensuring UTF-8 char boundaries
+                let start = if context_start == 0 {
+                    0
+                } else {
+                    // Find a safe position that's on a char boundary
+                    let safe_start = content
+                        .char_indices()
+                        .take_while(|(i, _)| *i <= context_start)
+                        .last()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
 
-                let end = content[context_end..]
-                    .find('.')
-                    .map(|i| context_end + i + 1)
-                    .unwrap_or(context_end);
+                    content[..safe_start]
+                        .rfind('.')
+                        .map(|i| i + 1)
+                        .unwrap_or(safe_start)
+                };
+
+                let end = if context_end >= content.len() {
+                    content.len()
+                } else {
+                    // Find a safe position that's on a char boundary
+                    let safe_end = content
+                        .char_indices()
+                        .find(|(i, _)| *i >= context_end)
+                        .map(|(i, _)| i)
+                        .unwrap_or(content.len());
+
+                    content[safe_end..]
+                        .find('.')
+                        .map(|i| safe_end + i + 1)
+                        .unwrap_or(safe_end)
+                };
 
                 let context_text = content[start..end].trim();
                 if !context_text.is_empty() && !contexts.contains(&context_text) {

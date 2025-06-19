@@ -1,6 +1,6 @@
 use crate::models::{SearchRequest, SuggestionsQuery};
 use crate::search::SearchEngine;
-use crate::{AppState, Result as SearcherResult};
+use crate::{AppState, Result as SearcherResult, SearcherError};
 use axum::body::Body;
 use axum::{
     extract::{Query, State},
@@ -46,7 +46,14 @@ pub async fn search(
         state.ai_client,
         state.config,
     );
-    let response = search_engine.search(request).await?;
+
+    let response = match search_engine.search(request).await {
+        Ok(response) => response,
+        Err(e) => {
+            error!("Search engine error: {}", e);
+            return Err(SearcherError::Internal(e));
+        }
+    };
 
     Ok(Json(serde_json::to_value(response)?))
 }

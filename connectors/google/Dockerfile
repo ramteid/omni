@@ -20,11 +20,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install pdfium binary
-RUN wget https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/6721/pdfium-linux-x64.tgz && \
+RUN mkdir /tmp/pdfium && cd /tmp/pdfium && \ 
+    wget https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7242/pdfium-linux-x64.tgz && \
     tar -xzf pdfium-linux-x64.tgz && \
     mv lib/libpdfium.so /usr/local/lib/ && \
     ldconfig && \
-    rm -rf pdfium-linux-x64.tgz lib include
+    rm -rf /tmp/pdfium
 
 WORKDIR /app
 COPY --from=builder /app/target/release/clio-google-connector /usr/local/bin/clio-google-connector

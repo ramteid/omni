@@ -5,7 +5,7 @@ CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
 CREATE MATERIALIZED VIEW IF NOT EXISTS unique_lexemes AS
 SELECT word, ndoc, nentry
 FROM ts_stat('SELECT tsv_content FROM public.documents')
-WHERE length(word) >= 3  -- Only include words with 3+ characters
+WHERE length(word) >= 3 AND length(word) <= 50  -- Only include words between (3, 50) chars. The data might contain longer "words" (long strings of textual data) so we should ignore those.
 ORDER BY ndoc DESC;
 
 -- Create indexes for efficient lookups

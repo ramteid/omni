@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     // Run HTTP server and sync loop concurrently
     let http_server = axum::serve(listener, app);
     let sync_loop = async {
-        let mut sync_interval = interval(Duration::from_secs(300));
+        let mut sync_interval = interval(Duration::from_secs(3600));
         loop {
             sync_interval.tick().await;
             info!("Starting sync cycle");

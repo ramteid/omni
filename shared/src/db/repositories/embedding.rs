@@ -4,7 +4,6 @@ use crate::{
 };
 use pgvector::Vector;
 use sqlx::{PgPool, Row};
-use tracing::info;
 
 pub struct EmbeddingRepository {
     pool: PgPool,
