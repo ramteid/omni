@@ -1,4 +1,4 @@
-FROM rust:1.75-slim-bookworm
+FROM rust:1.85-slim-bookworm
 
 # Install SQLx CLI with postgres features
 RUN apt-get update && apt-get install -y \
@@ -9,10 +9,10 @@ RUN apt-get update && apt-get install -y \
 RUN cargo install sqlx-cli --no-default-features --features native-tls,postgres
 
 # Create working directory
-WORKDIR /migrations
+RUN mkdir /migrations
 
 # Copy migration files
-COPY services/migrations/*.sql ./
+COPY services/migrations/*.sql ./migrations
 
 # Run migrations and exit
 CMD ["sqlx", "migrate", "run"]

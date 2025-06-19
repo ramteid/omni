@@ -32,6 +32,10 @@ services:
 
   # Update database URLs for all services in dev
 
+  migrator:
+    environment:
+      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+
   searcher:
     environment:
       - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
