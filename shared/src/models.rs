@@ -318,3 +318,16 @@ pub struct SyncRun {
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct WebhookChannel {
+    pub id: String,
+    pub source_id: String,
+    pub channel_id: String,
+    pub resource_id: String,
+    pub resource_uri: Option<String>,
+    pub webhook_url: String,
+    pub expires_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}

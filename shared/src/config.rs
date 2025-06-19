@@ -58,6 +58,7 @@ pub struct GoogleConnectorConfig {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_uri: String,
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -323,12 +324,25 @@ impl GoogleConnectorConfig {
         let redirect_uri = get_required_env("GOOGLE_REDIRECT_URI");
         let redirect_uri = validate_url(&redirect_uri, "GOOGLE_REDIRECT_URI");
 
+        let webhook_url = env::var("GOOGLE_WEBHOOK_URL").ok();
+        if let Some(ref url) = webhook_url {
+            if !url.trim().is_empty() {
+                validate_url(url, "GOOGLE_WEBHOOK_URL");
+                if !url.starts_with("https://") {
+                    eprintln!("ERROR: GOOGLE_WEBHOOK_URL must use HTTPS for Google webhooks");
+                    eprintln!("Google requires HTTPS endpoints for webhook notifications");
+                    process::exit(1);
+                }
+            }
+        }
+
         Self {
             base,
             database,
             client_id,
             client_secret,
             redirect_uri,
+            webhook_url,
         }
     }
 }

@@ -54,7 +54,7 @@ export const GET: RequestHandler = async ({ url }) => {
                             id: syncRuns.id,
                             sourceId: syncRuns.sourceId,
                             sourceName: sources.name,
-                            sourceType: sources.sourceType,  
+                            sourceType: sources.sourceType,
                             syncType: syncRuns.syncType,
                             status: syncRuns.status,
                             documentsProcessed: syncRuns.documentsProcessed,
@@ -113,10 +113,10 @@ export const GET: RequestHandler = async ({ url }) => {
                         connectionString: DATABASE_URL,
                     })
                     await pgClient.connect()
-                    
+
                     // Listen for sync_runs updates
                     await pgClient.query('LISTEN sync_run_update')
-                    
+
                     pgClient.on('notification', async (msg) => {
                         if (msg.channel === 'sync_run_update' && !isClosed) {
                             // Fetch and send updated status when we receive notification

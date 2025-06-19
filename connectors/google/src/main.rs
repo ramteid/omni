@@ -50,8 +50,9 @@ async fn main() -> Result<()> {
 
     info!("HTTP server listening on {}", addr);
 
-    // Run HTTP server and sync loop concurrently
+    // Run HTTP server, sync loop, and webhook renewal concurrently
     let http_server = axum::serve(listener, app);
+
     let sync_loop = async {
         let sync_interval_seconds = std::env::var("GOOGLE_SYNC_INTERVAL_SECONDS")
             .unwrap_or_else(|_| "86400".to_string())
@@ -82,13 +83,60 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Run both tasks concurrently
+    let webhook_renewal_loop = async {
+        let renewal_check_interval_seconds =
+            std::env::var("WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS")
+                .unwrap_or_else(|_| "3600".to_string()) // Default: check every hour
+                .parse::<u64>()
+                .expect("WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS must be a valid number");
+
+        let mut renewal_interval = interval(Duration::from_secs(renewal_check_interval_seconds));
+
+        loop {
+            renewal_interval.tick().await;
+            info!("Checking for expiring webhook channels");
+
+            let sync_manager_clone = Arc::clone(&sync_manager);
+            tokio::spawn(async move {
+                // Check for channels expiring in the next 24 hours
+                match sync_manager_clone.get_expiring_webhook_channels(24).await {
+                    Ok(expiring_channels) => {
+                        if !expiring_channels.is_empty() {
+                            info!(
+                                "Found {} expiring webhook channels",
+                                expiring_channels.len()
+                            );
+
+                            for channel in expiring_channels {
+                                if let Err(e) =
+                                    sync_manager_clone.renew_webhook_channel(&channel).await
+                                {
+                                    error!(
+                                        "Failed to renew webhook channel {}: {}",
+                                        channel.channel_id, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to check for expiring webhook channels: {}", e);
+                    }
+                }
+            });
+        }
+    };
+
+    // Run all tasks concurrently
     tokio::select! {
         result = http_server => {
             error!("HTTP server stopped: {:?}", result);
         }
         _ = sync_loop => {
             error!("Sync loop stopped unexpectedly");
+        }
+        _ = webhook_renewal_loop => {
+            error!("Webhook renewal loop stopped unexpectedly");
         }
     }
 

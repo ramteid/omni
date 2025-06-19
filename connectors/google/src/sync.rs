@@ -3,11 +3,16 @@ use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::types::time::OffsetDateTime;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
+use time;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthManager, OAuthCredentials};
 use crate::drive::DriveClient;
-use shared::models::{ConnectorEvent, Source, SourceType, SyncRun, SyncStatus, SyncType};
+use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
+use shared::models::{
+    ConnectorEvent, Source, SourceType, SyncRun, SyncStatus, SyncType,
+    WebhookChannel as DatabaseWebhookChannel,
+};
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
 
@@ -575,5 +580,474 @@ impl SyncManager {
                 Ok(true)
             }
         }
+    }
+
+    pub async fn handle_webhook_notification(
+        &self,
+        notification: WebhookNotification,
+    ) -> Result<()> {
+        info!(
+            "Handling webhook notification for channel {}, state: {}",
+            notification.channel_id, notification.resource_state
+        );
+
+        // Find the source associated with this webhook channel
+        let webhook_channel = match self
+            .get_webhook_channel_by_channel_id(&notification.channel_id)
+            .await?
+        {
+            Some(channel) => channel,
+            None => {
+                warn!(
+                    "Received webhook notification for unknown channel: {}",
+                    notification.channel_id
+                );
+                return Ok(());
+            }
+        };
+
+        match notification.resource_state.as_str() {
+            "sync" => {
+                debug!(
+                    "Received sync message for channel: {}",
+                    notification.channel_id
+                );
+            }
+            "add" | "update" | "remove" | "trash" | "untrash" => {
+                // Trigger incremental sync for the specific source
+                info!(
+                    "Triggering incremental sync for source {} due to resource state: {}",
+                    webhook_channel.source_id, notification.resource_state
+                );
+
+                // Get the source
+                if let Some(source) = self.get_source_by_id(&webhook_channel.source_id).await? {
+                    if let Err(e) = self.sync_source_incremental(&source).await {
+                        error!(
+                            "Failed to run incremental sync for source {}: {}",
+                            source.id, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "Source {} not found for webhook channel",
+                        webhook_channel.source_id
+                    );
+                }
+            }
+            _ => {
+                debug!(
+                    "Ignoring webhook notification with state: {}",
+                    notification.resource_state
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn register_webhook_for_source(
+        &self,
+        source_id: &str,
+        webhook_url: String,
+    ) -> Result<WebhookChannelResponse> {
+        // Check if there's already an active webhook for this source
+        if let Some(existing_channel) = self.get_webhook_channel_by_source_id(source_id).await? {
+            info!(
+                "Found existing webhook channel for source {}, stopping it first",
+                source_id
+            );
+            if let Err(e) = self
+                .stop_webhook_for_source(
+                    source_id,
+                    &existing_channel.channel_id,
+                    &existing_channel.resource_id,
+                )
+                .await
+            {
+                warn!("Failed to stop existing webhook channel: {}", e);
+            }
+        }
+
+        let oauth_creds = self.get_oauth_credentials(source_id).await?;
+        let mut creds: OAuthCredentials = oauth_creds;
+
+        let original_creds = creds.clone();
+        self.auth_manager.ensure_valid_token(&mut creds).await?;
+
+        if creds.access_token != original_creds.access_token
+            || creds.refresh_token != original_creds.refresh_token
+        {
+            self.update_oauth_credentials(source_id, &creds).await?;
+        }
+
+        // Get the current start page token for change tracking
+        let start_page_token = self
+            .drive_client
+            .get_start_page_token(&creds.access_token)
+            .await?;
+
+        // Create webhook channel
+        let webhook_channel = WebhookChannel::new(webhook_url.clone(), None);
+
+        // Register the webhook with Google
+        let webhook_response = self
+            .drive_client
+            .register_changes_webhook(&creds.access_token, &webhook_channel, &start_page_token)
+            .await?;
+
+        // Parse expiration timestamp from Google response
+        let expires_at = webhook_response.expiration.as_ref().and_then(|exp| {
+            exp.parse::<i64>().ok().and_then(|millis| {
+                sqlx::types::time::OffsetDateTime::from_unix_timestamp(millis / 1000).ok()
+            })
+        });
+
+        // Store webhook channel in database
+        self.save_webhook_channel(
+            source_id,
+            &webhook_response.id,
+            &webhook_response.resource_id,
+            Some(&webhook_response.resource_uri),
+            &webhook_url,
+            expires_at,
+        )
+        .await?;
+
+        info!(
+            "Successfully registered and saved webhook for source {}: channel_id={}, resource_id={}",
+            source_id, webhook_response.id, webhook_response.resource_id
+        );
+
+        Ok(webhook_response)
+    }
+
+    pub async fn stop_webhook_for_source(
+        &self,
+        source_id: &str,
+        channel_id: &str,
+        resource_id: &str,
+    ) -> Result<()> {
+        let oauth_creds = self.get_oauth_credentials(source_id).await?;
+        let mut creds: OAuthCredentials = oauth_creds;
+
+        let original_creds = creds.clone();
+        self.auth_manager.ensure_valid_token(&mut creds).await?;
+
+        if creds.access_token != original_creds.access_token
+            || creds.refresh_token != original_creds.refresh_token
+        {
+            self.update_oauth_credentials(source_id, &creds).await?;
+        }
+
+        // Stop the webhook with Google
+        self.drive_client
+            .stop_webhook_channel(&creds.access_token, channel_id, resource_id)
+            .await?;
+
+        // Remove from database
+        self.delete_webhook_channel_by_channel_id(channel_id)
+            .await?;
+
+        info!(
+            "Successfully stopped and removed webhook for source {}: channel_id={}",
+            source_id, channel_id
+        );
+        Ok(())
+    }
+
+    async fn sync_all_sources_incremental(&self) -> Result<()> {
+        let sources = self.get_active_sources().await?;
+
+        info!(
+            "Running incremental sync for {} active Google Drive sources",
+            sources.len()
+        );
+
+        for source in sources {
+            if let Err(e) = self.sync_source_incremental(&source).await {
+                error!(
+                    "Failed to run incremental sync for source {}: {}",
+                    source.id, e
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn sync_source_incremental(&self, source: &Source) -> Result<()> {
+        info!(
+            "Running incremental sync for source: {} ({})",
+            source.name, source.id
+        );
+
+        let oauth_creds = self.get_oauth_credentials(&source.id).await?;
+        let mut creds: OAuthCredentials = oauth_creds;
+
+        let original_creds = creds.clone();
+        self.auth_manager.ensure_valid_token(&mut creds).await?;
+
+        if creds.access_token != original_creds.access_token
+            || creds.refresh_token != original_creds.refresh_token
+        {
+            self.update_oauth_credentials(&source.id, &creds).await?;
+        }
+
+        // For incremental sync, we would ideally use the changes API with a stored page token
+        // For now, we'll just get the latest changes using the current start page token
+        let start_page_token = self
+            .drive_client
+            .get_start_page_token(&creds.access_token)
+            .await?;
+
+        // Create a sync run record for incremental sync
+        let sync_run_id = self
+            .create_sync_run(&source.id, SyncType::Incremental)
+            .await?;
+
+        // List recent changes
+        match self
+            .drive_client
+            .list_changes(&creds.access_token, &start_page_token)
+            .await
+        {
+            Ok(changes_response) => {
+                let mut processed_count = 0;
+                let mut updated_count = 0;
+
+                for change in changes_response.changes {
+                    processed_count += 1;
+
+                    match change.removed {
+                        Some(true) => {
+                            // File was removed
+                            if let Some(file_id) = &change.file_id {
+                                info!("Processing deletion for file_id: {}", file_id);
+                                self.publish_deletion_event(&sync_run_id, &source.id, file_id)
+                                    .await?;
+
+                                let sync_state = SyncState::new(self.redis_client.clone());
+                                sync_state
+                                    .delete_file_sync_state(&source.id, file_id)
+                                    .await?;
+                                updated_count += 1;
+                            }
+                        }
+                        _ => {
+                            // File was added or updated
+                            if let Some(file) = change.file {
+                                if self.should_index_file(&file) {
+                                    match self
+                                        .drive_client
+                                        .get_file_content(&creds.access_token, &file)
+                                        .await
+                                    {
+                                        Ok(content) => {
+                                            if !content.is_empty() {
+                                                let event = file.clone().to_connector_event(
+                                                    sync_run_id.clone(),
+                                                    source.id.clone(),
+                                                    content,
+                                                );
+
+                                                match self.publish_connector_event(event).await {
+                                                    Ok(_) => {
+                                                        updated_count += 1;
+                                                        if let Some(modified_time) =
+                                                            &file.modified_time
+                                                        {
+                                                            let sync_state = SyncState::new(
+                                                                self.redis_client.clone(),
+                                                            );
+                                                            sync_state
+                                                                .set_file_sync_state(
+                                                                    &source.id,
+                                                                    &file.id,
+                                                                    modified_time,
+                                                                )
+                                                                .await?;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        error!(
+                                                            "Failed to queue event for file {}: {}",
+                                                            file.name, e
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to get content for file {}: {}",
+                                                file.name, e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                self.update_sync_run_completed(
+                    &sync_run_id,
+                    processed_count as i32,
+                    updated_count as i32,
+                )
+                .await?;
+                info!(
+                    "Incremental sync completed for source {}: {} changes processed, {} updated",
+                    source.id, processed_count, updated_count
+                );
+            }
+            Err(e) => {
+                error!("Failed to list changes for source {}: {}", source.id, e);
+                self.update_sync_run_failed(&sync_run_id, &e.to_string())
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // Database operations for webhook channels
+    async fn save_webhook_channel(
+        &self,
+        source_id: &str,
+        channel_id: &str,
+        resource_id: &str,
+        resource_uri: Option<&str>,
+        webhook_url: &str,
+        expires_at: Option<sqlx::types::time::OffsetDateTime>,
+    ) -> Result<()> {
+        let id = generate_ulid();
+
+        sqlx::query(
+            "INSERT INTO webhook_channels (id, source_id, channel_id, resource_id, resource_uri, webhook_url, expires_at) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&id)
+        .bind(source_id)
+        .bind(channel_id)
+        .bind(resource_id)
+        .bind(resource_uri)
+        .bind(webhook_url)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_webhook_channel_by_channel_id(
+        &self,
+        channel_id: &str,
+    ) -> Result<Option<DatabaseWebhookChannel>> {
+        let webhook_channel = sqlx::query_as::<_, DatabaseWebhookChannel>(
+            "SELECT * FROM webhook_channels WHERE channel_id = $1",
+        )
+        .bind(channel_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(webhook_channel)
+    }
+
+    async fn get_webhook_channel_by_source_id(
+        &self,
+        source_id: &str,
+    ) -> Result<Option<DatabaseWebhookChannel>> {
+        let webhook_channel = sqlx::query_as::<_, DatabaseWebhookChannel>(
+            "SELECT * FROM webhook_channels WHERE source_id = $1",
+        )
+        .bind(source_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(webhook_channel)
+    }
+
+    async fn get_source_by_id(&self, source_id: &str) -> Result<Option<Source>> {
+        let source = sqlx::query_as::<_, Source>("SELECT * FROM sources WHERE id = $1")
+            .bind(source_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(source)
+    }
+
+    async fn delete_webhook_channel_by_channel_id(&self, channel_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM webhook_channels WHERE channel_id = $1")
+            .bind(channel_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_expiring_webhook_channels(
+        &self,
+        hours_ahead: i64,
+    ) -> Result<Vec<DatabaseWebhookChannel>> {
+        let threshold =
+            sqlx::types::time::OffsetDateTime::now_utc() + time::Duration::hours(hours_ahead);
+
+        let channels = sqlx::query_as::<_, DatabaseWebhookChannel>(
+            "SELECT * FROM webhook_channels WHERE expires_at IS NOT NULL AND expires_at <= $1",
+        )
+        .bind(threshold)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(channels)
+    }
+
+    pub async fn renew_webhook_channel(
+        &self,
+        webhook_channel: &DatabaseWebhookChannel,
+    ) -> Result<()> {
+        info!(
+            "Renewing webhook channel {} for source {}",
+            webhook_channel.channel_id, webhook_channel.source_id
+        );
+
+        // Stop the old webhook
+        if let Err(e) = self
+            .stop_webhook_for_source(
+                &webhook_channel.source_id,
+                &webhook_channel.channel_id,
+                &webhook_channel.resource_id,
+            )
+            .await
+        {
+            warn!("Failed to stop expiring webhook channel: {}", e);
+        }
+
+        // Register a new webhook
+        match self
+            .register_webhook_for_source(
+                &webhook_channel.source_id,
+                webhook_channel.webhook_url.clone(),
+            )
+            .await
+        {
+            Ok(new_response) => {
+                info!(
+                    "Successfully renewed webhook for source {}: old_channel={}, new_channel={}",
+                    webhook_channel.source_id, webhook_channel.channel_id, new_response.id
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Failed to renew webhook for source {}: {}",
+                    webhook_channel.source_id, e
+                );
+                return Err(e);
+            }
+        }
+
+        Ok(())
     }
 }

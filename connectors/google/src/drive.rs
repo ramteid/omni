@@ -4,7 +4,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::models::GoogleDriveFile;
+use crate::models::{
+    DriveChangesResponse, GoogleDriveFile, WebhookChannel, WebhookChannelResponse,
+};
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
@@ -213,6 +215,143 @@ impl DriveClient {
         }
 
         Ok(full_text.trim().to_string())
+    }
+
+    pub async fn register_changes_webhook(
+        &self,
+        token: &str,
+        webhook_channel: &WebhookChannel,
+        page_token: &str,
+    ) -> Result<WebhookChannelResponse> {
+        let url = format!("{}/changes/watch", DRIVE_API_BASE);
+
+        let params = vec![
+            ("pageToken", page_token),
+            ("includeItemsFromAllDrives", "true"),
+            ("supportsAllDrives", "true"),
+            ("includeRemoved", "true"),
+        ];
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(token)
+            .query(&params)
+            .json(webhook_channel)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Failed to register webhook: {}", error_text));
+        }
+
+        let response_text = response.text().await?;
+        debug!("Webhook registration response: {}", response_text);
+
+        serde_json::from_str(&response_text).map_err(|e| {
+            anyhow!(
+                "Failed to parse webhook response: {}. Raw response: {}",
+                e,
+                response_text
+            )
+        })
+    }
+
+    pub async fn stop_webhook_channel(
+        &self,
+        token: &str,
+        channel_id: &str,
+        resource_id: &str,
+    ) -> Result<()> {
+        let url = format!("{}/channels/stop", DRIVE_API_BASE);
+
+        let stop_request = serde_json::json!({
+            "id": channel_id,
+            "resourceId": resource_id
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&stop_request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Failed to stop webhook channel: {}", error_text));
+        }
+
+        debug!("Successfully stopped webhook channel: {}", channel_id);
+        Ok(())
+    }
+
+    pub async fn get_start_page_token(&self, token: &str) -> Result<String> {
+        let url = format!("{}/changes/startPageToken", DRIVE_API_BASE);
+
+        let params = vec![("supportsAllDrives", "true")];
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(token)
+            .query(&params)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Failed to get start page token: {}", error_text));
+        }
+
+        let response_json: serde_json::Value = response.json().await?;
+        let start_page_token = response_json["startPageToken"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing startPageToken in response"))?;
+
+        Ok(start_page_token.to_string())
+    }
+
+    pub async fn list_changes(
+        &self,
+        token: &str,
+        page_token: &str,
+    ) -> Result<DriveChangesResponse> {
+        let url = format!("{}/changes", DRIVE_API_BASE);
+
+        let params = vec![
+            ("pageToken", page_token),
+            ("includeItemsFromAllDrives", "true"),
+            ("supportsAllDrives", "true"),
+            ("includeRemoved", "true"),
+            ("fields", "nextPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role)),fileId,time)"),
+        ];
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(token)
+            .query(&params)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Failed to list changes: {}", error_text));
+        }
+
+        let response_text = response.text().await?;
+        debug!("Drive changes response: {}", response_text);
+
+        serde_json::from_str(&response_text).map_err(|e| {
+            anyhow!(
+                "Failed to parse changes response: {}. Raw response: {}",
+                e,
+                response_text
+            )
+        })
     }
 }
 

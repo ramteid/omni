@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleDriveFile {
@@ -91,4 +92,101 @@ impl GoogleDriveFile {
             permissions,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookChannel {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub channel_type: String,
+    pub address: String,
+    pub params: Option<HashMap<String, String>>,
+    pub expiration: Option<String>,
+    pub token: Option<String>,
+}
+
+impl WebhookChannel {
+    pub fn new(webhook_url: String, token: Option<String>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            channel_type: "web_hook".to_string(),
+            address: webhook_url,
+            params: None,
+            expiration: None,
+            token,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookChannelResponse {
+    pub id: String,
+    #[serde(rename = "resourceId")]
+    pub resource_id: String,
+    #[serde(rename = "resourceUri")]
+    pub resource_uri: String,
+    pub token: Option<String>,
+    pub expiration: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebhookNotification {
+    pub channel_id: String,
+    pub resource_state: String,
+    pub resource_id: Option<String>,
+    pub resource_uri: Option<String>,
+    pub changed: Option<String>,
+}
+
+impl WebhookNotification {
+    pub fn from_headers(headers: &axum::http::HeaderMap) -> Option<Self> {
+        let channel_id = headers.get("x-goog-channel-id")?.to_str().ok()?.to_string();
+
+        let resource_state = headers
+            .get("x-goog-resource-state")?
+            .to_str()
+            .ok()?
+            .to_string();
+
+        let resource_id = headers
+            .get("x-goog-resource-id")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
+        let resource_uri = headers
+            .get("x-goog-resource-uri")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
+        let changed = headers
+            .get("x-goog-changed")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
+        Some(Self {
+            channel_id,
+            resource_state,
+            resource_id,
+            resource_uri,
+            changed,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveChangesResponse {
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+    pub changes: Vec<DriveChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveChange {
+    #[serde(rename = "changeType")]
+    pub change_type: String,
+    pub removed: Option<bool>,
+    pub file: Option<GoogleDriveFile>,
+    #[serde(rename = "fileId")]
+    pub file_id: Option<String>,
+    pub time: Option<String>,
 }
