@@ -36,10 +36,10 @@ docs/
 !.env.example
 
 # Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/build/
-frontend/.svelte-kit/
+web/node_modules/
+web/dist/
+web/build/
+web/.svelte-kit/
 
 # Temporary files
 *.tmp

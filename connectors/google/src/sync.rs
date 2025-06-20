@@ -2,7 +2,7 @@ use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::types::time::OffsetDateTime;
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::Arc;
 use time;
@@ -15,8 +15,8 @@ use crate::drive::DriveClient;
 use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
 use crate::rate_limiter::RateLimiter;
 use shared::models::{
-    AuthType, ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun,
-    SyncStatus, SyncType, WebhookChannel as DatabaseWebhookChannel,
+    ConnectorEvent, ServiceCredentials, Source, SourceType, SyncRun, SyncStatus, SyncType,
+    WebhookChannel as DatabaseWebhookChannel,
 };
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
@@ -227,16 +227,16 @@ impl SyncManager {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_service_auth(&service_creds)?);
         let domain = self.get_domain_from_credentials(&service_creds)?;
-        let principal_email = self.get_principal_email_from_credentials(&service_creds)?;
+        let user_email = self.get_user_email_from_source(&source.id).await
+            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
         // Get all users in the organization
         info!("Listing all users in domain: {}", domain);
 
-        // Use the configured principal email to list all users
-        info!("Using principal email: {}", principal_email);
-        let admin_access_token = service_auth.get_access_token(&principal_email).await
-            .map_err(|e| anyhow::anyhow!("Failed to get access token for principal user {}: {}. Make sure the service account has domain-wide delegation enabled.", principal_email, e))?;
-
+        // Use the logged-in user's email to list all users (they should be a super-admin)
+        info!("Using user email: {}", user_email);
+        let admin_access_token = service_auth.get_access_token(&user_email).await
+            .map_err(|e| anyhow::anyhow!("Failed to get access token for user {}: {}. Make sure the user is a super-admin and the service account has domain-wide delegation enabled.", user_email, e))?;
         let all_users = self
             .admin_client
             .list_all_users(&admin_access_token, &domain)
@@ -488,7 +488,13 @@ impl SyncManager {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing service_account_key in credentials"))?;
 
-        let mut scopes = creds
+        let default_scopes = vec![
+            "https://www.googleapis.com/auth/drive.readonly".to_string(),
+            "https://www.googleapis.com/auth/gmail.readonly".to_string(),
+            "https://www.googleapis.com/auth/admin.directory.user.readonly".to_string(),
+        ];
+
+        let scopes = creds
             .config
             .get("scopes")
             .and_then(|v| v.as_array())
@@ -497,15 +503,7 @@ impl SyncManager {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_else(|| vec!["https://www.googleapis.com/auth/drive.readonly".to_string()]);
-
-        // Ensure admin directory scope is included for listing users
-        if !scopes
-            .contains(&"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string())
-        {
-            scopes
-                .push("https://www.googleapis.com/auth/admin.directory.user.readonly".to_string());
-        }
+            .unwrap_or(default_scopes);
 
         ServiceAccountAuth::new(service_account_json, scopes)
     }
@@ -517,6 +515,19 @@ impl SyncManager {
             .and_then(|v| v.as_str())
             .map(String::from)
             .ok_or_else(|| anyhow::anyhow!("Missing domain in service credentials config"))
+    }
+
+    async fn get_user_email_from_source(&self, source_id: &str) -> Result<String> {
+        let user_email = sqlx::query_scalar::<_, String>(
+            "SELECT u.email FROM sources s 
+             JOIN users u ON s.created_by = u.id 
+             WHERE s.id = $1",
+        )
+        .bind(source_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(user_email)
     }
 
     fn get_principal_email_from_credentials(&self, creds: &ServiceCredentials) -> Result<String> {
@@ -775,9 +786,9 @@ impl SyncManager {
 
         let service_creds = self.get_service_credentials(source_id).await?;
         let service_auth = self.create_service_auth(&service_creds)?;
-        let domain = self.get_domain_from_credentials(&service_creds)?;
-        let principal_email = self.get_principal_email_from_credentials(&service_creds)?;
-        let access_token = service_auth.get_access_token(&principal_email).await?;
+        let user_email = self.get_user_email_from_source(source_id).await
+            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?;
+        let access_token = service_auth.get_access_token(&user_email).await?;
 
         // Get the current start page token for change tracking
         let start_page_token = self
@@ -828,9 +839,9 @@ impl SyncManager {
     ) -> Result<()> {
         let service_creds = self.get_service_credentials(source_id).await?;
         let service_auth = self.create_service_auth(&service_creds)?;
-        let domain = self.get_domain_from_credentials(&service_creds)?;
-        let principal_email = self.get_principal_email_from_credentials(&service_creds)?;
-        let access_token = service_auth.get_access_token(&principal_email).await?;
+        let user_email = self.get_user_email_from_source(source_id).await
+            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?;
+        let access_token = service_auth.get_access_token(&user_email).await?;
 
         // Stop the webhook with Google
         self.drive_client
@@ -876,9 +887,9 @@ impl SyncManager {
 
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = self.create_service_auth(&service_creds)?;
-        let domain = self.get_domain_from_credentials(&service_creds)?;
-        let principal_email = self.get_principal_email_from_credentials(&service_creds)?;
-        let access_token = service_auth.get_access_token(&principal_email).await?;
+        let user_email = self.get_user_email_from_source(&source.id).await
+            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
+        let access_token = service_auth.get_access_token(&user_email).await?;
 
         // For incremental sync, we would ideally use the changes API with a stored page token
         // For now, we'll just get the latest changes using the current start page token

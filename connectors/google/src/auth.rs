@@ -78,7 +78,10 @@ impl ServiceAccountAuth {
             }
         }
 
-        info!("Generating new access token for user: {}", impersonate_user);
+        info!(
+            "Generating new access token for user: {}, scopes: {:?}",
+            impersonate_user, self.scopes
+        );
 
         let now = Utc::now();
         let exp = now + Duration::hours(1);
