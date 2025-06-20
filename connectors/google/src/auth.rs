@@ -3,6 +3,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -41,17 +42,12 @@ struct CachedToken {
 pub struct ServiceAccountAuth {
     service_account: GoogleServiceAccountKey,
     scopes: Vec<String>,
-    delegated_user: Option<String>,
     client: Client,
-    token_cache: Arc<RwLock<Option<CachedToken>>>,
+    token_cache: Arc<RwLock<HashMap<String, CachedToken>>>,
 }
 
 impl ServiceAccountAuth {
-    pub fn new(
-        service_account_json: &str,
-        scopes: Vec<String>,
-        delegated_user: Option<String>,
-    ) -> Result<Self> {
+    pub fn new(service_account_json: &str, scopes: Vec<String>) -> Result<Self> {
         let service_account: GoogleServiceAccountKey = serde_json::from_str(service_account_json)?;
 
         if service_account.key_type != "service_account" {
@@ -64,33 +60,32 @@ impl ServiceAccountAuth {
         Ok(Self {
             service_account,
             scopes,
-            delegated_user,
             client: Client::new(),
-            token_cache: Arc::new(RwLock::new(None)),
+            token_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
-    pub async fn get_access_token(&self) -> Result<String> {
+    pub async fn get_access_token(&self, impersonate_user: &str) -> Result<String> {
         // Check cache first
         {
             let cache = self.token_cache.read().await;
-            if let Some(cached) = &*cache {
+            if let Some(cached) = cache.get(impersonate_user) {
                 let now = Utc::now().timestamp();
                 if cached.expires_at > now + 300 {
-                    debug!("Using cached access token");
+                    debug!("Using cached access token for user: {}", impersonate_user);
                     return Ok(cached.access_token.clone());
                 }
             }
         }
 
-        info!("Generating new access token for service account");
+        info!("Generating new access token for user: {}", impersonate_user);
 
         let now = Utc::now();
         let exp = now + Duration::hours(1);
 
         let claims = GoogleJwtClaims {
             iss: self.service_account.client_email.clone(),
-            sub: self.delegated_user.clone(),
+            sub: Some(impersonate_user.to_string()),
             scope: self.scopes.join(" "),
             aud: self.service_account.token_uri.clone(),
             exp: exp.timestamp(),
@@ -130,18 +125,21 @@ impl ServiceAccountAuth {
         // Cache the token
         {
             let mut cache = self.token_cache.write().await;
-            *cache = Some(CachedToken {
-                access_token: token_response.access_token.clone(),
-                expires_at: now.timestamp() + token_response.expires_in,
-            });
+            cache.insert(
+                impersonate_user.to_string(),
+                CachedToken {
+                    access_token: token_response.access_token.clone(),
+                    expires_at: now.timestamp() + token_response.expires_in,
+                },
+            );
         }
 
         Ok(token_response.access_token)
     }
 
-    pub async fn validate(&self) -> Result<()> {
+    pub async fn validate(&self, test_user: &str) -> Result<()> {
         // Try to get an access token to validate the service account
-        self.get_access_token().await?;
+        self.get_access_token(test_user).await?;
         Ok(())
     }
 }

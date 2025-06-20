@@ -6,6 +6,7 @@ use tokio::time::{interval, Duration};
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod admin;
 mod api;
 mod auth;
 mod drive;

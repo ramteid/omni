@@ -9,6 +9,7 @@ use time;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
+use crate::admin::AdminClient;
 use crate::auth::ServiceAccountAuth;
 use crate::drive::DriveClient;
 use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
@@ -24,6 +25,7 @@ pub struct SyncManager {
     pool: PgPool,
     redis_client: RedisClient,
     drive_client: DriveClient,
+    admin_client: AdminClient,
     event_queue: EventQueue,
 }
 
@@ -135,12 +137,14 @@ impl SyncManager {
             .unwrap_or(5);
 
         let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
-        let drive_client = DriveClient::with_rate_limiter(rate_limiter);
+        let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone());
+        let admin_client = AdminClient::with_rate_limiter(rate_limiter);
 
         Ok(Self {
             pool,
             redis_client,
             drive_client,
+            admin_client,
             event_queue,
         })
     }
@@ -221,67 +225,105 @@ impl SyncManager {
         sync_run_id: &str,
     ) -> Result<(usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = self.create_service_auth(&service_creds)?;
-        let access_token = Arc::from(service_auth.get_access_token().await?.as_str());
+        let service_auth = Arc::new(self.create_service_auth(&service_creds)?);
+        let domain = self.get_domain_from_credentials(&service_creds)?;
+        let principal_email = self.get_principal_email_from_credentials(&service_creds)?;
+
+        // Get all users in the organization
+        info!("Listing all users in domain: {}", domain);
+
+        // Use the configured principal email to list all users
+        info!("Using principal email: {}", principal_email);
+        let admin_access_token = service_auth.get_access_token(&principal_email).await
+            .map_err(|e| anyhow::anyhow!("Failed to get access token for principal user {}: {}. Make sure the service account has domain-wide delegation enabled.", principal_email, e))?;
+
+        let all_users = self
+            .admin_client
+            .list_all_users(&admin_access_token, &domain)
+            .await?;
+        info!("Found {} users in domain {}", all_users.len(), domain);
 
         let sync_state = SyncState::new(self.redis_client.clone());
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
         let mut current_files = HashSet::new();
-        let mut page_token: Option<String> = None;
         let mut all_files_to_process = Vec::new();
 
-        // First, collect all files that need processing
-        loop {
-            debug!(
-                "Calling Drive API list_files with page_token: {:?}",
-                page_token
-            );
-            let response = self
-                .drive_client
-                .list_files(&access_token, page_token.as_deref())
-                .await
-                .map_err(|e| {
-                    error!("Drive API list_files call failed: {}", e);
-                    e
-                })?;
+        // Iterate over all users to collect files
+        for user in &all_users {
+            info!("Processing files for user: {}", user.primary_email);
 
-            for file in response.files {
-                current_files.insert(file.id.clone());
+            // Get access token for this user
+            let user_access_token = match service_auth.get_access_token(&user.primary_email).await {
+                Ok(token) => token,
+                Err(e) => {
+                    warn!("Failed to get access token for user {}: {}. This user may not have Drive access.", user.primary_email, e);
+                    continue;
+                }
+            };
 
-                if self.should_index_file(&file) {
-                    let should_process = if let Some(modified_time) = &file.modified_time {
-                        match sync_state.get_file_sync_state(&source.id, &file.id).await? {
-                            Some(last_modified) => {
-                                if last_modified != *modified_time {
-                                    debug!(
-                                        "File {} has been modified (was: {}, now: {})",
-                                        file.name, last_modified, modified_time
-                                    );
+            let mut page_token: Option<String> = None;
+
+            // List all files accessible to this user
+            loop {
+                debug!(
+                    "Calling Drive API list_files for user {} with page_token: {:?}",
+                    user.primary_email, page_token
+                );
+
+                let response = match self
+                    .drive_client
+                    .list_files(&user_access_token, page_token.as_deref())
+                    .await
+                {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        warn!(
+                            "Failed to list files for user {}: {}",
+                            user.primary_email, e
+                        );
+                        break;
+                    }
+                };
+
+                for file in response.files {
+                    current_files.insert(file.id.clone());
+
+                    if self.should_index_file(&file) {
+                        let should_process = if let Some(modified_time) = &file.modified_time {
+                            match sync_state.get_file_sync_state(&source.id, &file.id).await? {
+                                Some(last_modified) => {
+                                    if last_modified != *modified_time {
+                                        debug!(
+                                            "File {} has been modified (was: {}, now: {})",
+                                            file.name, last_modified, modified_time
+                                        );
+                                        true
+                                    } else {
+                                        debug!("File {} unchanged, skipping", file.name);
+                                        false
+                                    }
+                                }
+                                None => {
+                                    debug!("File {} is new, processing", file.name);
                                     true
-                                } else {
-                                    debug!("File {} unchanged, skipping", file.name);
-                                    false
                                 }
                             }
-                            None => {
-                                debug!("File {} is new, processing", file.name);
-                                true
-                            }
-                        }
-                    } else {
-                        warn!("File {} has no modified_time, processing anyway", file.name);
-                        true
-                    };
+                        } else {
+                            warn!("File {} has no modified_time, processing anyway", file.name);
+                            true
+                        };
 
-                    if should_process {
-                        all_files_to_process.push(file);
+                        if should_process {
+                            // Store file with the user's access token for later processing
+                            all_files_to_process.push((file, user_access_token.clone()));
+                        }
                     }
                 }
-            }
 
-            page_token = response.next_page_token;
-            if page_token.is_none() {
-                break;
+                page_token = response.next_page_token;
+                if page_token.is_none() {
+                    break;
+                }
             }
         }
 
@@ -301,11 +343,10 @@ impl SyncManager {
 
         // Process files concurrently
         let results = stream::iter(all_files_to_process)
-            .map(|file| {
+            .map(|(file, user_access_token)| {
                 let sync_state = sync_state.clone();
                 let sync_run_id = sync_run_id.to_string();
                 let source_id = source.id.clone();
-                let access_token = Arc::clone(&access_token);
                 let drive_client = &self.drive_client;
                 let event_queue = &self.event_queue;
                 let semaphore = Arc::clone(&semaphore);
@@ -313,7 +354,10 @@ impl SyncManager {
                 async move {
                     let _permit = semaphore.acquire().await.unwrap();
 
-                    match drive_client.get_file_content(&access_token, &file).await {
+                    match drive_client
+                        .get_file_content(&user_access_token, &file)
+                        .await
+                    {
                         Ok(content) => {
                             if !content.is_empty() {
                                 let event = file.clone().to_connector_event(
@@ -444,24 +488,43 @@ impl SyncManager {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing service_account_key in credentials"))?;
 
-        let scopes = creds
+        let mut scopes = creds
             .config
             .get("scopes")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| vec!["https://www.googleapis.com/auth/drive.readonly".to_string()]);
 
-        let delegated_user = creds
-            .config
-            .get("delegated_user")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        // Ensure admin directory scope is included for listing users
+        if !scopes
+            .contains(&"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string())
+        {
+            scopes
+                .push("https://www.googleapis.com/auth/admin.directory.user.readonly".to_string());
+        }
 
-        ServiceAccountAuth::new(service_account_json, scopes, delegated_user)
+        ServiceAccountAuth::new(service_account_json, scopes)
+    }
+
+    fn get_domain_from_credentials(&self, creds: &ServiceCredentials) -> Result<String> {
+        creds
+            .config
+            .get("domain")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Missing domain in service credentials config"))
+    }
+
+    fn get_principal_email_from_credentials(&self, creds: &ServiceCredentials) -> Result<String> {
+        creds
+            .principal_email
+            .as_ref()
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("Missing principal_email in service credentials. Please set the admin email when configuring the Google service account."))
     }
 
     async fn update_source_status(&self, source_id: &str, status: &str) -> Result<()> {
@@ -712,7 +775,9 @@ impl SyncManager {
 
         let service_creds = self.get_service_credentials(source_id).await?;
         let service_auth = self.create_service_auth(&service_creds)?;
-        let access_token = service_auth.get_access_token().await?;
+        let domain = self.get_domain_from_credentials(&service_creds)?;
+        let principal_email = self.get_principal_email_from_credentials(&service_creds)?;
+        let access_token = service_auth.get_access_token(&principal_email).await?;
 
         // Get the current start page token for change tracking
         let start_page_token = self
@@ -763,7 +828,9 @@ impl SyncManager {
     ) -> Result<()> {
         let service_creds = self.get_service_credentials(source_id).await?;
         let service_auth = self.create_service_auth(&service_creds)?;
-        let access_token = service_auth.get_access_token().await?;
+        let domain = self.get_domain_from_credentials(&service_creds)?;
+        let principal_email = self.get_principal_email_from_credentials(&service_creds)?;
+        let access_token = service_auth.get_access_token(&principal_email).await?;
 
         // Stop the webhook with Google
         self.drive_client
@@ -809,7 +876,9 @@ impl SyncManager {
 
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = self.create_service_auth(&service_creds)?;
-        let access_token = service_auth.get_access_token().await?;
+        let domain = self.get_domain_from_credentials(&service_creds)?;
+        let principal_email = self.get_principal_email_from_credentials(&service_creds)?;
+        let access_token = service_auth.get_access_token(&principal_email).await?;
 
         // For incremental sync, we would ideally use the changes API with a stored page token
         // For now, we'll just get the latest changes using the current start page token

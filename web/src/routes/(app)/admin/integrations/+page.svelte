@@ -30,7 +30,7 @@
     let serviceAccountJson = ''
     let apiToken = ''
     let principalEmail = ''
-    let delegatedUser = ''
+    let domain = ''
     let isSubmitting = false
 
     function formatDate(date: Date | null) {
@@ -99,7 +99,7 @@
         serviceAccountJson = ''
         apiToken = ''
         principalEmail = ''
-        delegatedUser = ''
+        domain = ''
     }
 
     async function setupServiceAccount() {
@@ -117,6 +117,14 @@
                     throw new Error('Service account JSON is required')
                 }
 
+                if (!principalEmail.trim()) {
+                    throw new Error('Admin email is required')
+                }
+
+                if (!domain.trim()) {
+                    throw new Error('Organization domain is required')
+                }
+
                 // Validate JSON
                 try {
                     JSON.parse(serviceAccountJson)
@@ -127,7 +135,7 @@
                 credentials = { service_account_key: serviceAccountJson }
                 config = {
                     scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-                    delegated_user: delegatedUser || null,
+                    domain: domain || null,
                 }
                 authType = AuthType.JWT
             } else if (selectedIntegration.id === 'atlassian') {
@@ -464,15 +472,32 @@
                 </div>
 
                 <div class="space-y-2">
-                    <Label for="delegated-user">Delegated User Email (Optional)</Label>
+                    <Label for="principal-email">Admin Email</Label>
                     <Input
-                        id="delegated-user"
-                        bind:value={delegatedUser}
-                        placeholder="user@yourdomain.com"
+                        id="principal-email"
+                        bind:value={principalEmail}
+                        placeholder="admin@yourdomain.com"
                         type="email"
+                        required
                     />
                     <p class="text-muted-foreground text-sm">
-                        If using domain-wide delegation, specify the user to impersonate.
+                        The admin user email that the service account will impersonate to access
+                        Google Workspace APIs.
+                    </p>
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="domain">Organization Domain</Label>
+                    <Input
+                        id="domain"
+                        bind:value={domain}
+                        placeholder="yourdomain.com"
+                        type="text"
+                        required
+                    />
+                    <p class="text-muted-foreground text-sm">
+                        Your Google Workspace domain (e.g., company.com). The service account will
+                        impersonate all users in this domain.
                     </p>
                 </div>
             {:else if selectedIntegration?.id === 'atlassian'}
