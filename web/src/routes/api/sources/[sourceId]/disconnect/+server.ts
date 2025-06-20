@@ -14,7 +14,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         throw error(403, 'Admin access required')
     }
 
-    const sourceId = params.id
+    const sourceId = params.sourceId
 
     const source = await db.query.sources.findFirst({
         where: eq(sources.id, sourceId),

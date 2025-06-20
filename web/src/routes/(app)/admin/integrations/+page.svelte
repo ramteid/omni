@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { PageData } from './$types'
     import { onMount, onDestroy } from 'svelte'
-    import { Button } from '$lib/components/ui/button'
+    import { Button, buttonVariants } from '$lib/components/ui/button'
     import {
         Card,
         CardContent,
@@ -166,7 +166,7 @@
                 throw new Error('Failed to create source')
             }
 
-            const { source } = await sourceResponse.json()
+            const source = await sourceResponse.json()
 
             // Then create the service credentials
             const credentialsResponse = await fetch('/api/service-credentials', {
@@ -242,7 +242,7 @@
 
     onMount(() => {
         // Set up Server-Sent Events for live indexing status updates
-        eventSource = new EventSource('/api/indexing-status/stream')
+        eventSource = new EventSource('/api/indexing/status')
         eventSource.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data)
@@ -386,7 +386,7 @@
                                 <Button
                                     variant="outline"
                                     size="sm"
-                                    on:click={() => syncSource(connectedSource.id)}
+                                    onclick={() => syncSource(connectedSource.id)}
                                     disabled={syncingSourceId === connectedSource.id}
                                 >
                                     {syncingSourceId === connectedSource.id
@@ -394,17 +394,13 @@
                                         : 'Sync Now'}
                                 </Button>
                                 <AlertDialog.Root>
-                                    <AlertDialog.Trigger asChild let:builder>
-                                        <Button
-                                            builders={[builder]}
-                                            variant="outline"
-                                            size="sm"
-                                            disabled={disconnectingSourceId === connectedSource.id}
-                                        >
-                                            {disconnectingSourceId === connectedSource.id
-                                                ? 'Disconnecting...'
-                                                : 'Disconnect'}
-                                        </Button>
+                                    <AlertDialog.Trigger
+                                        class={buttonVariants({ variant: 'outline', size: 'sm' })}
+                                        disabled={disconnectingSourceId === connectedSource.id}
+                                    >
+                                        {disconnectingSourceId === connectedSource.id
+                                            ? 'Disconnecting...'
+                                            : 'Disconnect'}
                                     </AlertDialog.Trigger>
                                     <AlertDialog.Content>
                                         <AlertDialog.Header>
@@ -420,8 +416,7 @@
                                         <AlertDialog.Footer>
                                             <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
                                             <AlertDialog.Action
-                                                on:click={() =>
-                                                    disconnectSource(connectedSource.id)}
+                                                onclick={() => disconnectSource(connectedSource.id)}
                                             >
                                                 Disconnect
                                             </AlertDialog.Action>
@@ -431,7 +426,7 @@
                             </div>
                         </div>
                     {:else}
-                        <Button on:click={() => openSetupDialog(integration)}>
+                        <Button onclick={() => openSetupDialog(integration)}>
                             Connect {integration.name}
                         </Button>
                     {/if}
@@ -460,7 +455,7 @@
                         bind:value={serviceAccountJson}
                         placeholder="Paste your Google service account JSON key here..."
                         rows={10}
-                        class="font-mono text-sm"
+                        class="max-h-64 overflow-y-auto font-mono text-sm break-all whitespace-pre-wrap"
                     />
                     <p class="text-muted-foreground text-sm">
                         Download this from the Google Cloud Console under "Service Accounts" >
@@ -527,8 +522,8 @@
         </div>
 
         <Dialog.Footer>
-            <Button variant="outline" on:click={() => (showSetupDialog = false)}>Cancel</Button>
-            <Button on:click={setupServiceAccount} disabled={isSubmitting}>
+            <Button variant="outline" onclick={() => (showSetupDialog = false)}>Cancel</Button>
+            <Button onclick={setupServiceAccount} disabled={isSubmitting}>
                 {isSubmitting ? 'Connecting...' : 'Connect'}
             </Button>
         </Dialog.Footer>

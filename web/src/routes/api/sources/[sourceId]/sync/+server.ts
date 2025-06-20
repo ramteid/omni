@@ -2,6 +2,8 @@ import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { getConfig } from '$lib/server/config'
 import { db } from '$lib/server/db'
+import { sources } from '$lib/server/db/schema'
+import { eq } from 'drizzle-orm'
 
 export const POST: RequestHandler = async ({ params, fetch }) => {
     const { sourceId } = params
@@ -13,10 +15,14 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
     try {
         // Get the source from database to determine the connector type
         const source = await db
-            .selectFrom('sources')
-            .select(['id', 'source_type'])
-            .where('id', '=', sourceId)
-            .executeTakeFirst()
+            .select({
+                id: sources.id,
+                sourceType: sources.sourceType,
+            })
+            .from(sources)
+            .where(eq(sources.id, sourceId))
+            .limit(1)
+            .then((rows) => rows[0])
 
         if (!source) {
             throw error(404, 'Source not found')
@@ -26,7 +32,7 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
 
         // Determine which connector URL to use based on source type
         let connectorUrl: string
-        switch (source.source_type) {
+        switch (source.sourceType) {
             case 'google_drive':
             case 'gmail':
                 connectorUrl = config.services.googleConnectorUrl
@@ -39,7 +45,7 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
                 connectorUrl = config.services.atlassianConnectorUrl
                 break
             default:
-                throw error(400, `Unsupported source type: ${source.source_type}`)
+                throw error(400, `Unsupported source type: ${source.sourceType}`)
         }
 
         // Call the connector's sync endpoint

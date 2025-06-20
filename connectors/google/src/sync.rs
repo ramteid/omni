@@ -222,7 +222,7 @@ impl SyncManager {
     ) -> Result<(usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = self.create_service_auth(&service_creds)?;
-        let access_token = service_auth.get_access_token().await?;
+        let access_token = Arc::from(service_auth.get_access_token().await?.as_str());
 
         let sync_state = SyncState::new(self.redis_client.clone());
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
@@ -305,7 +305,7 @@ impl SyncManager {
                 let sync_state = sync_state.clone();
                 let sync_run_id = sync_run_id.to_string();
                 let source_id = source.id.clone();
-                let creds = creds.clone();
+                let access_token = Arc::clone(&access_token);
                 let drive_client = &self.drive_client;
                 let event_queue = &self.event_queue;
                 let semaphore = Arc::clone(&semaphore);
@@ -442,7 +442,7 @@ impl SyncManager {
             .credentials
             .get("service_account_key")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing service_account_key in credentials"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing service_account_key in credentials"))?;
 
         let scopes = creds
             .config

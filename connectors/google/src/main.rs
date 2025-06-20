@@ -58,7 +58,8 @@ async fn main() -> Result<()> {
         let sync_interval_seconds = std::env::var("GOOGLE_SYNC_INTERVAL_SECONDS")
             .unwrap_or_else(|_| "86400".to_string())
             .parse::<u64>()
-            .expect("SYNC_INTERVAL_SECONDS must be a valid number");
+            .expect("GOOGLE_SYNC_INTERVAL_SECONDS must be a valid number");
+        info!("Sync interval set to {} secs.", sync_interval_seconds);
 
         // Check for initial sync on startup
         info!("Checking if initial sync is needed on startup");
@@ -99,6 +100,10 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "3600".to_string()) // Default: check every hour
                 .parse::<u64>()
                 .expect("WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS must be a valid number");
+        info!(
+            "Webhook renewal check interval set to {} secs.",
+            renewal_check_interval_seconds
+        );
 
         let mut renewal_interval = interval(Duration::from_secs(renewal_check_interval_seconds));
 

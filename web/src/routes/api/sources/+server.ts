@@ -1,8 +1,9 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
-import { sources, oauthCredentials } from '$lib/server/db/schema'
+import { sources, serviceCredentials } from '$lib/server/db/schema'
 import { eq, inArray } from 'drizzle-orm'
+import { ulid } from 'ulid'
 
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
@@ -13,12 +14,12 @@ export const GET: RequestHandler = async ({ locals }) => {
         where: eq(sources.createdBy, locals.user.id),
     })
 
-    // Get OAuth credentials for all sources
+    // Get service credentials for all sources
     const sourceIds = userSources.map((s) => s.id)
     const credentials =
         sourceIds.length > 0
-            ? await db.query.oauthCredentials.findMany({
-                  where: inArray(oauthCredentials.sourceId, sourceIds),
+            ? await db.query.serviceCredentials.findMany({
+                  where: inArray(serviceCredentials.sourceId, sourceIds),
               })
             : []
 
@@ -40,4 +41,44 @@ export const GET: RequestHandler = async ({ locals }) => {
     }))
 
     return json(sanitizedSources)
+}
+
+export const POST: RequestHandler = async ({ request, locals }) => {
+    if (!locals.user) {
+        throw error(401, 'Unauthorized')
+    }
+
+    const body = await request.json()
+    const { name, sourceType, config } = body
+
+    if (!name || !sourceType) {
+        throw error(400, 'Name and sourceType are required')
+    }
+
+    const [newSource] = await db
+        .insert(sources)
+        .values({
+            id: ulid(),
+            name,
+            sourceType,
+            config: config || {},
+            createdBy: locals.user.id,
+            isActive: true,
+            syncStatus: 'pending',
+        })
+        .returning()
+
+    return json({
+        id: newSource.id,
+        name: newSource.name,
+        sourceType: newSource.sourceType,
+        config: newSource.config,
+        syncStatus: newSource.syncStatus,
+        isActive: newSource.isActive,
+        lastSyncAt: newSource.lastSyncAt,
+        syncError: newSource.syncError,
+        createdAt: newSource.createdAt,
+        updatedAt: newSource.updatedAt,
+        isConnected: false,
+    })
 }
