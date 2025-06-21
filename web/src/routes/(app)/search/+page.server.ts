@@ -18,6 +18,7 @@ export const load = async ({ url, fetch }) => {
             mode: 'hybrid',
         }
 
+        console.log('Waiting for searcher...')
         const response = await fetch(`${SEARCHER_URL}/search`, {
             method: 'POST',
             headers: {

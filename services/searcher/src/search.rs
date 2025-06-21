@@ -4,7 +4,7 @@ use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use shared::{AIClient, DatabasePool, SearcherConfig};
 use std::time::Instant;
-use tracing::info;
+use tracing::{debug, info};
 
 pub struct SearchEngine {
     db_pool: DatabasePool,
@@ -132,6 +132,7 @@ impl SearchEngine {
         let content_types = request.content_types.as_deref();
 
         let (documents, corrected_query) = if self.config.typo_tolerance_enabled {
+            debug!("Searching for {} with typo tolerance", &request.query);
             repo.search_with_typo_tolerance_and_filters(
                 &request.query,
                 sources,
@@ -143,6 +144,7 @@ impl SearchEngine {
             )
             .await?
         } else {
+            debug!("Searching for {} without typo tolerance", &request.query);
             (
                 repo.search_with_filters(
                     &request.query,

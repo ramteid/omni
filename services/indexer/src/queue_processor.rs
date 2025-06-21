@@ -50,7 +50,7 @@ impl QueueProcessor {
         listener.listen("indexer_queue").await?;
 
         let mut poll_interval = interval(Duration::from_secs(60)); // Backup polling every minute
-        let mut heartbeat_interval = interval(Duration::from_secs(30));
+        let mut heartbeat_interval = interval(Duration::from_secs(300));
         let mut retry_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut cleanup_interval = interval(Duration::from_secs(3600)); // 1 hour
 

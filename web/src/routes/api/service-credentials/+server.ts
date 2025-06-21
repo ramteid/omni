@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm'
 import { ServiceProvider, AuthType } from '$lib/types'
 import { ulid } from 'ulid'
 
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
     }
@@ -58,6 +58,22 @@ export const POST: RequestHandler = async ({ request, locals }) => {
                 config: config || {},
             })
             .returning()
+
+        // Trigger initial sync after credentials are saved
+        try {
+            const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
+                method: 'POST',
+            })
+
+            if (!syncResponse.ok) {
+                console.warn(
+                    `Failed to trigger initial sync for source ${sourceId}:`,
+                    await syncResponse.text(),
+                )
+            }
+        } catch (syncError) {
+            console.warn(`Error triggering initial sync for source ${sourceId}:`, syncError)
+        }
 
         return json({
             success: true,

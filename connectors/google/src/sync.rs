@@ -530,14 +530,6 @@ impl SyncManager {
         Ok(user_email)
     }
 
-    fn get_principal_email_from_credentials(&self, creds: &ServiceCredentials) -> Result<String> {
-        creds
-            .principal_email
-            .as_ref()
-            .map(String::from)
-            .ok_or_else(|| anyhow::anyhow!("Missing principal_email in service credentials. Please set the admin email when configuring the Google service account."))
-    }
-
     async fn update_source_status(&self, source_id: &str, status: &str) -> Result<()> {
         sqlx::query(
             "UPDATE sources SET sync_status = $1, last_sync_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
@@ -856,26 +848,6 @@ impl SyncManager {
             "Successfully stopped and removed webhook for source {}: channel_id={}",
             source_id, channel_id
         );
-        Ok(())
-    }
-
-    async fn sync_all_sources_incremental(&self) -> Result<()> {
-        let sources = self.get_active_sources().await?;
-
-        info!(
-            "Running incremental sync for {} active Google Drive sources",
-            sources.len()
-        );
-
-        for source in sources {
-            if let Err(e) = self.sync_source_incremental(&source).await {
-                error!(
-                    "Failed to run incremental sync for source {}: {}",
-                    source.id, e
-                );
-            }
-        }
-
         Ok(())
     }
 

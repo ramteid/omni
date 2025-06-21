@@ -1,16 +1,19 @@
 <script lang="ts">
-    import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js'
-    import { Button } from '$lib/components/ui/button/index.js'
-    import type { PageData } from './$types.js'
-    import { Input } from '$lib/components/ui/input/index.js'
+    import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card'
+    import { Button } from '$lib/components/ui/button'
+    import type { PageProps } from './$types'
+    import { Input } from '$lib/components/ui/input'
     import { Search } from '@lucide/svelte'
     import { goto } from '$app/navigation'
 
-    export let data: PageData
+    let { data }: PageProps = $props()
 
-    let searchQuery = ''
+    let searchQuery = $state('')
+
+    $inspect(searchQuery)
 
     function handleSearch() {
+        console.log('calling handleSearch', searchQuery)
         if (searchQuery.trim()) {
             goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
         }
@@ -69,7 +72,9 @@
                     <CardTitle class="text-lg">Connected Sources</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <div class="text-foreground text-2xl font-bold">0</div>
+                    <div class="text-foreground text-2xl font-bold">
+                        {data.stats.connectedSources}
+                    </div>
                     <p class="text-muted-foreground text-sm">Data sources connected</p>
                 </CardContent>
             </Card>
@@ -79,7 +84,9 @@
                     <CardTitle class="text-lg">Indexed Documents</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <div class="text-foreground text-2xl font-bold">0</div>
+                    <div class="text-foreground text-2xl font-bold">
+                        {data.stats.indexedDocuments}
+                    </div>
                     <p class="text-muted-foreground text-sm">Documents ready to search</p>
                 </CardContent>
             </Card>

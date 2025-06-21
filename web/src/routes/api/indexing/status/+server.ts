@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db/index.js'
-import { syncRuns, sources } from '$lib/server/db/schema.js'
+import { syncRuns, sources, documents } from '$lib/server/db/schema.js'
 import { sql, eq, desc } from 'drizzle-orm'
 import type { RequestHandler } from './$types.js'
 import postgres from 'postgres'
@@ -30,26 +30,8 @@ export const GET: RequestHandler = async ({ url }) => {
                 if (isClosed) return
 
                 try {
-                    // Get currently running sync runs (these are actively being updated by indexer)
-                    const runningSyncRuns = await db
-                        .select({
-                            id: syncRuns.id,
-                            sourceId: syncRuns.sourceId,
-                            sourceName: sources.name,
-                            sourceType: sources.sourceType,
-                            syncType: syncRuns.syncType,
-                            documentsProcessed: syncRuns.documentsProcessed,
-                            documentsUpdated: syncRuns.documentsUpdated,
-                            startedAt: syncRuns.startedAt,
-                            errorMessage: syncRuns.errorMessage,
-                        })
-                        .from(syncRuns)
-                        .leftJoin(sources, eq(syncRuns.sourceId, sources.id))
-                        .where(eq(syncRuns.status, 'running'))
-                        .orderBy(desc(syncRuns.startedAt))
-
-                    // Get recently completed or failed sync runs for context
-                    const recentCompletedRuns = await db
+                    // Get latest 10 sync runs (same as page load)
+                    const latestSyncRuns = await db
                         .select({
                             id: syncRuns.id,
                             sourceId: syncRuns.sourceId,
@@ -65,22 +47,24 @@ export const GET: RequestHandler = async ({ url }) => {
                         })
                         .from(syncRuns)
                         .leftJoin(sources, eq(syncRuns.sourceId, sources.id))
-                        .where(sql`${syncRuns.status} IN ('completed', 'failed')`)
-                        .orderBy(desc(syncRuns.completedAt))
+                        .orderBy(desc(syncRuns.startedAt))
                         .limit(10)
 
-                    // Get overall status counts
-                    const overallStatus = await db
+                    // Get document counts by source
+                    const documentsBySource = await db
                         .select({
-                            status: syncRuns.status,
-                            count: sql<number>`count(*)::int`,
+                            sourceId: documents.sourceId,
+                            count: sql<number>`COUNT(*)::int`,
                         })
-                        .from(syncRuns)
-                        .groupBy(syncRuns.status)
+                        .from(documents)
+                        .groupBy(documents.sourceId)
+                    const totalDocumentsIndexed = documentsBySource
+                        .map((r) => r.count)
+                        .reduce((a, v) => (a += v), 0)
 
-                    const overallStatusMap = overallStatus.reduce(
+                    const documentCountBySource = documentsBySource.reduce(
                         (acc, item) => {
-                            acc[item.status] = item.count
+                            acc[item.sourceId] = item.count
                             return acc
                         },
                         {} as Record<string, number>,
@@ -89,12 +73,12 @@ export const GET: RequestHandler = async ({ url }) => {
                     const statusData = {
                         timestamp: Date.now(),
                         overall: {
-                            running: overallStatusMap.running || 0,
-                            completed: overallStatusMap.completed || 0,
-                            failed: overallStatusMap.failed || 0,
+                            latestSyncRuns,
+                            documentStats: {
+                                totalDocumentsIndexed,
+                                documentsBySource: documentCountBySource,
+                            },
                         },
-                        runningSyncs: runningSyncRuns,
-                        recentActivity: recentCompletedRuns,
                     }
 
                     sendData(statusData)

@@ -1,40 +1,63 @@
 import { requireAdmin } from '$lib/server/authHelpers'
 import { db } from '$lib/server/db'
-import { sources, connectorEventsQueue } from '$lib/server/db/schema'
-import { sql, eq } from 'drizzle-orm'
+import { sources, syncRuns, documents } from '$lib/server/db/schema'
+import { sql, eq, desc } from 'drizzle-orm'
 import type { PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
     // Get all organization-level connected sources
-    const connectedSources = await db.select().from(sources)
+    const connectedSources = await db.select().from(sources).where(eq(sources.isActive, true))
 
-    // Get initial indexing status for each source
-    const indexingStatus = await db
+    // Get latest 10 sync runs
+    const latestSyncRuns = await db
         .select({
-            sourceId: connectorEventsQueue.sourceId,
-            status: connectorEventsQueue.status,
-            count: sql<number>`count(*)::int`,
+            id: syncRuns.id,
+            sourceId: syncRuns.sourceId,
+            sourceName: sources.name,
+            sourceType: sources.sourceType,
+            syncType: syncRuns.syncType,
+            status: syncRuns.status,
+            documentsProcessed: syncRuns.documentsProcessed,
+            documentsUpdated: syncRuns.documentsUpdated,
+            startedAt: syncRuns.startedAt,
+            completedAt: syncRuns.completedAt,
+            errorMessage: syncRuns.errorMessage,
         })
-        .from(connectorEventsQueue)
-        .groupBy(connectorEventsQueue.sourceId, connectorEventsQueue.status)
+        .from(syncRuns)
+        .leftJoin(sources, eq(syncRuns.sourceId, sources.id))
+        .orderBy(desc(syncRuns.startedAt))
+        .limit(10)
 
-    // Transform indexing status into a more usable format
-    const statusBySource = indexingStatus.reduce(
+    // Get actual document counts
+    const documentsBySource = await db
+        .select({
+            sourceId: documents.sourceId,
+            count: sql<number>`COUNT(*)::int`,
+        })
+        .from(documents)
+        .groupBy(documents.sourceId)
+
+    const totalDocumentsIndexed = documentsBySource
+        .map((r) => r.count)
+        .reduce((a, v) => (a += v), 0)
+
+    const documentCountBySource = documentsBySource.reduce(
         (acc, item) => {
-            if (!acc[item.sourceId]) {
-                acc[item.sourceId] = {}
-            }
-            acc[item.sourceId][item.status] = item.count
+            acc[item.sourceId] = item.count
             return acc
         },
-        {} as Record<string, Record<string, number>>,
+        {} as Record<string, number>,
     )
 
     return {
         connectedSources,
-        indexingStatus: statusBySource,
+        latestSyncRuns,
+        documentStats: {
+            totalDocumentsIndexed,
+            documentsBySource: documentCountBySource,
+        },
         availableIntegrations: [
             {
                 id: 'google',

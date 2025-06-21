@@ -1,6 +1,5 @@
 <script lang="ts">
-    import type { PageData } from './$types'
-    import { onMount, onDestroy } from 'svelte'
+    import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import { Button, buttonVariants } from '$lib/components/ui/button'
     import {
         Card,
@@ -9,29 +8,46 @@
         CardHeader,
         CardTitle,
     } from '$lib/components/ui/card'
+    import * as Dialog from '$lib/components/ui/dialog'
+    import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Textarea } from '$lib/components/ui/textarea'
-    import { Input } from '$lib/components/ui/input'
-    import * as AlertDialog from '$lib/components/ui/alert-dialog'
-    import * as Dialog from '$lib/components/ui/dialog'
+    import { AuthType } from '$lib/types'
+    import { onDestroy, onMount } from 'svelte'
     import { toast } from 'svelte-sonner'
-    import { ServiceProvider, AuthType } from '$lib/types'
+    import type { PageProps } from './$types'
 
-    export let data: PageData
+    let { data }: PageProps = $props()
 
-    let liveIndexingStatus = data.indexingStatus
-    let eventSource: EventSource | null = null
-    let disconnectingSourceId: string | null = null
-    let syncingSourceId: string | null = null
+    $inspect(data).with((t, v) => console.log(t, v))
+
+    type SyncStatus = {
+        status: string
+        syncType: string
+        documentsProcessed: number
+        documentsUpdated: number
+        startedAt: Date
+        completedAt: Date | null
+        errorMessage: string | null
+    }
+
+    let latestSyncRuns = $state<any[]>(data.latestSyncRuns || [])
+    let overallIndexingStats = $state({
+        totalDocumentsIndexed: data.documentStats?.totalDocumentsIndexed || 0,
+        documentsBySource: data.documentStats?.documentsBySource || ({} as Record<string, number>),
+    })
+    let eventSource = $state<EventSource | null>(null)
+    let disconnectingSourceId = $state<string | null>(null)
+    let syncingSourceId = $state<string | null>(null)
 
     // Service account setup state
-    let showSetupDialog = false
-    let selectedIntegration: any = null
-    let serviceAccountJson = ''
-    let apiToken = ''
-    let principalEmail = ''
-    let domain = ''
-    let isSubmitting = false
+    let showSetupDialog = $state(false)
+    let selectedIntegration = $state<any>(null)
+    let serviceAccountJson = $state('')
+    let apiToken = $state('')
+    let principalEmail = $state('')
+    let domain = $state('')
+    let isSubmitting = $state(false)
 
     function formatDate(date: Date | null) {
         if (!date) return 'N/A'
@@ -51,24 +67,14 @@
         return data.connectedSources.find((source) => source.sourceType === providerId)
     }
 
-    function getIndexingStatus(sourceId: string) {
-        const status = liveIndexingStatus[sourceId] || {}
-        return {
-            pending: status.pending || 0,
-            processing: status.processing || 0,
-            completed: status.completed || 0,
-            failed: status.failed || 0,
-            total:
-                (status.pending || 0) +
-                (status.processing || 0) +
-                (status.completed || 0) +
-                (status.failed || 0),
-        }
+    function getLatestSyncForSource(sourceId: string): SyncStatus | null {
+        const latestSync = latestSyncRuns.find((sync) => sync.sourceId === sourceId)
+        return latestSync || null
     }
 
     function getStatusColor(status: string) {
         switch (status) {
-            case 'processing':
+            case 'running':
                 return 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400'
             case 'completed':
                 return 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
@@ -79,18 +85,6 @@
             default:
                 return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
         }
-    }
-
-    function getOverallStats() {
-        let overall = { pending: 0, processing: 0, completed: 0, failed: 0, total: 0 }
-        Object.values(liveIndexingStatus).forEach((sourceStatus: any) => {
-            overall.pending += sourceStatus.pending || 0
-            overall.processing += sourceStatus.processing || 0
-            overall.completed += sourceStatus.completed || 0
-            overall.failed += sourceStatus.failed || 0
-        })
-        overall.total = overall.pending + overall.processing + overall.completed + overall.failed
-        return overall
     }
 
     function openSetupDialog(integration: any) {
@@ -134,7 +128,11 @@
 
                 credentials = { service_account_key: serviceAccountJson }
                 config = {
-                    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+                    scopes: [
+                        'https://www.googleapis.com/auth/drive.readonly',
+                        'https://www.googleapis.com/auth/gmail.readonly',
+                        'https://www.googleapis.com/auth/admin.directory.user.readonly',
+                    ],
                     domain: domain || null,
                 }
                 authType = AuthType.JWT
@@ -254,7 +252,23 @@
         eventSource.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data)
-                liveIndexingStatus = data
+
+                // Update data from the new structure
+                if (data.overall) {
+                    // Update latest sync runs
+                    if (data.overall.latestSyncRuns) {
+                        latestSyncRuns = data.overall.latestSyncRuns
+                    }
+
+                    // Update document stats
+                    if (data.overall.documentStats) {
+                        overallIndexingStats = {
+                            totalDocumentsIndexed:
+                                data.overall.documentStats.totalDocumentsIndexed || 0,
+                            documentsBySource: data.overall.documentStats.documentsBySource || {},
+                        }
+                    }
+                }
             } catch (error) {
                 console.error('Error parsing SSE data:', error)
             }
@@ -270,8 +284,6 @@
             eventSource.close()
         }
     })
-
-    $: overallStats = getOverallStats()
 </script>
 
 <svelte:head>
@@ -287,41 +299,38 @@
     </div>
 
     <!-- Overall Indexing Status -->
-    {#if overallStats.total > 0}
+    {#if overallIndexingStats.totalDocumentsIndexed > 0}
         <Card>
             <CardHeader>
-                <CardTitle>Overall Indexing Status</CardTitle>
-                <CardDescription
-                    >Real-time status of document processing across all sources</CardDescription
-                >
+                <CardTitle>Document Index Statistics</CardTitle>
+                <CardDescription>Total unique documents indexed across all sources</CardDescription>
             </CardHeader>
             <CardContent>
-                <div class="grid grid-cols-2 gap-4 md:grid-cols-5">
-                    <div class="text-center">
-                        <div class="text-2xl font-bold text-yellow-600">{overallStats.pending}</div>
-                        <div class="text-muted-foreground text-sm">Pending</div>
+                <div class="mb-4 text-center">
+                    <div class="text-3xl font-bold text-blue-600">
+                        {overallIndexingStats.totalDocumentsIndexed.toLocaleString()}
                     </div>
-                    <div class="text-center">
-                        <div class="text-2xl font-bold text-blue-600">
-                            {overallStats.processing}
-                        </div>
-                        <div class="text-muted-foreground text-sm">Processing</div>
-                    </div>
-                    <div class="text-center">
-                        <div class="text-2xl font-bold text-green-600">
-                            {overallStats.completed}
-                        </div>
-                        <div class="text-muted-foreground text-sm">Completed</div>
-                    </div>
-                    <div class="text-center">
-                        <div class="text-2xl font-bold text-red-600">{overallStats.failed}</div>
-                        <div class="text-muted-foreground text-sm">Failed</div>
-                    </div>
-                    <div class="text-center">
-                        <div class="text-2xl font-bold">{overallStats.total}</div>
-                        <div class="text-muted-foreground text-sm">Total</div>
-                    </div>
+                    <div class="text-muted-foreground text-sm">Total Documents Indexed</div>
                 </div>
+
+                {#if Object.keys(overallIndexingStats.documentsBySource).length > 0}
+                    <div class="mt-4 border-t pt-4">
+                        <h4 class="mb-2 text-sm font-medium">Documents by Source</h4>
+                        <div class="space-y-1">
+                            {#each Object.entries(overallIndexingStats.documentsBySource) as [sourceId, count]}
+                                {@const source = data.connectedSources.find(
+                                    (s) => s.id === sourceId,
+                                )}
+                                {#if source}
+                                    <div class="flex justify-between text-sm">
+                                        <span class="text-muted-foreground">{source.name}</span>
+                                        <span class="font-medium">{count.toLocaleString()}</span>
+                                    </div>
+                                {/if}
+                            {/each}
+                        </div>
+                    </div>
+                {/if}
             </CardContent>
         </Card>
     {/if}
@@ -352,7 +361,7 @@
                 </CardHeader>
                 <CardContent>
                     {#if connectedSource}
-                        {@const indexingStatus = getIndexingStatus(connectedSource.id)}
+                        {@const latestSync = getLatestSyncForSource(connectedSource.id)}
                         <div class="space-y-3">
                             <div>
                                 <div class="text-sm font-medium">Last Sync</div>
@@ -361,31 +370,33 @@
                                 </div>
                             </div>
 
-                            {#if indexingStatus.total > 0}
+                            {#if latestSync}
                                 <div>
-                                    <div class="mb-2 text-sm font-medium">Indexing Status</div>
-                                    <div class="grid grid-cols-2 gap-2 text-xs">
-                                        <div class="flex justify-between">
-                                            <span>Pending:</span>
-                                            <span class="font-medium">{indexingStatus.pending}</span
+                                    <div class="mb-2 text-sm font-medium">Latest Sync</div>
+                                    <div class="space-y-1 text-xs">
+                                        <div class="flex items-center gap-2">
+                                            <span
+                                                class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(latestSync.status)}`}
+                                            >
+                                                {latestSync.status}
+                                            </span>
+                                            <span class="text-muted-foreground"
+                                                >{latestSync.syncType}</span
                                             >
                                         </div>
-                                        <div class="flex justify-between">
-                                            <span>Processing:</span>
-                                            <span class="font-medium"
-                                                >{indexingStatus.processing}</span
-                                            >
-                                        </div>
-                                        <div class="flex justify-between">
-                                            <span>Completed:</span>
-                                            <span class="font-medium"
-                                                >{indexingStatus.completed}</span
-                                            >
-                                        </div>
-                                        <div class="flex justify-between">
-                                            <span>Failed:</span>
-                                            <span class="font-medium">{indexingStatus.failed}</span>
-                                        </div>
+                                        {#if latestSync.documentsProcessed > 0}
+                                            <div class="text-muted-foreground">
+                                                {latestSync.documentsProcessed} documents processed
+                                                {#if latestSync.documentsUpdated > 0}
+                                                    ({latestSync.documentsUpdated} updated)
+                                                {/if}
+                                            </div>
+                                        {/if}
+                                        {#if latestSync.errorMessage}
+                                            <div class="text-red-600 dark:text-red-400">
+                                                {latestSync.errorMessage}
+                                            </div>
+                                        {/if}
                                     </div>
                                 </div>
                             {/if}
@@ -554,3 +565,44 @@
         </Dialog.Footer>
     </Dialog.Content>
 </Dialog.Root>
+
+<!-- Recent Sync Runs -->
+{#if latestSyncRuns.length > 0}
+    <Card>
+        <CardHeader>
+            <CardTitle>Recent Sync Activity</CardTitle>
+            <CardDescription>Latest sync runs across all sources</CardDescription>
+        </CardHeader>
+        <CardContent>
+            <div class="space-y-2">
+                {#each latestSyncRuns as sync}
+                    <div class="flex items-center justify-between rounded-lg border p-3">
+                        <div class="flex-1">
+                            <div class="mb-1 flex items-center gap-2">
+                                <span class="text-sm font-medium"
+                                    >{sync.sourceName || 'Unknown Source'}</span
+                                >
+                                <span
+                                    class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(sync.status)}`}
+                                >
+                                    {sync.status}
+                                </span>
+                                <span class="text-muted-foreground text-xs">{sync.syncType}</span>
+                            </div>
+                            <div class="text-muted-foreground text-xs">
+                                Started: {new Date(sync.startedAt).toLocaleString()}
+                                {#if sync.completedAt}
+                                    • Completed: {new Date(sync.completedAt).toLocaleString()}
+                                {/if}
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-sm font-medium">{sync.documentsProcessed || 0}</div>
+                            <div class="text-muted-foreground text-xs">documents</div>
+                        </div>
+                    </div>
+                {/each}
+            </div>
+        </CardContent>
+    </Card>
+{/if}
