@@ -6,13 +6,15 @@ use std::sync::Arc;
 use tracing::debug;
 
 use crate::models::{
-    DriveChangesResponse, GoogleDriveFile, WebhookChannel, WebhookChannelResponse,
+    DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
+    WebhookChannelResponse,
 };
 use shared::RateLimiter;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
 const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
+const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
 
 pub struct DriveClient {
     client: Client,
@@ -93,6 +95,9 @@ impl DriveClient {
             }
             "application/vnd.google-apps.spreadsheet" => {
                 self.get_google_sheet_content(token, &file.id).await
+            }
+            "application/vnd.google-apps.presentation" => {
+                self.get_google_slides_content(token, &file.id).await
             }
             "text/plain" | "text/html" | "text/csv" => {
                 self.download_file_content(token, &file.id).await
@@ -207,6 +212,44 @@ impl DriveClient {
         match &self.rate_limiter {
             Some(limiter) => limiter.execute_with_retry(get_sheet_impl).await,
             None => get_sheet_impl().await,
+        }
+    }
+
+    async fn get_google_slides_content(&self, token: &str, file_id: &str) -> Result<String> {
+        let token = token.to_string();
+        let file_id = file_id.to_string();
+
+        let get_slides_impl = || async {
+            let url = format!("{}/presentations/{}", SLIDES_API_BASE, &file_id);
+
+            let response = self.client.get(&url).bearer_auth(&token).send().await?;
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!(
+                    "Failed to get presentation content: {}",
+                    error_text
+                ));
+            }
+
+            debug!("Google Slides API response status: {}", response.status());
+            let response_text = response.text().await?;
+
+            let presentation: GooglePresentation =
+                serde_json::from_str(&response_text).map_err(|e| {
+                    anyhow!(
+                        "Failed to parse Google Slides API response: {}. Raw response: {}",
+                        e,
+                        response_text
+                    )
+                })?;
+
+            Ok(extract_text_from_presentation(&presentation))
+        };
+
+        match &self.rate_limiter {
+            Some(limiter) => limiter.execute_with_retry(get_slides_impl).await,
+            None => get_slides_impl().await,
         }
     }
 
@@ -500,4 +543,51 @@ struct SheetProperties {
 #[derive(Debug, Deserialize)]
 struct ValueRange {
     values: Option<Vec<Vec<String>>>,
+}
+
+fn extract_text_from_presentation(presentation: &GooglePresentation) -> String {
+    let mut text = String::new();
+
+    // Add presentation title
+    text.push_str(&format!("Title: {}\n\n", presentation.title));
+
+    // Extract text from each slide
+    for (slide_index, slide) in presentation.slides.iter().enumerate() {
+        text.push_str(&format!("Slide {}: \n", slide_index + 1));
+
+        // Extract text from all page elements in the slide
+        for page_element in &slide.page_elements {
+            // Extract text from shapes
+            if let Some(shape) = &page_element.shape {
+                if let Some(text_content) = &shape.text {
+                    for text_element in &text_content.text_elements {
+                        if let Some(text_run) = &text_element.text_run {
+                            text.push_str(&text_run.content);
+                        }
+                    }
+                }
+            }
+
+            // Extract text from tables
+            if let Some(table) = &page_element.table {
+                for table_row in &table.table_rows {
+                    for table_cell in &table_row.table_cells {
+                        if let Some(text_content) = &table_cell.text {
+                            for text_element in &text_content.text_elements {
+                                if let Some(text_run) = &text_element.text_run {
+                                    text.push_str(&text_run.content);
+                                    text.push('\t'); // Separate table cells with tab
+                                }
+                            }
+                        }
+                    }
+                    text.push('\n'); // New line for each table row
+                }
+            }
+        }
+
+        text.push_str("\n\n"); // Separate slides with double newline
+    }
+
+    text.trim().to_string()
 }

@@ -441,6 +441,7 @@ impl SyncManager {
             file.mime_type.as_str(),
             "application/vnd.google-apps.document"
                 | "application/vnd.google-apps.spreadsheet"
+                | "application/vnd.google-apps.presentation"
                 | "text/plain"
                 | "text/html"
                 | "text/csv"

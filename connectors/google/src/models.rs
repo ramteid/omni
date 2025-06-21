@@ -190,3 +190,66 @@ pub struct DriveChange {
     pub file_id: Option<String>,
     pub time: Option<String>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct GooglePresentation {
+    #[serde(rename = "presentationId")]
+    pub presentation_id: String,
+    pub title: String,
+    pub slides: Vec<Slide>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Slide {
+    #[serde(rename = "objectId")]
+    pub object_id: String,
+    #[serde(rename = "pageElements", default)]
+    pub page_elements: Vec<PageElement>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PageElement {
+    #[serde(rename = "objectId")]
+    pub object_id: String,
+    pub shape: Option<Shape>,
+    pub table: Option<Table>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Shape {
+    pub text: Option<TextContent>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Table {
+    #[serde(rename = "tableRows", default)]
+    pub table_rows: Vec<TableRow>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TableRow {
+    #[serde(rename = "tableCells", default)]
+    pub table_cells: Vec<TableCell>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TableCell {
+    pub text: Option<TextContent>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TextContent {
+    #[serde(rename = "textElements", default)]
+    pub text_elements: Vec<TextElement>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TextElement {
+    #[serde(rename = "textRun")]
+    pub text_run: Option<TextRun>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TextRun {
+    pub content: String,
+}
