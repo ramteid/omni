@@ -8,7 +8,7 @@ use tracing::debug;
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, WebhookChannel, WebhookChannelResponse,
 };
-use crate::rate_limiter::RateLimiter;
+use shared::RateLimiter;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";

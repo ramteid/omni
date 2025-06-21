@@ -13,13 +13,13 @@ use crate::admin::AdminClient;
 use crate::auth::ServiceAccountAuth;
 use crate::drive::DriveClient;
 use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
-use crate::rate_limiter::RateLimiter;
 use shared::models::{
     ConnectorEvent, ServiceCredentials, Source, SourceType, SyncRun, SyncStatus, SyncType,
     WebhookChannel as DatabaseWebhookChannel,
 };
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
+use shared::RateLimiter;
 
 pub struct SyncManager {
     pool: PgPool,

@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use crate::rate_limiter::RateLimiter;
+use shared::RateLimiter;
 
 const ADMIN_API_BASE: &str = "https://admin.googleapis.com/admin/directory/v1";
 

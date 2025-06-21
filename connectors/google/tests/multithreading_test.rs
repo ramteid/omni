@@ -1,5 +1,5 @@
-use clio_google_connector::rate_limiter::RateLimiter;
 use futures::stream::{self, StreamExt};
+use shared::RateLimiter;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Semaphore;
