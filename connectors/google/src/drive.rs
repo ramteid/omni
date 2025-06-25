@@ -4,7 +4,6 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use crate::models::{
@@ -18,6 +17,7 @@ const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
 const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
 
+#[derive(Clone)]
 pub struct DriveClient {
     client: Client,
     rate_limiter: Option<Arc<RateLimiter>>,
