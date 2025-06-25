@@ -59,7 +59,8 @@ impl EventQueue {
                 FOR UPDATE SKIP LOCKED
             )
             UPDATE connector_events_queue q
-            SET status = 'processing'
+            SET status = 'processing',
+                processing_started_at = NOW()
             FROM batch
             WHERE q.id = batch.id
             RETURNING 
@@ -173,6 +174,32 @@ impl EventQueue {
         .await?;
 
         Ok(result.rows_affected() as i64)
+    }
+
+    pub async fn recover_stale_processing_items(&self, timeout_seconds: i32) -> Result<i64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE connector_events_queue
+            SET status = 'pending',
+                processing_started_at = NULL
+            WHERE status = 'processing'
+            AND processing_started_at < NOW() - INTERVAL '1 second' * $1
+            "#,
+        )
+        .bind(timeout_seconds)
+        .execute(&self.pool)
+        .await?;
+
+        let recovered_count = result.rows_affected() as i64;
+        if recovered_count > 0 {
+            tracing::info!(
+                "Recovered {} stale processing items (timeout: {}s)",
+                recovered_count,
+                timeout_seconds
+            );
+        }
+
+        Ok(recovered_count)
     }
 
     pub async fn get_queue_stats(&self) -> Result<QueueStats> {

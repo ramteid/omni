@@ -25,10 +25,14 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
 
     let ai_client = shared::AIClient::new(test_env.mock_ai_server.base_url.clone());
 
+    let embedding_queue =
+        shared::embedding_queue::EmbeddingQueue::new(test_env.db_pool.pool().clone());
+
     let app_state = AppState {
         db_pool: test_env.db_pool.clone(),
         redis_client: test_env.redis_client.clone(),
         ai_client,
+        embedding_queue,
     };
 
     let app = create_app(app_state.clone());

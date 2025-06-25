@@ -67,7 +67,8 @@ impl EmbeddingQueue {
             r#"
             UPDATE embedding_queue
             SET status = 'processing',
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = CURRENT_TIMESTAMP,
+                processing_started_at = CURRENT_TIMESTAMP
             WHERE id IN (
                 SELECT id
                 FROM embedding_queue
@@ -140,6 +141,33 @@ impl EmbeddingQueue {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn recover_stale_processing_items(&self, timeout_seconds: i32) -> Result<i64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE embedding_queue
+            SET status = 'pending',
+                processing_started_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'processing'
+            AND processing_started_at < CURRENT_TIMESTAMP - INTERVAL '1 second' * $1
+            "#,
+        )
+        .bind(timeout_seconds)
+        .execute(&self.pool)
+        .await?;
+
+        let recovered_count = result.rows_affected() as i64;
+        if recovered_count > 0 {
+            tracing::info!(
+                "Recovered {} stale embedding processing items (timeout: {}s)",
+                recovered_count,
+                timeout_seconds
+            );
+        }
+
+        Ok(recovered_count)
     }
 
     pub async fn cleanup_completed(&self, days_old: i32) -> Result<i64> {

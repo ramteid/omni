@@ -73,12 +73,35 @@ impl EmbeddingProcessor {
             self.batch_size
         );
 
+        // Recover any stale processing items from previous runs (5 minute timeout)
+        match self
+            .embedding_queue
+            .recover_stale_processing_items(300)
+            .await
+        {
+            Ok(recovered) => {
+                if recovered > 0 {
+                    info!(
+                        "Recovered {} stale embedding processing items on startup",
+                        recovered
+                    );
+                }
+            }
+            Err(e) => {
+                error!(
+                    "Failed to recover stale embedding processing items on startup: {}",
+                    e
+                );
+            }
+        }
+
         let mut listener = PgListener::connect_with(self.state.db_pool.pool()).await?;
         listener.listen("embedding_queue").await?;
 
         let mut poll_interval = interval(Duration::from_secs(30)); // Poll every 30 seconds
         let mut stats_interval = interval(Duration::from_secs(300)); // Log stats every 5 minutes
         let mut cleanup_interval = interval(Duration::from_secs(3600)); // Cleanup every hour
+        let mut recovery_interval = interval(Duration::from_secs(300)); // Recovery every 5 minutes
 
         // Process any existing items first
         if let Err(e) = self.process_batch().await {
@@ -124,6 +147,14 @@ impl EmbeddingProcessor {
                     if let Ok(cleaned) = self.embedding_queue.cleanup_completed(1).await {
                         if cleaned > 0 {
                             info!("Cleaned up {} completed embedding queue items", cleaned);
+                        }
+                    }
+                }
+                _ = recovery_interval.tick() => {
+                    // Periodic recovery of stale processing items
+                    if let Ok(recovered) = self.embedding_queue.recover_stale_processing_items(300).await {
+                        if recovered > 0 {
+                            info!("Recovered {} stale embedding processing items during periodic cleanup", recovered);
                         }
                     }
                 }

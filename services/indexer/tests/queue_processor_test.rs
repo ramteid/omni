@@ -1,10 +1,10 @@
 mod common;
 
-use chrono::Utc;
 use clio_indexer::QueueProcessor;
 use shared::db::repositories::DocumentRepository;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
+use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
 use tokio::time::{sleep, timeout, Duration};
 
@@ -31,13 +31,13 @@ async fn test_queue_processor_document_created() {
         metadata: DocumentMetadata {
             title: Some("Event Document".to_string()),
             author: Some("Event Author".to_string()),
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
+            created_at: Some(OffsetDateTime::now_utc()),
+            updated_at: Some(OffsetDateTime::now_utc()),
             mime_type: Some("text/plain".to_string()),
-            size: Some(1024),
+            size: Some("1024".to_string()),
             url: Some("https://example.com/doc".to_string()),
             parent_id: None,
-            extra: HashMap::new(),
+            extra: Some(HashMap::new()),
         },
         permissions: DocumentPermissions {
             public: false,
@@ -95,13 +95,13 @@ async fn test_queue_processor_document_updated() {
         metadata: DocumentMetadata {
             title: Some("Initial Title".to_string()),
             author: Some("Initial Author".to_string()),
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
+            created_at: Some(OffsetDateTime::now_utc()),
+            updated_at: Some(OffsetDateTime::now_utc()),
             mime_type: Some("text/plain".to_string()),
-            size: Some(500),
+            size: Some("500".to_string()),
             url: None,
             parent_id: None,
-            extra: HashMap::new(),
+            extra: Some(HashMap::new()),
         },
         permissions: DocumentPermissions {
             public: false,
@@ -132,12 +132,12 @@ async fn test_queue_processor_document_updated() {
             title: Some("Updated Title".to_string()),
             author: Some("Updated Author".to_string()),
             created_at: None,
-            updated_at: Some(Utc::now()),
+            updated_at: Some(OffsetDateTime::now_utc()),
             mime_type: Some("text/markdown".to_string()),
-            size: Some(1500),
+            size: Some("1500".to_string()),
             url: Some("https://example.com/updated".to_string()),
             parent_id: None,
-            extra: HashMap::new(),
+            extra: Some(HashMap::new()),
         },
         permissions: Some(DocumentPermissions {
             public: true,
@@ -213,13 +213,13 @@ async fn test_queue_processor_document_deleted() {
         metadata: DocumentMetadata {
             title: Some("Delete Me".to_string()),
             author: Some("Test Author".to_string()),
-            created_at: Some(Utc::now()),
-            updated_at: Some(Utc::now()),
+            created_at: Some(OffsetDateTime::now_utc()),
+            updated_at: Some(OffsetDateTime::now_utc()),
             mime_type: Some("text/plain".to_string()),
-            size: Some(100),
+            size: Some("100".to_string()),
             url: None,
             parent_id: None,
-            extra: HashMap::new(),
+            extra: Some(HashMap::new()),
         },
         permissions: DocumentPermissions {
             public: false,
@@ -281,13 +281,13 @@ async fn test_queue_processor_multiple_events() {
             metadata: DocumentMetadata {
                 title: Some(format!("Document {}", i)),
                 author: Some("Batch Author".to_string()),
-                created_at: Some(Utc::now()),
-                updated_at: Some(Utc::now()),
+                created_at: Some(OffsetDateTime::now_utc()),
+                updated_at: Some(OffsetDateTime::now_utc()),
                 mime_type: Some("text/plain".to_string()),
-                size: Some(100 * (i + 1) as i64),
+                size: Some((100 * (i + 1)).to_string()),
                 url: None,
                 parent_id: None,
-                extra: HashMap::new(),
+                extra: Some(HashMap::new()),
             },
             permissions: DocumentPermissions {
                 public: i % 2 == 0,
@@ -349,13 +349,13 @@ async fn test_queue_processor_batch_processing() {
             metadata: DocumentMetadata {
                 title: Some(format!("Batch Document {}", i)),
                 author: Some("Batch Author".to_string()),
-                created_at: Some(Utc::now()),
-                updated_at: Some(Utc::now()),
+                created_at: Some(OffsetDateTime::now_utc()),
+                updated_at: Some(OffsetDateTime::now_utc()),
                 mime_type: Some("text/plain".to_string()),
-                size: Some(100),
+                size: Some("100".to_string()),
                 url: None,
                 parent_id: None,
-                extra: HashMap::new(),
+                extra: Some(HashMap::new()),
             },
             permissions: DocumentPermissions {
                 public: true,
@@ -384,4 +384,137 @@ async fn test_queue_processor_batch_processing() {
     }
 
     processor_handle.abort();
+}
+
+#[tokio::test]
+async fn test_queue_recovery_on_startup() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+
+    // Manually insert some events directly into the processing state to simulate a restart scenario
+    let event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "test_sync_run_recovery".to_string(),
+        source_id: source_id.to_string(),
+        document_id: "recovery_doc_1".to_string(),
+        content: "Recovery test content".to_string(),
+        metadata: DocumentMetadata {
+            title: Some("Recovery Document".to_string()),
+            author: Some("Recovery Author".to_string()),
+            created_at: Some(OffsetDateTime::now_utc()),
+            updated_at: Some(OffsetDateTime::now_utc()),
+            mime_type: Some("text/plain".to_string()),
+            size: Some("1024".to_string()),
+            url: None,
+            parent_id: None,
+            extra: Some(HashMap::new()),
+        },
+        permissions: DocumentPermissions {
+            public: false,
+            users: vec!["user1".to_string()],
+            groups: vec![],
+        },
+    };
+
+    // Queue the event normally first
+    let event_id = event_queue.enqueue(&source_id, &event).await.unwrap();
+
+    // Manually set the event to processing state with an old timestamp to simulate stale processing
+    sqlx::query(
+        r#"
+        UPDATE connector_events_queue 
+        SET status = 'processing', 
+            processing_started_at = NOW() - INTERVAL '10 minutes'
+        WHERE id = $1
+        "#,
+    )
+    .bind(&event_id)
+    .execute(fixture.state.db_pool.pool())
+    .await
+    .unwrap();
+
+    // Verify the event is in processing state
+    let stats = event_queue.get_queue_stats().await.unwrap();
+    assert_eq!(stats.processing, 1);
+    assert_eq!(stats.pending, 0);
+
+    // Test recovery method directly
+    let recovered = event_queue
+        .recover_stale_processing_items(300)
+        .await
+        .unwrap();
+    assert_eq!(recovered, 1);
+
+    // Verify the event is back to pending state
+    let stats_after = event_queue.get_queue_stats().await.unwrap();
+    assert_eq!(stats_after.processing, 0);
+    assert_eq!(stats_after.pending, 1);
+
+    // Now start the processor to verify it can process the recovered event
+    let processor = QueueProcessor::new(fixture.state.clone());
+    let processor_handle = tokio::spawn(async move { processor.start().await });
+
+    sleep(Duration::from_millis(100)).await;
+
+    // Wait for the document to be processed
+    let repo = DocumentRepository::new(fixture.state.db_pool.pool());
+    let document = common::wait_for_document_exists(
+        &repo,
+        source_id,
+        "recovery_doc_1",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Recovered document should be processed");
+
+    assert_eq!(document.title, "Recovery Document");
+    assert_eq!(document.content, Some("Recovery test content".to_string()));
+
+    processor_handle.abort();
+}
+
+#[tokio::test]
+async fn test_embedding_queue_recovery() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let embedding_queue = shared::EmbeddingQueue::new(fixture.state.db_pool.pool().clone());
+
+    // Add a document to the embedding queue
+    let document_id = "test_doc_for_embedding";
+    let content = "This is test content for embedding recovery";
+
+    let queue_id = embedding_queue
+        .enqueue(document_id.to_string(), content.to_string())
+        .await
+        .unwrap();
+
+    // Manually set the item to processing state with an old timestamp
+    sqlx::query(
+        r#"
+        UPDATE embedding_queue 
+        SET status = 'processing', 
+            processing_started_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes'
+        WHERE id = $1
+        "#,
+    )
+    .bind(&queue_id)
+    .execute(fixture.state.db_pool.pool())
+    .await
+    .unwrap();
+
+    // Verify the item is in processing state
+    let stats = embedding_queue.get_queue_stats().await.unwrap();
+    assert_eq!(stats.processing, 1);
+    assert_eq!(stats.pending, 0);
+
+    // Test recovery method
+    let recovered = embedding_queue
+        .recover_stale_processing_items(300)
+        .await
+        .unwrap();
+    assert_eq!(recovered, 1);
+
+    // Verify the item is back to pending state
+    let stats_after = embedding_queue.get_queue_stats().await.unwrap();
+    assert_eq!(stats_after.processing, 0);
+    assert_eq!(stats_after.pending, 1);
 }
