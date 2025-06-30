@@ -297,7 +297,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ../Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -312,8 +312,14 @@ networks:
 
 volumes:
   postgres_data:
+    name: clio-postgres-data
   redis_data:
+    name: clio-redis-data
   ai_models:
+    name: clio-ai-models
   vllm_models:
+    name: clio-vllm-models
   caddy_data:
+    name: clio-caddy-data
   caddy_config:
+    name: clio-caddy-config

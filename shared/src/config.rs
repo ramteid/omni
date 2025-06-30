@@ -74,6 +74,11 @@ pub struct AtlassianConnectorConfig {
     pub api_token: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct FilesystemConnectorConfig {
+    pub database: DatabaseConfig,
+}
+
 fn get_required_env(key: &str) -> String {
     env::var(key).unwrap_or_else(|_| {
         eprintln!("ERROR: Required environment variable '{}' is not set", key);
@@ -377,5 +382,13 @@ impl AtlassianConnectorConfig {
             user_email,
             api_token,
         }
+    }
+}
+
+impl FilesystemConnectorConfig {
+    pub fn from_env() -> Self {
+        let database = DatabaseConfig::from_env();
+
+        Self { database }
     }
 }

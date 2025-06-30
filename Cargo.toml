@@ -5,6 +5,7 @@ members = [
     "connectors/google",
     "connectors/slack",
     "connectors/atlassian",
+    "connectors/filesystem",
     "shared",
 ]
 resolver = "2"

@@ -14,9 +14,6 @@
     # ACME CA for certificates (use Let's Encrypt staging for testing)
     # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
     
-    # Auto HTTPS settings
-    auto_https on
-    
     # HTTP->HTTPS redirect
     https_port 443
 }

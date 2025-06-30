@@ -82,6 +82,7 @@ pub enum SourceType {
     Slack,
     Github,
     LocalFiles,
+    Filesystem,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

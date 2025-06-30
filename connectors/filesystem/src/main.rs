@@ -1,0 +1,45 @@
+use anyhow::Result;
+use dotenvy::dotenv;
+use shared::{DatabasePool, FilesystemConnectorConfig};
+use std::sync::Arc;
+use tracing::{error, info};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+mod models;
+mod scanner;
+mod sync;
+mod watcher;
+
+use shared::queue::EventQueue;
+use sync::FilesystemSyncManager;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenv().ok();
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "filesystem_connector=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
+    info!("Starting Filesystem Connector");
+
+    let config = FilesystemConnectorConfig::from_env();
+    let db_pool = DatabasePool::from_config(&config.database).await?;
+    let event_queue = EventQueue::new(db_pool.pool().clone());
+
+    let mut sync_manager = FilesystemSyncManager::new(db_pool.pool().clone(), event_queue);
+
+    // Load filesystem sources from database
+    sync_manager.load_sources().await?;
+
+    // Start the sync manager (this will run indefinitely)
+    info!("Starting filesystem sync processes");
+    sync_manager.start_sync_manager().await?;
+
+    info!("Filesystem Connector stopped");
+    Ok(())
+}

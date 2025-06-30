@@ -66,11 +66,6 @@ services:
     environment:
       - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
 
-  # Remove production services for dev
-  caddy:
-    profiles:
-      - production
-
   vllm:
     profiles:
       - production
