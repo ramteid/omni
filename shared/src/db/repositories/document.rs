@@ -17,7 +17,7 @@ impl DocumentRepository {
         let document = sqlx::query_as::<_, Document>(
             r#"
             SELECT id, source_id, external_id, title, content, content_type,
-                   file_size, file_extension, url, parent_id,
+                   file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE id = $1
@@ -34,7 +34,7 @@ impl DocumentRepository {
         let documents = sqlx::query_as::<_, Document>(
             r#"
             SELECT id, source_id, external_id, title, content, content_type,
-                   file_size, file_extension, url, parent_id,
+                   file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             ORDER BY created_at DESC
@@ -53,7 +53,7 @@ impl DocumentRepository {
         let documents = sqlx::query_as::<_, Document>(
             r#"
             SELECT id, source_id, external_id, title, content, content_type,
-                   file_size, file_extension, url, parent_id,
+                   file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE tsv_content @@ websearch_to_tsquery('english', $1)
@@ -99,7 +99,7 @@ impl DocumentRepository {
     ) -> Result<Vec<Document>, DatabaseError> {
         let base_query = r#"
             SELECT id, source_id, external_id, title, content, content_type,
-                   file_size, file_extension, url, parent_id,
+                   file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE tsv_content @@ websearch_to_tsquery('english', $1)
@@ -352,7 +352,7 @@ impl DocumentRepository {
         let documents = sqlx::query_as::<_, Document>(
             r#"
             SELECT id, source_id, external_id, title, content, content_type,
-                   file_size, file_extension, url, parent_id,
+                   file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE source_id = $1
@@ -374,7 +374,7 @@ impl DocumentRepository {
         let document = sqlx::query_as::<_, Document>(
             r#"
             SELECT id, source_id, external_id, title, content, content_type,
-                   file_size, file_extension, url, parent_id,
+                   file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE source_id = $1 AND external_id = $2
@@ -394,7 +394,7 @@ impl DocumentRepository {
             INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id, source_id, external_id, title, content, content_type,
-                      file_size, file_extension, url, parent_id,
+                      file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
             "#
         )
@@ -428,7 +428,7 @@ impl DocumentRepository {
             SET title = $2, content = $3, metadata = $4, permissions = $5
             WHERE id = $1
             RETURNING id, source_id, external_id, title, content, content_type,
-                      file_size, file_extension, url, parent_id,
+                      file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
             "#,
         )
@@ -470,8 +470,8 @@ impl DocumentRepository {
     pub async fn upsert(&self, document: Document) -> Result<Document, DatabaseError> {
         let upserted_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content, content_type, file_size, file_extension, url, parent_id, metadata, permissions, created_at, updated_at, last_indexed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            INSERT INTO documents (id, source_id, external_id, title, content, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = EXCLUDED.title,
@@ -481,7 +481,7 @@ impl DocumentRepository {
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = EXCLUDED.last_indexed_at
             RETURNING id, source_id, external_id, title, content, content_type,
-                      file_size, file_extension, url, parent_id,
+                      file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
             "#
         )
@@ -494,7 +494,6 @@ impl DocumentRepository {
         .bind(&document.file_size)
         .bind(&document.file_extension)
         .bind(&document.url)
-        .bind(&document.parent_id)
         .bind(&document.metadata)
         .bind(&document.permissions)
         .bind(&document.created_at)

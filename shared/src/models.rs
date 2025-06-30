@@ -53,7 +53,6 @@ pub struct Document {
     pub file_size: Option<i64>,
     pub file_extension: Option<String>,
     pub url: Option<String>,
-    pub parent_id: Option<String>,
     pub metadata: JsonValue,
     pub permissions: JsonValue,
     pub created_at: OffsetDateTime,
@@ -129,8 +128,8 @@ pub struct DocumentMetadata {
     pub mime_type: Option<String>,
     pub size: Option<String>,
     pub url: Option<String>,
-    pub parent_id: Option<String>,
-    pub extra: Option<HashMap<String, JsonValue>>,
+    pub path: Option<String>, // Generic display path for hierarchical context
+    pub extra: Option<HashMap<String, JsonValue>>, // Connector-specific metadata
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

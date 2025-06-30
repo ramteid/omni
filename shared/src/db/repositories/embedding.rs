@@ -173,7 +173,7 @@ impl EmbeddingRepository {
             )
             SELECT 
                 d.id, d.source_id, d.external_id, d.title, d.content,
-                d.content_type, d.file_size, d.file_extension, d.url, d.parent_id,
+                d.content_type, d.file_size, d.file_extension, d.url,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 re.distance,
                 re.chunk_start_offset,
@@ -217,7 +217,6 @@ impl EmbeddingRepository {
                     file_size: row.get("file_size"),
                     file_extension: row.get("file_extension"),
                     url: row.get("url"),
-                    parent_id: row.get("parent_id"),
                     metadata: row.get("metadata"),
                     permissions: row.get("permissions"),
                     created_at: row.get("created_at"),
@@ -244,7 +243,7 @@ impl EmbeddingRepository {
             r#"
             SELECT 
                 d.id, d.source_id, d.external_id, d.title, d.content,
-                d.content_type, d.file_size, d.file_extension, d.url, d.parent_id,
+                d.content_type, d.file_size, d.file_extension, d.url,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 e.embedding <=> $1 as distance,
                 e.chunk_start_offset,
@@ -273,7 +272,6 @@ impl EmbeddingRepository {
                     file_size: row.get("file_size"),
                     file_extension: row.get("file_extension"),
                     url: row.get("url"),
-                    parent_id: row.get("parent_id"),
                     metadata: row.get("metadata"),
                     permissions: row.get("permissions"),
                     created_at: row.get("created_at"),
@@ -323,7 +321,7 @@ impl EmbeddingRepository {
             )
             SELECT 
                 d.id, d.source_id, d.external_id, d.title, d.content,
-                d.content_type, d.file_size, d.file_extension, d.url, d.parent_id,
+                d.content_type, d.file_size, d.file_extension, d.url,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 rc.distance,
                 rc.chunk_start_offset,
@@ -355,7 +353,6 @@ impl EmbeddingRepository {
                     file_size: row.get("file_size"),
                     file_extension: row.get("file_extension"),
                     url: row.get("url"),
-                    parent_id: row.get("parent_id"),
                     metadata: row.get("metadata"),
                     permissions: row.get("permissions"),
                     created_at: row.get("created_at"),

@@ -30,6 +30,7 @@ pub struct SyncManager {
     drive_client: DriveClient,
     admin_client: AdminClient,
     event_queue: EventQueue,
+    folder_cache: Arc<std::sync::Mutex<HashMap<String, String>>>, // folder_id -> folder_name
 }
 
 #[derive(Clone)]
@@ -149,6 +150,7 @@ impl SyncManager {
             drive_client,
             admin_client,
             event_queue,
+            folder_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -500,10 +502,20 @@ impl SyncManager {
                         }).await {
                             Ok(content) => {
                                 if !content.is_empty() {
-                                    let event = file.clone().to_connector_event(
+                                    // Resolve the full path for this file
+                                    let file_path = match self.resolve_file_path(&user_access_token, &file).await {
+                                        Ok(path) => Some(path),
+                                        Err(e) => {
+                                            warn!("Failed to resolve path for file {}: {}", file.name, e);
+                                            None
+                                        }
+                                    };
+
+                                    let event = file.clone().to_connector_event_with_path(
                                         sync_run_id.clone(),
                                         source_id.clone(),
                                         content,
+                                        file_path,
                                     );
 
                                     match event_queue.enqueue(&source_id, &event).await.with_context(
@@ -1115,11 +1127,25 @@ impl SyncManager {
                                     {
                                         Ok(content) => {
                                             if !content.is_empty() {
-                                                let event = file.clone().to_connector_event(
-                                                    sync_run_id.clone(),
-                                                    source.id.clone(),
-                                                    content,
-                                                );
+                                                // Resolve the full path for this file
+                                                let file_path = match self
+                                                    .resolve_file_path(&access_token, &file)
+                                                    .await
+                                                {
+                                                    Ok(path) => Some(path),
+                                                    Err(e) => {
+                                                        warn!("Failed to resolve path for file {}: {}", file.name, e);
+                                                        None
+                                                    }
+                                                };
+
+                                                let event =
+                                                    file.clone().to_connector_event_with_path(
+                                                        sync_run_id.clone(),
+                                                        source.id.clone(),
+                                                        content,
+                                                        file_path,
+                                                    );
 
                                                 match self.publish_connector_event(event).await {
                                                     Ok(_) => {
@@ -1439,6 +1465,88 @@ impl SyncManager {
 
         info!("Completed interrupted sync recovery");
         Ok(())
+    }
+
+    async fn resolve_file_path(
+        &self,
+        token: &str,
+        file: &crate::models::GoogleDriveFile,
+    ) -> Result<String> {
+        if let Some(parents) = &file.parents {
+            if let Some(parent_id) = parents.first() {
+                return self.build_full_path(token, parent_id, &file.name).await;
+            }
+        }
+
+        // If no parents, file is in root
+        Ok(format!("/{}", file.name))
+    }
+
+    async fn build_full_path(
+        &self,
+        token: &str,
+        folder_id: &str,
+        file_name: &str,
+    ) -> Result<String> {
+        let mut path_components = vec![file_name.to_string()];
+        let mut current_folder_id = folder_id.to_string();
+
+        // Build path by traversing up the folder hierarchy
+        loop {
+            // Check cache first
+            let folder_name = {
+                let cache = self.folder_cache.lock().unwrap();
+                cache.get(&current_folder_id).cloned()
+            };
+
+            let folder_name = match folder_name {
+                Some(name) => name,
+                None => {
+                    // Fetch folder metadata from Drive API
+                    match self
+                        .drive_client
+                        .get_folder_metadata(token, &current_folder_id)
+                        .await
+                    {
+                        Ok(folder_metadata) => {
+                            let name = folder_metadata.name.clone();
+
+                            // Cache the folder name
+                            {
+                                let mut cache = self.folder_cache.lock().unwrap();
+                                cache.insert(current_folder_id.clone(), name.clone());
+                            }
+
+                            // Check if this folder has parents
+                            if let Some(folder_parents) = &folder_metadata.parents {
+                                if let Some(parent_id) = folder_parents.first() {
+                                    current_folder_id = parent_id.clone();
+                                    path_components.push(name);
+                                    continue;
+                                }
+                            }
+
+                            // No more parents, this is the root or shared drive root
+                            path_components.push(name);
+                            break;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to get folder metadata for {}: {}",
+                                current_folder_id, e
+                            );
+                            // Use folder ID as fallback
+                            path_components.push(format!("folder-{}", current_folder_id));
+                            break;
+                        }
+                    }
+                }
+            };
+        }
+
+        // Reverse to get correct order (root to file)
+        path_components.reverse();
+        Ok(format!("/{}", path_components.join("/")))
     }
 
     pub async fn startup_sync_check(&self) -> Result<()> {

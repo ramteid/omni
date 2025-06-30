@@ -227,41 +227,25 @@ impl MessageGroup {
         });
 
         let mut extra = HashMap::new();
-        extra.insert(
-            "channel_id".to_string(),
-            serde_json::Value::String(self.channel_id.clone()),
-        );
-        extra.insert(
+
+        // Store Slack-specific hierarchical data
+        let mut slack_metadata = HashMap::new();
+        slack_metadata.insert("channel_id".to_string(), serde_json::json!(self.channel_id));
+        slack_metadata.insert(
             "channel_name".to_string(),
-            serde_json::Value::String(self.channel_name.clone()),
+            serde_json::json!(self.channel_name),
         );
-        extra.insert(
+        slack_metadata.insert(
             "message_count".to_string(),
-            serde_json::Value::Number(self.message_count().into()),
+            serde_json::json!(self.message_count()),
         );
-        extra.insert(
-            "authors".to_string(),
-            serde_json::Value::Array(
-                authors
-                    .iter()
-                    .map(|a| serde_json::Value::String(a.clone()))
-                    .collect(),
-            ),
-        );
-        extra.insert(
-            "date".to_string(),
-            serde_json::Value::String(self.date.to_string()),
-        );
-        extra.insert(
-            "is_thread".to_string(),
-            serde_json::Value::Bool(self.is_thread),
-        );
+        slack_metadata.insert("authors".to_string(), serde_json::json!(authors));
+        slack_metadata.insert("date".to_string(), serde_json::json!(self.date.to_string()));
+        slack_metadata.insert("is_thread".to_string(), serde_json::json!(self.is_thread));
         if let Some(thread_ts) = &self.thread_ts {
-            extra.insert(
-                "thread_ts".to_string(),
-                serde_json::Value::String(thread_ts.clone()),
-            );
+            slack_metadata.insert("thread_ts".to_string(), serde_json::json!(thread_ts));
         }
+        extra.insert("slack".to_string(), serde_json::json!(slack_metadata));
 
         let document_id = if self.is_thread {
             format!(
@@ -288,7 +272,7 @@ impl MessageGroup {
                 "slack://channel/{}/archive/{}",
                 self.channel_id, self.date
             )),
-            parent_id: None,
+            path: Some(format!("#{}", self.channel_name)), // Display channel as path
             extra: Some(extra),
         };
 
@@ -320,6 +304,19 @@ impl SlackFile {
     ) -> ConnectorEvent {
         let document_id = format!("slack_file_{}", self.id);
 
+        let mut extra = HashMap::new();
+
+        // Store Slack-specific file metadata
+        let mut slack_metadata = HashMap::new();
+        slack_metadata.insert("channel_id".to_string(), serde_json::json!(channel_id));
+        slack_metadata.insert(
+            "channel_name".to_string(),
+            serde_json::json!(channel_name.clone()),
+        );
+        slack_metadata.insert("file_name".to_string(), serde_json::json!(self.name));
+        slack_metadata.insert("file_id".to_string(), serde_json::json!(self.id));
+        extra.insert("slack".to_string(), serde_json::json!(slack_metadata));
+
         let metadata = DocumentMetadata {
             title: self.title.clone().or_else(|| Some(self.name.clone())),
             author: None,
@@ -328,23 +325,8 @@ impl SlackFile {
             mime_type: self.mimetype.clone(),
             size: Some(self.size.to_string()),
             url: self.permalink.clone(),
-            parent_id: Some(channel_id.clone()),
-            extra: Some({
-                let mut extra = HashMap::new();
-                extra.insert(
-                    "channel_id".to_string(),
-                    serde_json::Value::String(channel_id.clone()),
-                );
-                extra.insert(
-                    "channel_name".to_string(),
-                    serde_json::Value::String(channel_name),
-                );
-                extra.insert(
-                    "file_name".to_string(),
-                    serde_json::Value::String(self.name.clone()),
-                );
-                extra
-            }),
+            path: Some(format!("#{}/{}", channel_name, self.name)), // Display as channel/filename
+            extra: Some(extra),
         };
 
         let permissions = DocumentPermissions {

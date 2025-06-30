@@ -509,6 +509,55 @@ impl DriveClient {
         Ok(start_page_token.to_string())
     }
 
+    pub async fn get_folder_metadata(
+        &self,
+        token: &str,
+        folder_id: &str,
+    ) -> Result<GoogleDriveFile> {
+        let get_folder_impl = || async {
+            let url = format!("{}/files/{}", DRIVE_API_BASE, folder_id);
+
+            let params = vec![
+                ("fields", "id,name,parents,mimeType"),
+                ("supportsAllDrives", "true"),
+            ];
+
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(token)
+                .query(&params)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!(
+                    "Failed to get folder metadata for {}: {}",
+                    folder_id,
+                    error_text
+                ));
+            }
+
+            let response_text = response.text().await?;
+            debug!("Folder metadata response: {}", response_text);
+
+            serde_json::from_str(&response_text).map_err(|e| {
+                anyhow!(
+                    "Failed to parse folder metadata response for {}: {}. Raw response: {}",
+                    folder_id,
+                    e,
+                    response_text
+                )
+            })
+        };
+
+        match &self.rate_limiter {
+            Some(limiter) => limiter.execute_with_retry(get_folder_impl).await,
+            None => get_folder_impl().await,
+        }
+    }
+
     pub async fn list_changes(
         &self,
         token: &str,

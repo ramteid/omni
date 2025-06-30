@@ -339,7 +339,6 @@ impl ProcessorContext {
             file_size,
             file_extension,
             url: metadata.url.clone(),
-            parent_id: metadata.parent_id.clone(),
             metadata: metadata_json,
             permissions: permissions_json,
             created_at: now,

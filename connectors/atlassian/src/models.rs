@@ -258,35 +258,31 @@ impl ConfluencePage {
             });
 
         let mut extra = HashMap::new();
-        extra.insert(
-            "space_id".to_string(),
-            serde_json::Value::String(self.space.id.clone()),
-        );
-        extra.insert(
-            "space_key".to_string(),
-            serde_json::Value::String(self.space.key.clone()),
-        );
-        extra.insert(
-            "space_name".to_string(),
-            serde_json::Value::String(self.space.name.clone()),
-        );
-        extra.insert(
-            "page_type".to_string(),
-            serde_json::Value::String(self.r#type.clone()),
-        );
-        extra.insert(
-            "status".to_string(),
-            serde_json::Value::String(self.status.clone()),
-        );
-        extra.insert(
+
+        // Store Confluence-specific hierarchical data
+        let mut confluence_metadata = HashMap::new();
+        confluence_metadata.insert("space_id".to_string(), serde_json::json!(self.space.id));
+        confluence_metadata.insert("space_key".to_string(), serde_json::json!(self.space.key));
+        confluence_metadata.insert("space_name".to_string(), serde_json::json!(self.space.name));
+        confluence_metadata.insert("page_type".to_string(), serde_json::json!(self.r#type));
+        confluence_metadata.insert("status".to_string(), serde_json::json!(self.status));
+        confluence_metadata.insert(
             "version".to_string(),
-            serde_json::Value::Number(self.version.number.into()),
+            serde_json::json!(self.version.number),
         );
 
         if let Some(ancestors) = &self.ancestors {
             let ancestor_titles: Vec<String> = ancestors.iter().map(|a| a.title.clone()).collect();
-            extra.insert("ancestors".to_string(), serde_json::json!(ancestor_titles));
+            confluence_metadata.insert("ancestors".to_string(), serde_json::json!(ancestor_titles));
+            // Store parent page ID for hierarchical relationships
+            if let Some(parent) = ancestors.last() {
+                confluence_metadata.insert("parent_id".to_string(), serde_json::json!(parent.id));
+            }
         }
+        extra.insert(
+            "confluence".to_string(),
+            serde_json::json!(confluence_metadata),
+        );
 
         let url = if let Some(links) = &self.links {
             Some(format!("{}{}", base_url, links.web_ui))
@@ -297,6 +293,18 @@ impl ConfluencePage {
             ))
         };
 
+        // Build hierarchical path for display
+        let path = if let Some(ancestors) = &self.ancestors {
+            let mut path_components = ancestors
+                .iter()
+                .map(|a| a.title.clone())
+                .collect::<Vec<_>>();
+            path_components.push(self.title.clone());
+            Some(format!("{}/{}", self.space.name, path_components.join("/")))
+        } else {
+            Some(format!("{}/{}", self.space.name, self.title))
+        };
+
         let metadata = DocumentMetadata {
             title: Some(self.title.clone()),
             author: Some(self.version.by.display_name.clone()),
@@ -305,10 +313,7 @@ impl ConfluencePage {
             mime_type: Some("text/html".to_string()),
             size: Some(self.extract_plain_text().len().to_string()),
             url,
-            parent_id: self
-                .ancestors
-                .as_ref()
-                .and_then(|a| a.last().map(|p| p.id.clone())),
+            path,
             extra: Some(extra),
         };
 
@@ -435,45 +440,44 @@ impl JiraIssue {
             });
 
         let mut extra = HashMap::new();
-        extra.insert(
-            "issue_key".to_string(),
-            serde_json::Value::String(self.key.clone()),
-        );
-        extra.insert(
+
+        // Store Jira-specific metadata
+        let mut jira_metadata = HashMap::new();
+        jira_metadata.insert("issue_key".to_string(), serde_json::json!(self.key));
+        jira_metadata.insert(
             "project_id".to_string(),
-            serde_json::Value::String(self.fields.project.id.clone()),
+            serde_json::json!(self.fields.project.id),
         );
-        extra.insert(
+        jira_metadata.insert(
             "project_key".to_string(),
-            serde_json::Value::String(self.fields.project.key.clone()),
+            serde_json::json!(self.fields.project.key),
         );
-        extra.insert(
+        jira_metadata.insert(
             "project_name".to_string(),
-            serde_json::Value::String(self.fields.project.name.clone()),
+            serde_json::json!(self.fields.project.name),
         );
-        extra.insert(
+        jira_metadata.insert(
             "issue_type".to_string(),
-            serde_json::Value::String(self.fields.issuetype.name.clone()),
+            serde_json::json!(self.fields.issuetype.name),
         );
-        extra.insert(
+        jira_metadata.insert(
             "status".to_string(),
-            serde_json::Value::String(self.fields.status.name.clone()),
+            serde_json::json!(self.fields.status.name),
         );
-        extra.insert(
+        jira_metadata.insert(
             "status_category".to_string(),
-            serde_json::Value::String(self.fields.status.status_category.name.clone()),
+            serde_json::json!(self.fields.status.status_category.name),
         );
 
         if let Some(priority) = &self.fields.priority {
-            extra.insert(
-                "priority".to_string(),
-                serde_json::Value::String(priority.name.clone()),
-            );
+            jira_metadata.insert("priority".to_string(), serde_json::json!(priority.name));
         }
 
         if let Some(labels) = &self.fields.labels {
-            extra.insert("labels".to_string(), serde_json::json!(labels));
+            jira_metadata.insert("labels".to_string(), serde_json::json!(labels));
         }
+
+        extra.insert("jira".to_string(), serde_json::json!(jira_metadata));
 
         let url = Some(format!("{}/browse/{}", base_url, self.key));
 
@@ -485,7 +489,7 @@ impl JiraIssue {
             mime_type: Some("text/plain".to_string()),
             size: Some(self.to_document_content().len().to_string()),
             url,
-            parent_id: None,
+            path: Some(format!("{}/{}", self.fields.project.name, self.key)), // Display as Project/Issue
             extra: Some(extra),
         };
 

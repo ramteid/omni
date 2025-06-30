@@ -8,7 +8,6 @@ CREATE TABLE IF NOT EXISTS documents (
     file_size BIGINT,
     file_extension VARCHAR(50),
     url TEXT,
-    parent_id VARCHAR(500),
     metadata JSONB NOT NULL DEFAULT '{}',
     permissions JSONB NOT NULL DEFAULT '[]',
     tsv_content tsvector GENERATED ALWAYS AS (

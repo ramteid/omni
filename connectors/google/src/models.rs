@@ -40,6 +40,16 @@ impl GoogleDriveFile {
         source_id: String,
         content: String,
     ) -> ConnectorEvent {
+        self.to_connector_event_with_path(sync_run_id, source_id, content, None)
+    }
+
+    pub fn to_connector_event_with_path(
+        self,
+        sync_run_id: String,
+        source_id: String,
+        content: String,
+        path: Option<String>,
+    ) -> ConnectorEvent {
         let mut users = Vec::new();
 
         if let Some(file_permissions) = &self.permissions {
@@ -55,6 +65,19 @@ impl GoogleDriveFile {
         extra.insert(
             "shared".to_string(),
             serde_json::json!(self.shared.unwrap_or(false)),
+        );
+
+        // Store Google Drive specific hierarchical data
+        let mut google_drive_metadata = HashMap::new();
+        if let Some(parents) = &self.parents {
+            google_drive_metadata.insert("parents".to_string(), serde_json::json!(parents));
+            if let Some(parent) = parents.first() {
+                google_drive_metadata.insert("parent_id".to_string(), serde_json::json!(parent));
+            }
+        }
+        extra.insert(
+            "google_drive".to_string(),
+            serde_json::json!(google_drive_metadata),
         );
 
         let metadata = DocumentMetadata {
@@ -73,7 +96,7 @@ impl GoogleDriveFile {
             mime_type: Some(self.mime_type.clone()),
             size: self.size.clone(),
             url: self.web_view_link.clone(),
-            parent_id: self.parents.as_ref().and_then(|p| p.first().cloned()),
+            path,
             extra: Some(extra),
         };
 
