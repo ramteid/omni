@@ -1,0 +1,253 @@
+# GitHub Actions CI workflow for automated benchmarking
+# Place this file in .github/workflows/ directory
+
+name: Search Relevance Benchmarks
+
+on:
+  schedule:
+    # Run benchmarks daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 'Dataset to benchmark'
+        required: true
+        default: 'beir'
+        type: choice
+        options:
+          - beir
+          - msmarco
+          - all
+      search_mode:
+        description: 'Search mode to test'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - fulltext
+          - semantic
+          - hybrid
+          - all
+      
+  # Run on pull requests that affect search functionality
+  pull_request:
+    paths:
+      - 'services/searcher/**'
+      - 'services/indexer/**'
+      - 'services/ai/**'
+      - 'benchmarks/**'
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: clio_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache benchmark datasets
+        uses: actions/cache@v3
+        with:
+          path: benchmarks/data/
+          key: ${{ runner.os }}-benchmark-data-${{ hashFiles('benchmarks/config/default.toml') }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev
+
+      - name: Build Clio services
+        run: |
+          cargo build --release
+          cd frontend && npm ci && npm run build
+
+      - name: Setup test database
+        run: |
+          export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/clio_test
+          cargo run --bin migrator
+
+      - name: Start Clio services
+        run: |
+          # Start services in background
+          export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/clio_test
+          export REDIS_URL=redis://localhost:6379
+          
+          # Start searcher service
+          cargo run --release --bin clio-searcher &
+          SEARCHER_PID=$!
+          
+          # Start indexer service  
+          cargo run --release --bin clio-indexer &
+          INDEXER_PID=$!
+          
+          # Start AI service (if available)
+          # python services/ai/main.py &
+          # AI_PID=$!
+          
+          # Wait for services to start
+          sleep 30
+          
+          # Health check
+          curl -f http://localhost:3001/health || exit 1
+          
+          echo "SEARCHER_PID=$SEARCHER_PID" >> $GITHUB_ENV
+          echo "INDEXER_PID=$INDEXER_PID" >> $GITHUB_ENV
+
+      - name: Run benchmarks
+        run: |
+          cd benchmarks
+          
+          # Determine parameters
+          DATASET="${{ github.event.inputs.dataset || 'beir' }}"
+          SEARCH_MODE="${{ github.event.inputs.search_mode || 'hybrid' }}"
+          
+          # For PR events, run quick benchmark
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            QUICK_MODE="true"
+          else
+            QUICK_MODE="false"
+          fi
+          
+          # Run benchmark
+          ./scripts/run_benchmarks.sh "$DATASET" "$SEARCH_MODE" "$QUICK_MODE"
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: benchmark-results-${{ github.run_number }}
+          path: |
+            benchmarks/results/
+            !benchmarks/results/*.log
+          retention-days: 30
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'benchmarks/results/benchmark_report.html';
+            
+            if (fs.existsSync(path)) {
+              const htmlContent = fs.readFileSync(path, 'utf8');
+              
+              // Extract key metrics from HTML (simplified)
+              const comment = `
+              ## 🔍 Search Relevance Benchmark Results
+              
+              Benchmark completed for this PR. Key metrics:
+              
+              - **Dataset**: ${{ github.event.inputs.dataset || 'beir' }}
+              - **Search Mode**: ${{ github.event.inputs.search_mode || 'hybrid' }}
+              - **Status**: ✅ Completed successfully
+              
+              📊 Detailed results are available in the artifacts.
+              
+              > This is an automated benchmark run. Results may vary based on the test environment.
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+      - name: Cleanup services
+        if: always()
+        run: |
+          # Kill background processes
+          if [ ! -z "$SEARCHER_PID" ]; then kill $SEARCHER_PID || true; fi
+          if [ ! -z "$INDEXER_PID" ]; then kill $INDEXER_PID || true; fi
+
+  benchmark-regression:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    needs: benchmark
+    
+    steps:
+      - name: Download current results
+        uses: actions/download-artifact@v3
+        with:
+          name: benchmark-results-${{ github.run_number }}
+          path: current-results/
+
+      - name: Download baseline results
+        uses: actions/download-artifact@v3
+        with:
+          name: benchmark-baseline
+          path: baseline-results/
+        continue-on-error: true
+
+      - name: Compare results
+        run: |
+          # Simple regression detection
+          echo "Implementing regression analysis..."
+          # This would compare current vs baseline results
+          # and alert if performance degrades significantly
+
+      - name: Update baseline
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: benchmark-baseline
+          path: current-results/
+          retention-days: 90

@@ -1,0 +1,72 @@
+# Clio Search Relevance Benchmark Configuration
+
+# Search service configuration (Docker services)
+searcher_url = "http://localhost:3001"
+indexer_url = "http://localhost:3002" 
+database_url = "postgresql://clio_dev:clio_dev_password@localhost:5432/clio_benchmark"
+redis_url = "redis://localhost:6379"
+max_results_per_query = 100
+concurrent_queries = 5
+rate_limit_delay_ms = 100
+timeout_seconds = 30
+
+# Benchmark-specific settings
+use_separate_db = true
+reset_db_on_start = true
+index_documents_before_search = true
+
+# Dataset configurations
+[datasets]
+
+[datasets.beir]
+datasets = [
+    "nfcorpus",
+    "fiqa", 
+    "trec-covid",
+    "scifact",
+    "scidocs",
+    "nq",
+    "hotpotqa",
+    "climate-fever",
+    "fever",
+    "dbpedia-entity",
+    "webis-touche2020",
+    "quora"
+]
+download_url_base = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets"
+cache_dir = "benchmarks/data/beir"
+
+[datasets.msmarco]
+dataset_type = "passage"
+cache_dir = "benchmarks/data/msmarco"
+
+[datasets.msmarco.download_urls]
+queries = "https://msmarco.blob.core.windows.net/msmarcoranking/queries.tar.gz"
+corpus = "https://msmarco.blob.core.windows.net/msmarcoranking/collection.tar.gz"  
+qrels = "https://msmarco.blob.core.windows.net/msmarcoranking/qrels.dev.small.tsv"
+
+[datasets.custom]
+data_dir = "benchmarks/data/custom"
+generate_synthetic = false
+num_synthetic_queries = 100
+enterprise_domains = [
+    "google_drive",
+    "slack", 
+    "confluence",
+    "github"
+]
+
+# Evaluation configuration
+[evaluation]
+metrics = ["ndcg", "mrr", "map", "precision", "recall"]
+cutoff_values = [1, 5, 10, 20]
+statistical_tests = true
+significance_level = 0.05
+
+# Hyperparameter optimization
+[hyperparameter_optimization]
+enable_optimization = false
+fts_weight_range = [0.1, 0.9]
+semantic_weight_range = [0.1, 0.9]
+weight_step = 0.1
+optimization_metric = "ndcg@10"

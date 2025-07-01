@@ -1,0 +1,32 @@
+# Benchmark-specific overrides
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.benchmark.yml up
+
+x-benchmark-database-url: &benchmark-database-url
+  DATABASE_URL: postgresql://clio_dev:clio_dev_password@postgres:5432/clio_benchmark
+
+services:
+  # Override database URLs for benchmark services to use clio_benchmark database
+  searcher:
+    environment:
+      <<: *benchmark-database-url
+
+  indexer:
+    environment:
+      <<: *benchmark-database-url
+
+  ai:
+    environment:
+      <<: *benchmark-database-url
+
+  # Connectors also need to use benchmark database
+  google-connector:
+    environment:
+      <<: *benchmark-database-url
+
+  slack-connector:
+    environment:
+      <<: *benchmark-database-url
+
+  atlassian-connector:
+    environment:
+      <<: *benchmark-database-url

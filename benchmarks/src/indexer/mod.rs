@@ -1,0 +1,359 @@
+use crate::config::BenchmarkConfig;
+use crate::datasets::{Dataset, Document};
+use anyhow::Result;
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use shared::queue::EventQueue;
+use shared::utils::generate_ulid;
+use sqlx::{Pool, Postgres, Row};
+use std::collections::HashMap;
+use std::time::Duration;
+use tracing::{info, warn};
+
+pub struct BenchmarkIndexer {
+    config: BenchmarkConfig,
+    db_pool: Pool<Postgres>,
+    event_queue: EventQueue,
+}
+
+impl BenchmarkIndexer {
+    pub async fn new(config: BenchmarkConfig) -> Result<Self> {
+        // Connect to benchmark database
+        let db_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(10)
+            .connect(&config.database_url)
+            .await?;
+
+        let event_queue = EventQueue::new(db_pool.clone());
+
+        Ok(Self {
+            config,
+            db_pool,
+            event_queue,
+        })
+    }
+
+    pub async fn setup_benchmark_database(&self) -> Result<()> {
+        info!("Setting up benchmark database");
+
+        if self.config.reset_db_on_start {
+            info!("Resetting benchmark database");
+            self.clear_all_data().await?;
+        }
+
+        // Ensure database schema exists
+        self.ensure_schema().await?;
+
+        // Ensure benchmark user exists
+        self.ensure_benchmark_user().await?;
+
+        info!("Benchmark database setup completed");
+        Ok(())
+    }
+
+    async fn clear_all_data(&self) -> Result<()> {
+        // Clear all benchmark data but preserve schema
+        let tables = vec![
+            "embeddings",
+            "documents",
+            "sources",
+            "users",
+            "sync_runs",
+            "connector_events_queue",
+            "oauth_credentials",
+        ];
+
+        for table in tables {
+            let query = format!("TRUNCATE TABLE {} CASCADE", table);
+            if let Err(e) = sqlx::query(&query).execute(&self.db_pool).await {
+                warn!("Failed to truncate table {}: {}", table, e);
+            }
+        }
+
+        info!("Cleared all benchmark data");
+        Ok(())
+    }
+
+    async fn ensure_schema(&self) -> Result<()> {
+        // Check if required tables exist, if not run migrations
+        let table_exists = sqlx::query(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'documents')",
+        )
+        .fetch_one(&self.db_pool)
+        .await?
+        .get::<bool, _>(0);
+
+        if !table_exists {
+            return Err(anyhow::anyhow!(
+                "Database schema not found. Please run migrations first:\n\
+                 cd services/migrations && cargo run --bin migrator"
+            ));
+        }
+
+        info!("Database schema verified");
+        Ok(())
+    }
+
+    async fn ensure_benchmark_user(&self) -> Result<String> {
+        let benchmark_user_id = "01BENCHMARK000000000000001";
+
+        // Check if benchmark user already exists
+        let user_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+                .bind(benchmark_user_id)
+                .fetch_one(&self.db_pool)
+                .await?;
+
+        if !user_exists {
+            // Create benchmark user
+            sqlx::query(
+                r#"
+                INSERT INTO users (id, email, password_hash, full_name, role, is_active, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, true, NOW(), NOW())
+                "#,
+            )
+            .bind(benchmark_user_id)
+            .bind("benchmark@clio.local")
+            .bind("$2y$12$dummy_hash") // Dummy password hash since this user won't login
+            .bind("Benchmark User")
+            .bind("admin")
+            .execute(&self.db_pool)
+            .await?;
+
+            info!("Created benchmark user: {}", benchmark_user_id);
+        }
+
+        Ok(benchmark_user_id.to_string())
+    }
+
+    pub async fn index_dataset(&self, dataset: &Dataset) -> Result<String> {
+        info!("Starting to index dataset: {}", dataset.name);
+        info!("Total documents to index: {}", dataset.documents.len());
+
+        // Create a benchmark source
+        let source_id = self.create_benchmark_source(&dataset.name).await?;
+
+        // Create a sync run for this benchmark
+        let sync_run_id = self.create_sync_run(&source_id).await?;
+
+        // Convert dataset documents to connector events and enqueue them
+        let batch_size = 100;
+        let total_batches = (dataset.documents.len() + batch_size - 1) / batch_size;
+
+        for (batch_idx, chunk) in dataset.documents.chunks(batch_size).enumerate() {
+            info!(
+                "Queuing batch {}/{} ({} documents)",
+                batch_idx + 1,
+                total_batches,
+                chunk.len()
+            );
+
+            if let Err(e) = self
+                .queue_document_batch(chunk, &source_id, &sync_run_id)
+                .await
+            {
+                warn!("Failed to queue batch {}: {}", batch_idx + 1, e);
+                continue;
+            }
+
+            // Small delay between batches to avoid overwhelming the queue
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Notify indexer to start processing the queued events
+        sqlx::query("NOTIFY indexer_queue")
+            .execute(&self.db_pool)
+            .await?;
+
+        info!("Dataset indexing completed: {}", dataset.name);
+        Ok(source_id)
+    }
+
+    async fn create_benchmark_source(&self, dataset_name: &str) -> Result<String> {
+        let source_id = generate_ulid();
+        let source_name = format!(
+            "benchmark_{}",
+            dataset_name.to_lowercase().replace("-", "_")
+        );
+
+        // Get the benchmark user ID
+        let benchmark_user_id = self.ensure_benchmark_user().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO sources (id, name, source_type, config, is_active, created_at, updated_at, created_by)
+            VALUES ($1, $2, $3, '{}', true, NOW(), NOW(), $4)
+            "#,
+        )
+        .bind(&source_id)
+        .bind(&source_name)
+        .bind("local_files") // We need to adhere to the source_type constraint in the db 
+        .bind(&benchmark_user_id)
+        .execute(&self.db_pool)
+        .await?;
+
+        info!("Created benchmark source: {} ({})", source_name, source_id);
+        Ok(source_id)
+    }
+
+    async fn create_sync_run(&self, source_id: &str) -> Result<String> {
+        let sync_run_id = generate_ulid();
+        let now = sqlx::types::time::OffsetDateTime::now_utc();
+
+        sqlx::query(
+            r#"
+            INSERT INTO sync_runs (id, source_id, sync_type, started_at, status, documents_processed, documents_updated, created_at, updated_at)
+            VALUES ($1, $2, 'full', $3, 'running', 0, 0, $4, $5)
+            "#,
+        )
+        .bind(&sync_run_id)
+        .bind(source_id)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.db_pool)
+        .await?;
+
+        info!(
+            "Created sync run: {} for source: {}",
+            sync_run_id, source_id
+        );
+        Ok(sync_run_id)
+    }
+
+    fn convert_document_to_event(
+        &self,
+        doc: &Document,
+        source_id: &str,
+        sync_run_id: &str,
+    ) -> ConnectorEvent {
+        let mut extra_metadata = HashMap::new();
+        for (key, value) in &doc.metadata {
+            extra_metadata.insert(key.clone(), serde_json::Value::String(value.clone()));
+        }
+        extra_metadata.insert("benchmark".to_string(), serde_json::Value::Bool(true));
+
+        let metadata = DocumentMetadata {
+            title: Some(doc.title.clone()),
+            author: None,
+            created_at: None,
+            updated_at: None,
+            mime_type: Some("text/plain".to_string()),
+            size: Some(doc.content.len().to_string()),
+            url: None,
+            path: None,
+            extra: Some(extra_metadata),
+        };
+
+        let permissions = DocumentPermissions {
+            public: true,
+            users: vec![],
+            groups: vec![],
+        };
+
+        ConnectorEvent::DocumentCreated {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
+            document_id: doc.id.clone(),
+            content: doc.content.clone(),
+            metadata,
+            permissions,
+        }
+    }
+
+    async fn queue_document_batch(
+        &self,
+        documents: &[Document],
+        source_id: &str,
+        sync_run_id: &str,
+    ) -> Result<()> {
+        // Convert documents to connector events and enqueue them
+        for doc in documents {
+            let event = self.convert_document_to_event(doc, source_id, sync_run_id);
+
+            if let Err(e) = self.event_queue.enqueue(source_id, &event).await {
+                warn!("Failed to enqueue document {}: {}", doc.id, e);
+                continue;
+            }
+        }
+
+        info!("Queued {} documents for processing", documents.len());
+        Ok(())
+    }
+
+    pub async fn wait_for_indexing_completion(&self, source_id: &str) -> Result<()> {
+        info!("Waiting for indexing to complete...");
+
+        // Poll the queue and document counts until processing is complete
+        let mut last_processed_count = 0i64;
+        let mut stable_count = 0;
+
+        loop {
+            // Check queue stats
+            let queue_stats = self.event_queue.get_queue_stats().await?;
+
+            // Check document count for this source
+            let doc_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE source_id = $1")
+                    .bind(source_id)
+                    .fetch_one(&self.db_pool)
+                    .await?;
+
+            info!(
+                "Indexing progress - Queue: pending={}, processing={}, completed={}, failed={}, dead_letter={}, Documents indexed={}",
+                queue_stats.pending, queue_stats.processing, queue_stats.completed, queue_stats.failed, queue_stats.dead_letter, doc_count
+            );
+
+            // Check if queue is empty and document count is stable
+            if queue_stats.pending == 0 && queue_stats.processing == 0 {
+                if doc_count == last_processed_count {
+                    stable_count += 1;
+                    if stable_count >= 3 {
+                        // Count has been stable for 3 checks, we're done
+                        break;
+                    }
+                } else {
+                    stable_count = 0;
+                    last_processed_count = doc_count;
+                }
+            } else {
+                stable_count = 0;
+                last_processed_count = doc_count;
+            }
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+
+        info!(
+            "Indexing completed. Total benchmark documents: {}",
+            last_processed_count
+        );
+        Ok(())
+    }
+
+    pub async fn get_index_stats(&self, source_id: &str) -> Result<IndexStats> {
+        let doc_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE source_id = $1")
+                .bind(source_id)
+                .fetch_one(&self.db_pool)
+                .await?;
+
+        let embedding_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM embeddings e JOIN documents d ON e.document_id = d.id WHERE d.source_id = $1"
+        )
+        .bind(source_id)
+        .fetch_one(&self.db_pool)
+        .await
+        .unwrap_or(0);
+
+        Ok(IndexStats {
+            total_documents: doc_count,
+            total_embeddings: embedding_count,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexStats {
+    pub total_documents: i64,
+    pub total_embeddings: i64,
+}

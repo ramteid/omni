@@ -1,15 +1,21 @@
 # Development-specific overrides
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 
+x-dev-db-config: &dev-db-config
+  POSTGRES_DB: clio_dev
+  POSTGRES_USER: clio_dev
+  POSTGRES_PASSWORD: clio_dev_password
+
+x-dev-database-url: &dev-database-url
+  DATABASE_URL: postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+
 services:
   # Infrastructure only for development
   postgres:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: clio_dev
-      POSTGRES_USER: clio_dev
-      POSTGRES_PASSWORD: clio_dev_password
+      <<: *dev-db-config
 
   redis:
     ports:
@@ -26,45 +32,49 @@ services:
       - ../web/src:/app/src
       - ../web/static:/app/static
     environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+      <<: *dev-database-url
+      NODE_ENV: development
     command: npm run dev -- --host 0.0.0.0 --port ${WEB_PORT}
 
   # Update database URLs for all services in dev
 
   migrator:
     environment:
-      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+      <<: *dev-database-url
 
   searcher:
+    ports:
+      - "${SEARCHER_PORT}:${SEARCHER_PORT}"
     environment:
-      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+      <<: *dev-database-url
 
   indexer:
+    ports:
+      - "${INDEXER_PORT}:${INDEXER_PORT}"
     environment:
-      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+      <<: *dev-database-url
 
   ai:
     ports:
       - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     environment:
-      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
-      - VLLM_URL=http://localhost:8000  # Dummy URL for dev
+      <<: *dev-database-url
+      VLLM_URL: http://localhost:8000  # Dummy URL for dev
     volumes:
       - ../services/ai:/app
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
   google-connector:
     environment:
-      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+      <<: *dev-database-url
 
   slack-connector:
     environment:
-      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+      <<: *dev-database-url
 
   atlassian-connector:
     environment:
-      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+      <<: *dev-database-url
 
   vllm:
     profiles:
