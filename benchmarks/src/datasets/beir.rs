@@ -1,11 +1,14 @@
 use crate::datasets::{Dataset, DatasetLoader, Document, Query, RelevantDoc};
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt};
+use futures::Stream;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::pin::Pin;
 use tracing::info;
 
 pub struct BeirDataset {
@@ -228,10 +231,10 @@ impl BeirDataset {
             }
 
             let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 4 {
+            if parts.len() >= 3 {
                 let query_id = parts[0].to_string();
-                let doc_id = parts[2].to_string();
-                let relevance: f64 = parts[3].parse().unwrap_or(0.0);
+                let doc_id = parts[1].to_string();
+                let relevance: f64 = parts[2].parse().unwrap_or(0.0);
 
                 qrels
                     .entry(query_id)
@@ -280,6 +283,130 @@ impl BeirDataset {
         );
         Ok(combined_queries)
     }
+
+    fn stream_corpus(&self, path: &str) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>> {
+        let path = path.to_string();
+        Box::pin(stream::try_unfold(
+            (path, None::<BufReader<File>>),
+            move |(path, mut reader_opt)| async move {
+                // Initialize reader if needed
+                if reader_opt.is_none() {
+                    let file = File::open(&path).map_err(|e| {
+                        anyhow::anyhow!("Failed to open corpus file {}: {}", path, e)
+                    })?;
+                    reader_opt = Some(BufReader::new(file));
+                }
+
+                let reader = reader_opt.as_mut().unwrap();
+                let mut line = String::new();
+
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => return Ok(None), // EOF
+                        Ok(_) => {
+                            if line.trim().is_empty() {
+                                continue;
+                            }
+
+                            let doc_data: serde_json::Value = match serde_json::from_str(&line) {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    tracing::warn!("Failed to parse JSON line: {}", e);
+                                    continue;
+                                }
+                            };
+
+                            if let (Some(id), Some(title), Some(text)) = (
+                                doc_data["_id"].as_str(),
+                                doc_data["title"].as_str(),
+                                doc_data["text"].as_str(),
+                            ) {
+                                let mut metadata = HashMap::new();
+                                if let Some(metadata_obj) = doc_data["metadata"].as_object() {
+                                    for (k, v) in metadata_obj {
+                                        if let Some(v_str) = v.as_str() {
+                                            metadata.insert(k.clone(), v_str.to_string());
+                                        }
+                                    }
+                                }
+
+                                let document = Document {
+                                    id: id.to_string(),
+                                    title: title.to_string(),
+                                    content: text.to_string(),
+                                    metadata,
+                                };
+
+                                return Ok(Some((document, (path, reader_opt))));
+                            }
+                        }
+                        Err(e) => return Err(anyhow::anyhow!("Failed to read line: {}", e)),
+                    }
+                }
+            },
+        ))
+    }
+
+    fn stream_corpus_queries(
+        &self,
+        queries_path: &str,
+        qrels_path: &str,
+    ) -> Pin<Box<dyn Stream<Item = Result<Query>> + Send>> {
+        let queries_path = queries_path.to_string();
+        let qrels_path = qrels_path.to_string();
+
+        Box::pin(stream::try_unfold(
+            (
+                queries_path,
+                qrels_path,
+                None::<(
+                    HashMap<String, String>,
+                    HashMap<String, Vec<(String, f64)>>,
+                    std::collections::hash_map::IntoIter<String, String>,
+                )>,
+            ),
+            move |(queries_path, qrels_path, mut state_opt)| async move {
+                // Initialize state if needed
+                if state_opt.is_none() {
+                    // Create a new instance to avoid borrowing self
+                    let temp_dataset = BeirDataset::new("".to_string());
+                    let queries = temp_dataset.load_queries(&queries_path)?;
+                    let qrels = temp_dataset.load_qrels(&qrels_path)?;
+                    let queries_iter = queries.into_iter();
+                    state_opt = Some((HashMap::new(), qrels, queries_iter));
+                }
+
+                let (_, qrels, queries_iter) = state_opt.as_mut().unwrap();
+
+                while let Some((query_id, query_text)) = queries_iter.next() {
+                    let relevant_docs: Vec<RelevantDoc> = qrels
+                        .get(&query_id)
+                        .map(|rels| {
+                            rels.iter()
+                                .map(|(doc_id, relevance)| RelevantDoc {
+                                    doc_id: doc_id.clone(),
+                                    relevance_score: *relevance,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    // Only yield queries that have relevant documents
+                    if !relevant_docs.is_empty() {
+                        let query = Query {
+                            id: query_id,
+                            text: query_text,
+                            relevant_docs,
+                        };
+                        return Ok(Some((query, (queries_path, qrels_path, state_opt))));
+                    }
+                }
+
+                Ok(None) // No more queries
+            },
+        ))
+    }
 }
 
 #[async_trait]
@@ -309,6 +436,36 @@ impl DatasetLoader for BeirDataset {
 
     fn get_cache_dir(&self) -> String {
         self.cache_dir.clone()
+    }
+
+    fn stream_documents(&self) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>> {
+        // For simplicity, stream documents from the first available dataset
+        // In practice, you might want to allow dataset selection
+        for dataset_name in &self.dataset_names {
+            let dataset_dir = format!("{}/{}", self.cache_dir, dataset_name);
+            if Path::new(&dataset_dir).exists() {
+                let corpus_path = format!("{}/corpus.jsonl", dataset_dir);
+                return self.stream_corpus(&corpus_path);
+            }
+        }
+
+        // If no dataset found, return empty stream
+        Box::pin(stream::empty())
+    }
+
+    fn stream_queries(&self) -> Pin<Box<dyn Stream<Item = Result<Query>> + Send>> {
+        // For simplicity, stream queries from the first available dataset
+        for dataset_name in &self.dataset_names {
+            let dataset_dir = format!("{}/{}", self.cache_dir, dataset_name);
+            if Path::new(&dataset_dir).exists() {
+                let queries_path = format!("{}/queries.jsonl", dataset_dir);
+                let qrels_path = format!("{}/qrels/test.tsv", dataset_dir);
+                return self.stream_corpus_queries(&queries_path, &qrels_path);
+            }
+        }
+
+        // If no dataset found, return empty stream
+        Box::pin(stream::empty())
     }
 }
 

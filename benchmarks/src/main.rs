@@ -148,19 +148,13 @@ async fn run_benchmarks(config_path: &str, dataset: &str, search_mode: &str) -> 
         _ => return Err(anyhow::anyhow!("Unsupported dataset: {}", dataset)),
     };
 
-    // Load dataset
-    info!("Loading dataset: {}", dataset);
-    let dataset_data = dataset_loader.load_dataset().await?;
-    info!(
-        "Loaded {} queries and {} documents",
-        dataset_data.queries.len(),
-        dataset_data.documents.len()
-    );
-
-    // Index documents if required
-    if config.index_documents_before_search {
-        info!("Indexing documents into Clio database");
-        let source_id = indexer.index_dataset(&dataset_data).await?;
+    // Use streaming for document indexing if required
+    let _source_id = if config.index_documents_before_search {
+        info!("Streaming documents to Clio database (memory-efficient mode)");
+        let document_stream = dataset_loader.stream_documents();
+        let source_id = indexer
+            .index_document_stream(&dataset, document_stream)
+            .await?;
         indexer.wait_for_indexing_completion(&source_id).await?;
 
         let stats = indexer.get_index_stats(&source_id).await?;
@@ -168,7 +162,18 @@ async fn run_benchmarks(config_path: &str, dataset: &str, search_mode: &str) -> 
             "Index stats: {} documents, {} embeddings",
             stats.total_documents, stats.total_embeddings
         );
-    }
+        Some(source_id)
+    } else {
+        None
+    };
+
+    // Load queries for evaluation (still need these in memory for the evaluation logic)
+    info!("Loading queries for evaluation: {}", dataset);
+    let dataset_data = dataset_loader.load_dataset().await?;
+    info!(
+        "Loaded {} queries for evaluation",
+        dataset_data.queries.len()
+    );
 
     // Initialize search client and evaluator
     let search_client = ClioSearchClient::new(&config.searcher_url)?;

@@ -47,7 +47,7 @@ mod tests {
             query: "vector search test".to_string(),
             corrected_query: None,
             corrections: None,
-            facets: vec![],
+            facets: None,
         };
 
         assert_eq!(response.total_count, 42);
@@ -55,7 +55,7 @@ mod tests {
         assert!(response.has_more);
         assert_eq!(response.query, "vector search test");
         assert_eq!(response.results.len(), 0);
-        assert_eq!(response.facets.len(), 0);
+        assert!(response.facets.is_none());
     }
 
     #[test]

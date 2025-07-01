@@ -309,6 +309,11 @@ impl MetricsCalculator {
 impl AggregatedMetrics {
     pub fn save_to_file(&self, path: &str) -> Result<()> {
         let json = serde_json::to_string_pretty(self)?;
+        // Frist check if path exists, create if it doesn't
+        let base_dir = std::path::Path::new(path).parent().unwrap();
+        if !base_dir.exists() {
+            std::fs::create_dir_all(base_dir)?;
+        }
         std::fs::write(path, json)?;
         Ok(())
     }

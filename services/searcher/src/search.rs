@@ -110,7 +110,11 @@ impl SearchEngine {
             query: request.query,
             corrected_query,
             corrections: None, // TODO: implement word-level corrections tracking
-            facets,
+            facets: if facets.is_empty() {
+                None
+            } else {
+                Some(facets)
+            },
         };
 
         // Cache the response for 5 minutes

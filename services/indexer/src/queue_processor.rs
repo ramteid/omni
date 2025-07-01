@@ -1,4 +1,4 @@
-use crate::{lexeme_refresh, AppState};
+use crate::AppState;
 use anyhow::Result;
 use futures::future::join_all;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};

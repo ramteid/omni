@@ -8,7 +8,9 @@ pub use msmarco::*;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
+use std::pin::Pin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dataset {
@@ -44,4 +46,8 @@ pub trait DatasetLoader: Send + Sync {
     async fn load_dataset(&self) -> Result<Dataset>;
     fn get_name(&self) -> String;
     fn get_cache_dir(&self) -> String;
+
+    // Streaming methods for memory-efficient processing
+    fn stream_documents(&self) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>>;
+    fn stream_queries(&self) -> Pin<Box<dyn Stream<Item = Result<Query>> + Send>>;
 }

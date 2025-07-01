@@ -1,11 +1,14 @@
 use crate::config::BenchmarkConfig;
 use crate::datasets::{Dataset, Document};
 use anyhow::Result;
+use futures::stream::StreamExt;
+use futures::Stream;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -59,7 +62,8 @@ impl BenchmarkIndexer {
             "users",
             "sync_runs",
             "connector_events_queue",
-            "oauth_credentials",
+            "embedding_queue",
+            "service_credentials",
         ];
 
         for table in tables {
@@ -165,6 +169,87 @@ impl BenchmarkIndexer {
             .await?;
 
         info!("Dataset indexing completed: {}", dataset.name);
+        Ok(source_id)
+    }
+
+    pub async fn index_document_stream(
+        &self,
+        dataset_name: &str,
+        document_stream: Pin<Box<dyn Stream<Item = Result<Document>> + Send>>,
+    ) -> Result<String> {
+        info!("Starting to index document stream: {}", dataset_name);
+
+        // Create a benchmark source
+        let source_id = self.create_benchmark_source(dataset_name).await?;
+
+        // Create a sync run for this benchmark
+        let sync_run_id = self.create_sync_run(&source_id).await?;
+
+        // Process documents in batches from the stream
+        let batch_size = 100;
+        let mut document_stream = document_stream;
+        let mut batch = Vec::new();
+        let mut total_processed = 0;
+
+        while let Some(doc_result) = document_stream.next().await {
+            match doc_result {
+                Ok(document) => {
+                    batch.push(document);
+
+                    // Process batch when it reaches the batch size
+                    if batch.len() >= batch_size {
+                        if let Err(e) = self
+                            .queue_document_batch(&batch, &source_id, &sync_run_id)
+                            .await
+                        {
+                            warn!("Failed to queue batch: {}", e);
+                        } else {
+                            total_processed += batch.len();
+                            info!(
+                                "Queued batch of {} documents (total: {})",
+                                batch.len(),
+                                total_processed
+                            );
+                        }
+                        batch.clear();
+
+                        // Small delay between batches to avoid overwhelming the queue
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+                Err(e) => {
+                    warn!("Error reading document from stream: {}", e);
+                    continue;
+                }
+            }
+        }
+
+        // Process remaining documents in the final batch
+        if !batch.is_empty() {
+            if let Err(e) = self
+                .queue_document_batch(&batch, &source_id, &sync_run_id)
+                .await
+            {
+                warn!("Failed to queue final batch: {}", e);
+            } else {
+                total_processed += batch.len();
+                info!(
+                    "Queued final batch of {} documents (total: {})",
+                    batch.len(),
+                    total_processed
+                );
+            }
+        }
+
+        // Notify indexer to start processing the queued events
+        sqlx::query("NOTIFY indexer_queue")
+            .execute(&self.db_pool)
+            .await?;
+
+        info!(
+            "Document stream indexing completed: {} (total documents: {})",
+            dataset_name, total_processed
+        );
         Ok(source_id)
     }
 
@@ -298,13 +383,36 @@ impl BenchmarkIndexer {
                     .fetch_one(&self.db_pool)
                     .await?;
 
+            // Also check status of the embedding queue
+            let embedding_queue_stats = sqlx::query_as::<_, (String, i64)>(
+                "SELECT status, count(*) FROM embedding_queue GROUP BY status",
+            )
+            .fetch_all(&self.db_pool)
+            .await?;
+
             info!(
                 "Indexing progress - Queue: pending={}, processing={}, completed={}, failed={}, dead_letter={}, Documents indexed={}",
                 queue_stats.pending, queue_stats.processing, queue_stats.completed, queue_stats.failed, queue_stats.dead_letter, doc_count
             );
+            info!("Embedding queue status: {:?}", embedding_queue_stats);
 
-            // Check if queue is empty and document count is stable
-            if queue_stats.pending == 0 && queue_stats.processing == 0 {
+            // Check if both connector queue and embedding queue are empty and document count is stable
+            let embedding_pending = embedding_queue_stats
+                .iter()
+                .find(|(status, _)| status == "pending")
+                .map(|(_, count)| *count)
+                .unwrap_or(0);
+            let embedding_processing = embedding_queue_stats
+                .iter()
+                .find(|(status, _)| status == "processing")
+                .map(|(_, count)| *count)
+                .unwrap_or(0);
+
+            if queue_stats.pending == 0
+                && queue_stats.processing == 0
+                && embedding_pending == 0
+                && embedding_processing == 0
+            {
                 if doc_count == last_processed_count {
                     stable_count += 1;
                     if stable_count >= 3 {

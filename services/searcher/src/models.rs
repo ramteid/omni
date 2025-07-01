@@ -49,8 +49,8 @@ pub struct SearchResponse {
     pub corrected_query: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corrections: Option<Vec<WordCorrection>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub facets: Vec<Facet>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facets: Option<Vec<Facet>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

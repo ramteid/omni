@@ -11,6 +11,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BENCHMARK_ROOT="$(dirname "$PROJECT_DIR")"
 CONFIG_FILE="${PROJECT_DIR}/config/default.toml"
 RESULTS_DIR="${PROJECT_DIR}/results"
+RUST_LOG=info
 
 # Colors for output
 RED='\033[0;31m'
@@ -145,7 +146,7 @@ setup_datasets() {
     log_info "Setting up datasets: $dataset"
     
     cd "$PROJECT_DIR"
-    if RUST_LOG=info RUST_BACKTRACE=1 "$BENCHMARK_ROOT/target/debug/benchmark" setup --dataset "$dataset"; then
+    if RUST_LOG="${RUST_LOG}" RUST_BACKTRACE=1 "$BENCHMARK_ROOT/target/debug/benchmark" setup --dataset "$dataset"; then
         log_success "Dataset setup completed: $dataset"
     else
         log_error "Failed to setup dataset: $dataset"
@@ -161,7 +162,7 @@ run_benchmark() {
     log_info "Running benchmark - Dataset: $dataset, Mode: $search_mode"
     
     cd "$PROJECT_DIR"
-    if RUST_LOG=info RUST_BACKTRACE=1 "$BENCHMARK_ROOT/target/debug/benchmark" run \
+    if RUST_LOG="${RUST_LOG}" RUST_BACKTRACE=1 "$BENCHMARK_ROOT/target/debug/benchmark" run \
         --config "$CONFIG_FILE" \
         --dataset "$dataset" \
         --search-mode "$search_mode"; then
@@ -179,7 +180,7 @@ generate_reports() {
     cd "$PROJECT_DIR"
     
     # Generate HTML report
-    if RUST_LOG=info RUST_BACKTRACE=1 "$BENCHMARK_ROOT/target/debug/benchmark" report \
+    if RUST_LOG="${RUST_LOG}" RUST_BACKTRACE=1 "$BENCHMARK_ROOT/target/debug/benchmark" report \
         --results-dir "$RESULTS_DIR" \
         --format html; then
         log_success "HTML report generated"
@@ -188,7 +189,7 @@ generate_reports() {
     fi
     
     # Generate CSV report
-    if RUST_LOG=info RUST_BACKTRACE=1 "$BENCHMARK_ROOT/target/debug/benchmark" report \
+    if RUST_LOG="${RUST_LOG}" RUST_BACKTRACE=1 "$BENCHMARK_ROOT/target/debug/benchmark" report \
         --results-dir "$RESULTS_DIR" \
         --format csv; then
         log_success "CSV report generated"

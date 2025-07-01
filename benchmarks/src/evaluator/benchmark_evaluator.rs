@@ -4,8 +4,9 @@ use crate::evaluator::metrics::{
     AggregatedMetrics, EvaluationMetrics, MetricsCalculator, QueryResult, RelevantDocument,
     RetrievedDocument,
 };
-use crate::search_client::{ClioSearchClient, SearchRequest};
+use crate::search_client::{create_search_request, with_limit, with_offset, ClioSearchClient};
 use anyhow::Result;
+use clio_searcher::models::SearchMode;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
@@ -127,9 +128,16 @@ impl BenchmarkEvaluator {
         }
 
         // Create search request
-        let search_request = SearchRequest::new(query.text.clone(), search_mode.to_string())
-            .with_limit(config.max_results_per_query)
-            .with_offset(0);
+        let mode = match search_mode.to_lowercase().as_str() {
+            "fulltext" => SearchMode::Fulltext,
+            "semantic" => SearchMode::Semantic,
+            "hybrid" => SearchMode::Hybrid,
+            _ => SearchMode::Fulltext, // Default fallback
+        };
+
+        let search_request = create_search_request(query.text.clone(), mode);
+        let search_request = with_limit(search_request, config.max_results_per_query);
+        let search_request = with_offset(search_request, 0);
 
         // Execute search
         let search_response = search_client.search(&search_request).await?;
@@ -140,7 +148,7 @@ impl BenchmarkEvaluator {
             .into_iter()
             .enumerate()
             .map(|(rank, result)| RetrievedDocument {
-                doc_id: result.document.id,
+                doc_id: result.document.external_id,
                 rank: rank + 1,
                 score: result.score as f64,
             })

@@ -1,64 +1,9 @@
 use anyhow::Result;
+use clio_searcher::models::{SearchMode, SearchRequest, SearchResponse};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, error};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchRequest {
-    pub query: String,
-    pub search_mode: String,
-    pub limit: i64,
-    pub offset: i64,
-    pub sources: Option<Vec<String>>,
-    pub content_types: Option<Vec<String>>,
-    pub include_facets: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResponse {
-    pub results: Vec<SearchResult>,
-    pub total_count: i64,
-    pub query_time_ms: u64,
-    pub has_more: bool,
-    pub query: String,
-    pub corrected_query: Option<String>,
-    pub corrections: Option<Vec<String>>,
-    pub facets: Vec<Facet>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResult {
-    pub document: Document,
-    pub score: f32,
-    pub highlights: Vec<String>,
-    pub match_type: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Document {
-    pub id: String,
-    pub title: String,
-    pub content: Option<String>,
-    pub source: String,
-    pub content_type: String,
-    pub url: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub indexed_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Facet {
-    pub name: String,
-    pub values: Vec<FacetValue>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FacetValue {
-    pub value: String,
-    pub count: i64,
-}
 
 pub struct ClioSearchClient {
     client: Client,
@@ -134,43 +79,41 @@ pub struct IndexStats {
     pub last_updated: String,
 }
 
-impl SearchRequest {
-    pub fn new(query: String, search_mode: String) -> Self {
-        Self {
-            query,
-            search_mode,
-            limit: 20,
-            offset: 0,
-            sources: None,
-            content_types: None,
-            include_facets: false,
-        }
+pub fn create_search_request(query: String, search_mode: SearchMode) -> SearchRequest {
+    SearchRequest {
+        query,
+        mode: Some(search_mode),
+        limit: Some(20),
+        offset: Some(0),
+        sources: None,
+        content_types: None,
+        include_facets: Some(false),
     }
+}
 
-    pub fn with_limit(mut self, limit: i64) -> Self {
-        self.limit = limit;
-        self
-    }
+pub fn with_limit(mut request: SearchRequest, limit: i64) -> SearchRequest {
+    request.limit = Some(limit);
+    request
+}
 
-    pub fn with_offset(mut self, offset: i64) -> Self {
-        self.offset = offset;
-        self
-    }
+pub fn with_offset(mut request: SearchRequest, offset: i64) -> SearchRequest {
+    request.offset = Some(offset);
+    request
+}
 
-    pub fn with_sources(mut self, sources: Vec<String>) -> Self {
-        self.sources = Some(sources);
-        self
-    }
+pub fn with_sources(mut request: SearchRequest, sources: Vec<String>) -> SearchRequest {
+    request.sources = Some(sources);
+    request
+}
 
-    pub fn with_content_types(mut self, content_types: Vec<String>) -> Self {
-        self.content_types = Some(content_types);
-        self
-    }
+pub fn with_content_types(mut request: SearchRequest, content_types: Vec<String>) -> SearchRequest {
+    request.content_types = Some(content_types);
+    request
+}
 
-    pub fn with_facets(mut self, include_facets: bool) -> Self {
-        self.include_facets = include_facets;
-        self
-    }
+pub fn with_facets(mut request: SearchRequest, include_facets: bool) -> SearchRequest {
+    request.include_facets = Some(include_facets);
+    request
 }
 
 #[cfg(test)]
@@ -179,17 +122,17 @@ mod tests {
 
     #[test]
     fn test_search_request_builder() {
-        let request = SearchRequest::new("test query".to_string(), "hybrid".to_string())
-            .with_limit(10)
-            .with_offset(0)
-            .with_sources(vec!["google".to_string()])
-            .with_facets(true);
+        let request = create_search_request("test query".to_string(), SearchMode::Hybrid);
+        let request = with_limit(request, 10);
+        let request = with_offset(request, 0);
+        let request = with_sources(request, vec!["google".to_string()]);
+        let request = with_facets(request, true);
 
         assert_eq!(request.query, "test query");
-        assert_eq!(request.search_mode, "hybrid");
-        assert_eq!(request.limit, 10);
-        assert_eq!(request.offset, 0);
+        assert_eq!(request.mode, Some(SearchMode::Hybrid));
+        assert_eq!(request.limit, Some(10));
+        assert_eq!(request.offset, Some(0));
         assert_eq!(request.sources, Some(vec!["google".to_string()]));
-        assert_eq!(request.include_facets, true);
+        assert_eq!(request.include_facets, Some(true));
     }
 }

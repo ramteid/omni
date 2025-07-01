@@ -2,11 +2,14 @@ use crate::datasets::{Dataset, DatasetLoader, Document, Query, RelevantDoc};
 use anyhow::Result;
 use async_trait::async_trait;
 use flate2::read::GzDecoder;
+use futures::stream::{self, StreamExt};
+use futures::Stream;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::pin::Pin;
 use tar::Archive;
 use tracing::info;
 
@@ -224,6 +227,123 @@ impl MsMarcoDataset {
         );
         Ok(combined_queries)
     }
+
+    fn stream_corpus_file(
+        &self,
+        corpus_file: &str,
+    ) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>> {
+        let corpus_file = corpus_file.to_string();
+        Box::pin(stream::try_unfold(
+            (corpus_file, None::<BufReader<File>>),
+            move |(corpus_file, mut reader_opt)| async move {
+                // Initialize reader if needed
+                if reader_opt.is_none() {
+                    let file = File::open(&corpus_file).map_err(|e| {
+                        anyhow::anyhow!("Failed to open corpus file {}: {}", corpus_file, e)
+                    })?;
+                    reader_opt = Some(BufReader::new(file));
+                }
+
+                let reader = reader_opt.as_mut().unwrap();
+                let mut line = String::new();
+
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => return Ok(None), // EOF
+                        Ok(_) => {
+                            if line.trim().is_empty() {
+                                continue;
+                            }
+
+                            let parts: Vec<&str> = line.split('\t').collect();
+                            if parts.len() >= 2 {
+                                let doc_id = parts[0].to_string();
+                                let content = parts[1].to_string();
+
+                                // For MS MARCO passages, title is often the first sentence or empty
+                                let title = if content.len() > 100 {
+                                    format!("{}...", &content[..100])
+                                } else {
+                                    content.clone()
+                                };
+
+                                let document = Document {
+                                    id: doc_id,
+                                    title,
+                                    content,
+                                    metadata: HashMap::new(),
+                                };
+
+                                return Ok(Some((document, (corpus_file, reader_opt))));
+                            }
+                        }
+                        Err(e) => return Err(anyhow::anyhow!("Failed to read line: {}", e)),
+                    }
+                }
+            },
+        ))
+    }
+
+    fn stream_corpus_queries(
+        &self,
+        queries_file: &str,
+        qrels_file: &str,
+    ) -> Pin<Box<dyn Stream<Item = Result<Query>> + Send>> {
+        let queries_file = queries_file.to_string();
+        let qrels_file = qrels_file.to_string();
+
+        Box::pin(stream::try_unfold(
+            (
+                queries_file,
+                qrels_file,
+                None::<(
+                    HashMap<String, String>,
+                    HashMap<String, Vec<(String, f64)>>,
+                    std::collections::hash_map::IntoIter<String, String>,
+                )>,
+            ),
+            move |(queries_file, qrels_file, mut state_opt)| async move {
+                // Initialize state if needed
+                if state_opt.is_none() {
+                    // Create a new instance to avoid borrowing self
+                    let temp_dataset = MsMarcoDataset::new("".to_string());
+                    let queries = temp_dataset.load_queries(&queries_file)?;
+                    let qrels = temp_dataset.load_qrels(&qrels_file)?;
+                    let queries_iter = queries.into_iter();
+                    state_opt = Some((HashMap::new(), qrels, queries_iter));
+                }
+
+                let (_, qrels, queries_iter) = state_opt.as_mut().unwrap();
+
+                while let Some((query_id, query_text)) = queries_iter.next() {
+                    let relevant_docs: Vec<RelevantDoc> = qrels
+                        .get(&query_id)
+                        .map(|rels| {
+                            rels.iter()
+                                .map(|(doc_id, relevance)| RelevantDoc {
+                                    doc_id: doc_id.clone(),
+                                    relevance_score: *relevance,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    // Only yield queries that have relevant documents
+                    if !relevant_docs.is_empty() {
+                        let query = Query {
+                            id: query_id,
+                            text: query_text,
+                            relevant_docs,
+                        };
+                        return Ok(Some((query, (queries_file, qrels_file, state_opt))));
+                    }
+                }
+
+                Ok(None) // No more queries
+            },
+        ))
+    }
 }
 
 #[async_trait]
@@ -299,6 +419,29 @@ impl DatasetLoader for MsMarcoDataset {
 
     fn get_cache_dir(&self) -> String {
         self.cache_dir.clone()
+    }
+
+    fn stream_documents(&self) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>> {
+        let corpus_file = format!("{}/collection/collection.tsv", self.cache_dir);
+
+        // Check if file exists
+        if !Path::new(&corpus_file).exists() {
+            return Box::pin(stream::empty());
+        }
+
+        self.stream_corpus_file(&corpus_file)
+    }
+
+    fn stream_queries(&self) -> Pin<Box<dyn Stream<Item = Result<Query>> + Send>> {
+        let queries_file = format!("{}/queries/queries.dev.small.tsv", self.cache_dir);
+        let qrels_file = format!("{}/qrels.dev.small.tsv", self.cache_dir);
+
+        // Check if files exist
+        if !Path::new(&queries_file).exists() || !Path::new(&qrels_file).exists() {
+            return Box::pin(stream::empty());
+        }
+
+        self.stream_corpus_queries(&queries_file, &qrels_file)
     }
 }
 
