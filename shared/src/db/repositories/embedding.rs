@@ -101,29 +101,38 @@ impl EmbeddingRepository {
             return Ok(());
         }
 
+        // Extract vectors for bulk insert using UNNEST
+        let ids: Vec<String> = embeddings.iter().map(|e| e.id.clone()).collect();
+        let document_ids: Vec<String> = embeddings.iter().map(|e| e.document_id.clone()).collect();
+        let chunk_indices: Vec<i32> = embeddings.iter().map(|e| e.chunk_index).collect();
+        let chunk_start_offsets: Vec<i32> =
+            embeddings.iter().map(|e| e.chunk_start_offset).collect();
+        let chunk_end_offsets: Vec<i32> = embeddings.iter().map(|e| e.chunk_end_offset).collect();
+        let embedding_vectors: Vec<Vector> =
+            embeddings.iter().map(|e| e.embedding.clone()).collect();
+        let model_names: Vec<String> = embeddings.iter().map(|e| e.model_name.clone()).collect();
+
         let mut tx = self.pool.begin().await?;
 
-        for embedding in embeddings {
-            sqlx::query(
-                r#"
-                INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (document_id, chunk_index, model_name) DO UPDATE
-                SET chunk_start_offset = EXCLUDED.chunk_start_offset,
-                    chunk_end_offset = EXCLUDED.chunk_end_offset,
-                    embedding = EXCLUDED.embedding
-                "#,
-            )
-            .bind(&embedding.id)
-            .bind(&embedding.document_id)
-            .bind(&embedding.chunk_index)
-            .bind(&embedding.chunk_start_offset)
-            .bind(&embedding.chunk_end_offset)
-            .bind(&embedding.embedding)
-            .bind(&embedding.model_name)
-            .execute(&mut *tx)
-            .await?;
-        }
+        sqlx::query(
+            r#"
+            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name)
+            SELECT * FROM UNNEST($1::text[], $2::text[], $3::int4[], $4::int4[], $5::int4[], $6::vector[], $7::text[])
+            ON CONFLICT (document_id, chunk_index, model_name) DO UPDATE
+            SET chunk_start_offset = EXCLUDED.chunk_start_offset,
+                chunk_end_offset = EXCLUDED.chunk_end_offset,
+                embedding = EXCLUDED.embedding
+            "#,
+        )
+        .bind(&ids)
+        .bind(&document_ids)
+        .bind(&chunk_indices)
+        .bind(&chunk_start_offsets)
+        .bind(&chunk_end_offsets)
+        .bind(&embedding_vectors)
+        .bind(&model_names)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(())
@@ -383,5 +392,22 @@ impl EmbeddingRepository {
             .await?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Bulk delete embeddings for multiple documents in a single query
+    pub async fn bulk_delete_by_document_ids(
+        &self,
+        document_ids: &[String],
+    ) -> Result<u64, DatabaseError> {
+        if document_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let result = sqlx::query("DELETE FROM embeddings WHERE document_id = ANY($1)")
+            .bind(document_ids)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected())
     }
 }

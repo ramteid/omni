@@ -612,4 +612,123 @@ impl DocumentRepository {
 
         Ok(facets)
     }
+
+    // Batch operations for improved performance
+    pub async fn batch_upsert(
+        &self,
+        documents: Vec<Document>,
+    ) -> Result<Vec<Document>, DatabaseError> {
+        if documents.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build arrays for the batch upsert
+        let ids: Vec<String> = documents.iter().map(|d| d.id.clone()).collect();
+        let source_ids: Vec<String> = documents.iter().map(|d| d.source_id.clone()).collect();
+        let external_ids: Vec<String> = documents.iter().map(|d| d.external_id.clone()).collect();
+        let titles: Vec<String> = documents.iter().map(|d| d.title.clone()).collect();
+        let contents: Vec<Option<String>> = documents.iter().map(|d| d.content.clone()).collect();
+        let content_types: Vec<Option<String>> =
+            documents.iter().map(|d| d.content_type.clone()).collect();
+        let file_sizes: Vec<Option<i64>> = documents.iter().map(|d| d.file_size).collect();
+        let file_extensions: Vec<Option<String>> =
+            documents.iter().map(|d| d.file_extension.clone()).collect();
+        let urls: Vec<Option<String>> = documents.iter().map(|d| d.url.clone()).collect();
+        let metadata: Vec<serde_json::Value> =
+            documents.iter().map(|d| d.metadata.clone()).collect();
+        let permissions: Vec<serde_json::Value> =
+            documents.iter().map(|d| d.permissions.clone()).collect();
+        let created_ats: Vec<sqlx::types::time::OffsetDateTime> =
+            documents.iter().map(|d| d.created_at).collect();
+        let updated_ats: Vec<sqlx::types::time::OffsetDateTime> =
+            documents.iter().map(|d| d.updated_at).collect();
+        let last_indexed_ats: Vec<sqlx::types::time::OffsetDateTime> =
+            documents.iter().map(|d| d.last_indexed_at).collect();
+
+        let upserted_documents = sqlx::query_as::<_, Document>(
+            r#"
+            INSERT INTO documents (id, source_id, external_id, title, content, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
+            SELECT * FROM UNNEST(
+                $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], 
+                $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[], 
+                $12::timestamptz[], $13::timestamptz[], $14::timestamptz[]
+            ) AS t(id, source_id, external_id, title, content, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
+            ON CONFLICT (source_id, external_id)
+            DO UPDATE SET
+                title = EXCLUDED.title,
+                content = EXCLUDED.content,
+                metadata = EXCLUDED.metadata,
+                permissions = EXCLUDED.permissions,
+                updated_at = EXCLUDED.updated_at,
+                last_indexed_at = EXCLUDED.last_indexed_at
+            RETURNING id, source_id, external_id, title, content, content_type,
+                      file_size, file_extension, url,
+                      metadata, permissions, created_at, updated_at, last_indexed_at
+            "#
+        )
+        .bind(&ids)
+        .bind(&source_ids)
+        .bind(&external_ids)
+        .bind(&titles)
+        .bind(&contents)
+        .bind(&content_types)
+        .bind(&file_sizes)
+        .bind(&file_extensions)
+        .bind(&urls)
+        .bind(&metadata)
+        .bind(&permissions)
+        .bind(&created_ats)
+        .bind(&updated_ats)
+        .bind(&last_indexed_ats)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(upserted_documents)
+    }
+
+    pub async fn batch_update_search_vectors(
+        &self,
+        document_ids: Vec<String>,
+    ) -> Result<(), DatabaseError> {
+        if document_ids.is_empty() {
+            return Ok(());
+        }
+
+        // The tsv_content column is automatically generated, so this is now a no-op
+        // We keep it for compatibility but it doesn't need to do anything
+        Ok(())
+    }
+
+    pub async fn batch_mark_as_indexed(
+        &self,
+        document_ids: Vec<String>,
+    ) -> Result<(), DatabaseError> {
+        if document_ids.is_empty() {
+            return Ok(());
+        }
+
+        sqlx::query(
+            "UPDATE documents 
+             SET last_indexed_at = CURRENT_TIMESTAMP 
+             WHERE id = ANY($1)",
+        )
+        .bind(&document_ids)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn batch_delete(&self, document_ids: Vec<String>) -> Result<i64, DatabaseError> {
+        if document_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let result = sqlx::query("DELETE FROM documents WHERE id = ANY($1)")
+            .bind(&document_ids)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected() as i64)
+    }
 }

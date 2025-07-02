@@ -3,13 +3,58 @@ use anyhow::Result;
 use futures::future::join_all;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use shared::embedding_queue::EmbeddingQueue;
-use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
+use shared::models::{
+    ConnectorEvent, ConnectorEventQueueItem, Document, DocumentMetadata, DocumentPermissions,
+};
 use shared::queue::EventQueue;
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
+
+// Batch processing types
+#[derive(Debug)]
+struct EventBatch {
+    documents_created: Vec<(String, Document)>, // (event_id, document)
+    documents_updated: Vec<(String, Document)>, // (event_id, document)
+    documents_deleted: Vec<(String, String, String)>, // (event_id, source_id, document_id)
+}
+
+impl EventBatch {
+    fn new() -> Self {
+        Self {
+            documents_created: Vec::new(),
+            documents_updated: Vec::new(),
+            documents_deleted: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.documents_created.is_empty()
+            && self.documents_updated.is_empty()
+            && self.documents_deleted.is_empty()
+    }
+
+    fn total_events(&self) -> usize {
+        self.documents_created.len() + self.documents_updated.len() + self.documents_deleted.len()
+    }
+}
+
+#[derive(Debug)]
+struct BatchProcessingResult {
+    successful_event_ids: Vec<String>,
+    failed_events: Vec<(String, String)>, // (event_id, error_message)
+}
+
+impl BatchProcessingResult {
+    fn new() -> Self {
+        Self {
+            successful_event_ids: Vec::new(),
+            failed_events: Vec::new(),
+        }
+    }
+}
 
 pub struct QueueProcessor {
     pub state: AppState,
@@ -162,80 +207,565 @@ impl QueueProcessor {
                 return Ok(());
             }
 
+            let batch_start_time = std::time::Instant::now();
             info!(
-                "Processing batch of {} events with parallelism: {}",
-                events.len(),
-                self.parallelism
+                "Processing batch of {} events using batch operations",
+                events.len()
             );
 
-            // Process events concurrently
-            let mut tasks = Vec::new();
+            // Store events for potential fallback processing
+            let events_clone = events.clone();
 
-            for event_item in events {
-                let event_id = event_item.id.clone();
-                let _sync_run_id = event_item.sync_run_id.clone();
-                let payload = event_item.payload.clone();
-                let state = self.state.clone();
-                let event_queue = self.event_queue.clone();
-                let semaphore = self.semaphore.clone();
+            // Group events by type for batch processing
+            let batch = self.group_events_by_type(events).await?;
 
-                let task = tokio::spawn(async move {
-                    // Acquire semaphore permit to limit concurrency
-                    let _permit = semaphore.acquire().await.unwrap();
-
-                    info!("Processing event {} on task thread", event_id);
-
-                    let processor = ProcessorContext::new(state);
-                    match processor.process_event(&payload).await {
-                        Ok(_) => {
-                            if let Err(e) = event_queue.mark_completed(&event_id).await {
-                                error!("Failed to mark event {} as completed: {}", event_id, e);
-                                false
-                            } else {
-                                true
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to process event {}: {}", event_id, e);
-                            if let Err(mark_err) =
-                                event_queue.mark_failed(&event_id, &e.to_string()).await
-                            {
-                                error!("Failed to mark event {} as failed: {}", event_id, mark_err);
-                            }
-                            false
-                        }
-                    }
-                });
-
-                tasks.push(task);
+            if batch.is_empty() {
+                continue;
             }
 
-            // Wait for all tasks to complete
-            let results = join_all(tasks).await;
+            info!(
+                "Batch contains: {} created, {} updated, {} deleted documents",
+                batch.documents_created.len(),
+                batch.documents_updated.len(),
+                batch.documents_deleted.len()
+            );
 
-            // Count successful processes
-            let processed_count = results
-                .iter()
-                .filter_map(|r| r.as_ref().ok())
-                .filter(|&&success| success)
-                .count();
+            // Process the batch with fallback to individual processing
+            let result = self.process_event_batch(batch).await;
 
-            total_processed += processed_count;
+            match result {
+                Ok(batch_result) => {
+                    // Mark events as completed/failed in batch
+                    if !batch_result.successful_event_ids.is_empty() {
+                        if let Err(e) = self
+                            .event_queue
+                            .mark_events_completed_batch(batch_result.successful_event_ids.clone())
+                            .await
+                        {
+                            error!(
+                                "Failed to mark {} events as completed: {}",
+                                batch_result.successful_event_ids.len(),
+                                e
+                            );
+                        }
+                    }
 
-            // After processing events, refresh lexemes if any documents were processed
-            // TODO: This slows down ingestion, check and re-enable later
-            // if processed_count > 0 {
-            //     info!(
-            //         "Refreshing lexemes after processing {} events",
-            //         processed_count
-            //     );
-            //     if let Err(e) = lexeme_refresh::refresh_lexemes(&self.state.db_pool).await {
-            //         error!("Failed to refresh lexemes after batch processing: {}", e);
-            //     } else {
-            //         info!("Lexeme refresh completed after batch processing");
-            //     }
-            // }
+                    if !batch_result.failed_events.is_empty() {
+                        if let Err(e) = self
+                            .event_queue
+                            .mark_events_dead_letter_batch(batch_result.failed_events.clone())
+                            .await
+                        {
+                            error!(
+                                "Failed to mark {} events as failed: {}",
+                                batch_result.failed_events.len(),
+                                e
+                            );
+                        }
+                    }
+
+                    let processed_count = batch_result.successful_event_ids.len();
+                    total_processed += processed_count;
+
+                    let batch_duration = batch_start_time.elapsed();
+                    info!(
+                        "Batch processing completed: {} successful, {} failed (took {:?}, {:.1} events/sec)",
+                        batch_result.successful_event_ids.len(),
+                        batch_result.failed_events.len(),
+                        batch_duration,
+                        batch_result.successful_event_ids.len() as f64 / batch_duration.as_secs_f64()
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Batch processing failed, falling back to individual processing: {}",
+                        e
+                    );
+
+                    // Fall back to individual processing for this batch
+                    let fallback_result = self.process_events_individually(events_clone).await;
+                    match fallback_result {
+                        Ok(processed_count) => {
+                            total_processed += processed_count;
+                            info!(
+                                "Fallback processing completed successfully: {} events",
+                                processed_count
+                            );
+                        }
+                        Err(fallback_error) => {
+                            error!("Fallback processing also failed: {}", fallback_error);
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    async fn group_events_by_type(
+        &self,
+        events: Vec<ConnectorEventQueueItem>,
+    ) -> Result<EventBatch> {
+        let mut batch = EventBatch::new();
+
+        for event_item in events {
+            let event_id = event_item.id.clone();
+            let sync_run_id = event_item.sync_run_id.clone();
+
+            // Parse the event payload
+            let event: ConnectorEvent = serde_json::from_value(event_item.payload.clone())?;
+
+            // Update sync run progress for each event
+            if let Err(e) = self.increment_sync_run_progress(&sync_run_id).await {
+                warn!(
+                    "Failed to update sync run progress for {}: {}",
+                    sync_run_id, e
+                );
+            }
+
+            match event {
+                ConnectorEvent::DocumentCreated {
+                    source_id,
+                    document_id,
+                    content,
+                    metadata,
+                    permissions,
+                    ..
+                } => {
+                    let document = self.create_document_from_event(
+                        source_id,
+                        document_id,
+                        content,
+                        metadata,
+                        permissions,
+                    )?;
+                    batch.documents_created.push((event_id, document));
+                }
+                ConnectorEvent::DocumentUpdated {
+                    source_id,
+                    document_id,
+                    content,
+                    metadata,
+                    permissions,
+                    ..
+                } => {
+                    let document = self
+                        .create_document_from_event_update(
+                            source_id,
+                            document_id,
+                            content,
+                            metadata,
+                            permissions,
+                        )
+                        .await?;
+                    if let Some(doc) = document {
+                        batch.documents_updated.push((event_id, doc));
+                    }
+                }
+                ConnectorEvent::DocumentDeleted {
+                    source_id,
+                    document_id,
+                    ..
+                } => {
+                    batch
+                        .documents_deleted
+                        .push((event_id, source_id, document_id));
+                }
+            }
+        }
+
+        Ok(batch)
+    }
+
+    async fn process_event_batch(&self, batch: EventBatch) -> Result<BatchProcessingResult> {
+        let mut result = BatchProcessingResult::new();
+
+        // Process document creations in batch
+        if !batch.documents_created.is_empty() {
+            match self
+                .process_documents_created_batch(&batch.documents_created)
+                .await
+            {
+                Ok(successful_ids) => {
+                    result.successful_event_ids.extend(successful_ids);
+                }
+                Err(e) => {
+                    error!("Batch document creation failed: {}", e);
+                    // Add all creation events to failed list
+                    for (event_id, _) in batch.documents_created {
+                        result.failed_events.push((event_id, e.to_string()));
+                    }
+                }
+            }
+        }
+
+        // Process document updates in batch
+        if !batch.documents_updated.is_empty() {
+            match self
+                .process_documents_updated_batch(&batch.documents_updated)
+                .await
+            {
+                Ok(successful_ids) => {
+                    result.successful_event_ids.extend(successful_ids);
+                }
+                Err(e) => {
+                    error!("Batch document update failed: {}", e);
+                    // Add all update events to failed list
+                    for (event_id, _) in batch.documents_updated {
+                        result.failed_events.push((event_id, e.to_string()));
+                    }
+                }
+            }
+        }
+
+        // Process document deletions in batch
+        if !batch.documents_deleted.is_empty() {
+            match self
+                .process_documents_deleted_batch(&batch.documents_deleted)
+                .await
+            {
+                Ok(successful_ids) => {
+                    result.successful_event_ids.extend(successful_ids);
+                }
+                Err(e) => {
+                    error!("Batch document deletion failed: {}", e);
+                    // Add all deletion events to failed list
+                    for (event_id, _, _) in batch.documents_deleted {
+                        result.failed_events.push((event_id, e.to_string()));
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    // Helper methods for batch processing
+    fn create_document_from_event(
+        &self,
+        source_id: String,
+        document_id: String,
+        content: String,
+        metadata: DocumentMetadata,
+        permissions: DocumentPermissions,
+    ) -> Result<Document> {
+        let now = sqlx::types::time::OffsetDateTime::now_utc();
+        let metadata_json = serde_json::to_value(&metadata)?;
+        let permissions_json = serde_json::to_value(&permissions)?;
+
+        // Extract file extension from URL or mime type
+        let file_extension = metadata.url.as_ref().and_then(|url| {
+            url.split('.')
+                .last()
+                .filter(|ext| !ext.contains('/') && !ext.contains('?'))
+                .map(|ext| ext.to_lowercase())
+        });
+
+        // Parse file size from string to i64
+        let file_size = metadata
+            .size
+            .as_ref()
+            .and_then(|size_str| size_str.parse::<i64>().ok());
+
+        Ok(Document {
+            id: ulid::Ulid::new().to_string(),
+            source_id,
+            external_id: document_id,
+            title: metadata.title.unwrap_or_else(|| "Untitled".to_string()),
+            content: Some(content),
+            content_type: metadata.mime_type,
+            file_size,
+            file_extension,
+            url: metadata.url,
+            metadata: metadata_json,
+            permissions: permissions_json,
+            created_at: now,
+            updated_at: now,
+            last_indexed_at: now,
+        })
+    }
+
+    async fn create_document_from_event_update(
+        &self,
+        source_id: String,
+        document_id: String,
+        content: String,
+        metadata: DocumentMetadata,
+        permissions: Option<DocumentPermissions>,
+    ) -> Result<Option<Document>> {
+        let repo = DocumentRepository::new(self.state.db_pool.pool());
+
+        if let Some(mut document) = repo.find_by_external_id(&source_id, &document_id).await? {
+            let now = sqlx::types::time::OffsetDateTime::now_utc();
+            let metadata_json = serde_json::to_value(&metadata)?;
+
+            document.title = metadata.title.unwrap_or(document.title);
+            document.content = Some(content);
+            document.metadata = metadata_json;
+            if let Some(perms) = permissions {
+                document.permissions = serde_json::to_value(&perms)?;
+            }
+            document.updated_at = now;
+
+            Ok(Some(document))
+        } else {
+            warn!(
+                "Document not found for update: {} from source {}",
+                document_id, source_id
+            );
+            Ok(None)
+        }
+    }
+
+    async fn process_documents_created_batch(
+        &self,
+        documents_with_event_ids: &[(String, Document)],
+    ) -> Result<Vec<String>> {
+        let start_time = std::time::Instant::now();
+        let documents: Vec<Document> = documents_with_event_ids
+            .iter()
+            .map(|(_, doc)| doc.clone())
+            .collect();
+
+        let repo = DocumentRepository::new(self.state.db_pool.pool());
+
+        // Batch upsert documents
+        let upsert_start = std::time::Instant::now();
+        let upserted_documents = repo.batch_upsert(documents).await?;
+        debug!(
+            "Batch upsert of {} documents took {:?}",
+            upserted_documents.len(),
+            upsert_start.elapsed()
+        );
+
+        // Batch mark as indexed
+        let document_ids: Vec<String> = upserted_documents.iter().map(|d| d.id.clone()).collect();
+        repo.batch_mark_as_indexed(document_ids.clone()).await?;
+
+        // Queue embeddings for documents with content
+        let mut embedding_tasks = Vec::new();
+        for upserted_doc in upserted_documents.iter() {
+            if let Some(content) = &upserted_doc.content {
+                if !content.trim().is_empty() {
+                    let embedding_queue = self.state.embedding_queue.clone();
+                    let doc_id = upserted_doc.id.clone();
+                    let doc_content = content.clone();
+
+                    embedding_tasks.push(tokio::spawn(async move {
+                        if let Err(e) = embedding_queue.enqueue(doc_id.clone(), doc_content).await {
+                            error!("Failed to queue embeddings for document {}: {}", doc_id, e);
+                        }
+                    }));
+                }
+            }
+        }
+
+        // Wait for all embedding queue operations to complete
+        let embedding_start = std::time::Instant::now();
+        futures::future::join_all(embedding_tasks).await;
+        debug!(
+            "Embedding queue operations took {:?}",
+            embedding_start.elapsed()
+        );
+
+        let total_duration = start_time.elapsed();
+        info!(
+            "Batch processed {} documents successfully (took {:?}, {:.1} docs/sec)",
+            upserted_documents.len(),
+            total_duration,
+            upserted_documents.len() as f64 / total_duration.as_secs_f64()
+        );
+
+        // Return the event IDs that were successful
+        Ok(documents_with_event_ids
+            .iter()
+            .map(|(event_id, _)| event_id.clone())
+            .collect())
+    }
+
+    async fn process_documents_updated_batch(
+        &self,
+        documents_with_event_ids: &[(String, Document)],
+    ) -> Result<Vec<String>> {
+        let repo = DocumentRepository::new(self.state.db_pool.pool());
+
+        // For updates, we need to handle them individually since we need to find existing documents
+        let mut successful_event_ids = Vec::new();
+
+        for (event_id, document) in documents_with_event_ids {
+            match repo.update(&document.id, document.clone()).await {
+                Ok(Some(updated_doc)) => {
+                    // Queue embeddings if there's content
+                    if let Some(content) = &updated_doc.content {
+                        if !content.trim().is_empty() {
+                            if let Err(e) = self
+                                .state
+                                .embedding_queue
+                                .enqueue(updated_doc.id.clone(), content.clone())
+                                .await
+                            {
+                                error!(
+                                    "Failed to queue embeddings for updated document {}: {}",
+                                    updated_doc.id, e
+                                );
+                            }
+                        }
+                    }
+
+                    // Mark as indexed
+                    repo.mark_as_indexed(&updated_doc.id).await?;
+                    successful_event_ids.push(event_id.clone());
+                }
+                Ok(None) => {
+                    warn!("Document not found for update: {}", document.external_id);
+                }
+                Err(e) => {
+                    error!("Failed to update document {}: {}", document.external_id, e);
+                    return Err(e.into());
+                }
+            }
+        }
+
+        info!(
+            "Batch updated {} documents successfully",
+            successful_event_ids.len()
+        );
+        Ok(successful_event_ids)
+    }
+
+    async fn process_documents_deleted_batch(
+        &self,
+        deletions: &[(String, String, String)], // (event_id, source_id, document_id)
+    ) -> Result<Vec<String>> {
+        let start_time = std::time::Instant::now();
+        let repo = DocumentRepository::new(self.state.db_pool.pool());
+        let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
+
+        let mut successful_event_ids = Vec::new();
+        let mut document_ids_to_delete = Vec::new();
+
+        // First, find all documents that exist
+        for (event_id, source_id, document_id) in deletions {
+            if let Some(document) = repo.find_by_external_id(source_id, document_id).await? {
+                document_ids_to_delete.push(document.id.clone());
+                successful_event_ids.push(event_id.clone());
+            } else {
+                warn!(
+                    "Document not found for deletion: {} from source {}",
+                    document_id, source_id
+                );
+                // Still count as successful since the document doesn't exist
+                successful_event_ids.push(event_id.clone());
+            }
+        }
+
+        if !document_ids_to_delete.is_empty() {
+            // Delete embeddings in batch
+            for doc_id in &document_ids_to_delete {
+                if let Err(e) = embedding_repo.delete_by_document_id(doc_id).await {
+                    error!("Failed to delete embeddings for document {}: {}", doc_id, e);
+                }
+            }
+
+            // Delete documents in batch
+            let delete_start = std::time::Instant::now();
+            let deleted_count = repo.batch_delete(document_ids_to_delete.clone()).await?;
+            debug!("Batch document deletion took {:?}", delete_start.elapsed());
+
+            let total_duration = start_time.elapsed();
+            info!(
+                "Batch deleted {} documents and their embeddings (took {:?})",
+                deleted_count, total_duration
+            );
+        }
+
+        Ok(successful_event_ids)
+    }
+
+    async fn increment_sync_run_progress(&self, sync_run_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE sync_runs 
+             SET documents_processed = documents_processed + 1, 
+                 updated_at = CURRENT_TIMESTAMP 
+             WHERE id = $1",
+        )
+        .bind(sync_run_id)
+        .execute(self.state.db_pool.pool())
+        .await?;
+
+        // Notify listeners about sync run progress update
+        sqlx::query("NOTIFY sync_run_update")
+            .execute(self.state.db_pool.pool())
+            .await?;
+
+        Ok(())
+    }
+    // Fallback method for individual processing when batch operations fail
+    async fn process_events_individually(
+        &self,
+        events: Vec<ConnectorEventQueueItem>,
+    ) -> Result<usize> {
+        info!(
+            "Processing {} events individually as fallback",
+            events.len()
+        );
+
+        // Process events concurrently using the original individual approach
+        let mut tasks = Vec::new();
+
+        for event_item in events {
+            let event_id = event_item.id.clone();
+            let payload = event_item.payload.clone();
+            let state = self.state.clone();
+            let event_queue = self.event_queue.clone();
+            let semaphore = self.semaphore.clone();
+
+            let task = tokio::spawn(async move {
+                // Acquire semaphore permit to limit concurrency
+                let _permit = semaphore.acquire().await.unwrap();
+
+                info!("Processing event {} individually", event_id);
+
+                let processor = ProcessorContext::new(state);
+                match processor.process_event(&payload).await {
+                    Ok(_) => {
+                        if let Err(e) = event_queue.mark_completed(&event_id).await {
+                            error!("Failed to mark event {} as completed: {}", event_id, e);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to process event {}: {}", event_id, e);
+                        if let Err(mark_err) =
+                            event_queue.mark_failed(&event_id, &e.to_string()).await
+                        {
+                            error!("Failed to mark event {} as failed: {}", event_id, mark_err);
+                        }
+                        false
+                    }
+                }
+            });
+
+            tasks.push(task);
+        }
+
+        // Wait for all tasks to complete
+        let results = join_all(tasks).await;
+
+        // Count successful processes
+        let processed_count = results
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .filter(|&&success| success)
+            .count();
+
+        info!(
+            "Individual processing completed: {} successful out of {} events",
+            processed_count,
+            results.len()
+        );
+        Ok(processed_count)
     }
 }
 

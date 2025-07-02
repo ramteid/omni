@@ -285,6 +285,105 @@ impl EventQueue {
             dead_letter_deleted: dead_letter_result.rows_affected(),
         })
     }
+
+    // Batch operations for improved performance
+    pub async fn mark_events_completed_batch(&self, event_ids: Vec<String>) -> Result<i64> {
+        if event_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let result = sqlx::query(
+            r#"
+            UPDATE connector_events_queue
+            SET status = 'completed', processed_at = NOW()
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(&event_ids)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() as i64)
+    }
+
+    pub async fn mark_events_failed_batch(
+        &self,
+        event_ids_with_errors: Vec<(String, String)>,
+    ) -> Result<i64> {
+        if event_ids_with_errors.is_empty() {
+            return Ok(0);
+        }
+
+        let event_ids: Vec<String> = event_ids_with_errors
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+        let error_messages: Vec<String> = event_ids_with_errors
+            .iter()
+            .map(|(_, err)| err.clone())
+            .collect();
+
+        let result = sqlx::query(
+            r#"
+            UPDATE connector_events_queue
+            SET status = 'failed',
+                retry_count = retry_count + 1,
+                error_message = data_table.error_message,
+                processed_at = NOW()
+            FROM (
+                SELECT * FROM UNNEST($1::text[], $2::text[]) AS t(id, error_message)
+            ) AS data_table
+            WHERE connector_events_queue.id = data_table.id
+            "#,
+        )
+        .bind(&event_ids)
+        .bind(&error_messages)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() as i64)
+    }
+
+    pub async fn mark_events_dead_letter_batch(
+        &self,
+        event_ids_with_errors: Vec<(String, String)>,
+    ) -> Result<i64> {
+        if event_ids_with_errors.is_empty() {
+            return Ok(0);
+        }
+
+        let event_ids: Vec<String> = event_ids_with_errors
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+        let error_messages: Vec<String> = event_ids_with_errors
+            .iter()
+            .map(|(_, err)| err.clone())
+            .collect();
+
+        let result = sqlx::query(
+            r#"
+            UPDATE connector_events_queue
+            SET status = CASE 
+                    WHEN retry_count >= max_retries THEN 'dead_letter'
+                    ELSE 'failed'
+                END,
+                retry_count = retry_count + 1,
+                error_message = data_table.error_message,
+                processed_at = NOW()
+            FROM (
+                SELECT * FROM UNNEST($1::text[], $2::text[]) AS t(id, error_message)
+            ) AS data_table
+            WHERE connector_events_queue.id = data_table.id
+            "#,
+        )
+        .bind(&event_ids)
+        .bind(&error_messages)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() as i64)
+    }
 }
 
 #[derive(Debug, serde::Serialize)]

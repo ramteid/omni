@@ -1,10 +1,10 @@
 use crate::AppState;
 use anyhow::Result;
-use pgvector::Vector;
 use shared::db::repositories::EmbeddingRepository;
 use shared::models::Embedding;
 use shared::{EmbeddingQueue, EmbeddingQueueItem};
 use sqlx::postgres::PgListener;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
@@ -244,10 +244,8 @@ impl EmbeddingProcessor {
 
         // Step 2: Process input chunks in batches of MAX_EMBEDDING_BATCH_SIZE
         let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
-        let mut all_embeddings_by_document: std::collections::HashMap<
-            String,
-            Vec<(Vec<f32>, (i32, i32))>,
-        > = std::collections::HashMap::new();
+        let mut all_embeddings_by_document: HashMap<String, Vec<(Vec<f32>, (i32, i32))>> =
+            HashMap::new();
         let mut model_name: Option<String> = None;
         let mut failed_document_ids = std::collections::HashSet::new();
 
@@ -340,10 +338,13 @@ impl EmbeddingProcessor {
             }
         }
 
-        // Step 4: Store embeddings for each document and track success/failure
+        // Step 4: Collect all embeddings from all documents and batch insert
         let mut success_ids = Vec::new();
         let mut failed_ids = Vec::new();
+        let mut all_batch_embeddings = Vec::new();
+        let mut document_embedding_counts: HashMap<String, usize> = HashMap::new();
 
+        // First pass: collect all embeddings and identify failures
         for item in &batch {
             if failed_document_ids.contains(&item.document_id) {
                 failed_ids.push(item.id.clone());
@@ -357,39 +358,121 @@ impl EmbeddingProcessor {
                     continue;
                 }
 
-                // Create combined embedding for storage
-                let (chunk_embeddings, chunk_spans): (Vec<Vec<f32>>, Vec<(i32, i32)>) =
-                    document_embeddings.iter().cloned().unzip();
+                // Create embedding records for this document
+                let mut document_embedding_records = Vec::new();
+                let mut skipped_chunks = 0;
 
-                let combined_embedding = shared::clients::ai::TextEmbedding {
-                    chunk_embeddings,
-                    chunk_spans,
-                    model_name: model_name.clone(),
-                };
-
-                match self
-                    .store_embeddings(&embedding_repo, &item.document_id, &combined_embedding)
-                    .await
+                for (chunk_index, (chunk_embedding, chunk_span)) in
+                    document_embeddings.iter().enumerate()
                 {
-                    Ok(_) => {
-                        success_ids.push(item.id.clone());
-                        debug!(
-                            "Successfully stored embeddings for document {} ({} output chunks)",
-                            item.document_id,
-                            combined_embedding.chunk_embeddings.len()
+                    // Validate chunk bounds
+                    if chunk_span.0 >= chunk_span.1 {
+                        warn!(
+                            "Skipping invalid chunk {} for document {} - invalid bounds: start={}, end={}",
+                            chunk_index, item.document_id, chunk_span.0, chunk_span.1
                         );
+                        skipped_chunks += 1;
+                        continue;
                     }
-                    Err(e) => {
-                        error!(
-                            "Failed to store embeddings for document {}: {}",
-                            item.document_id, e
-                        );
-                        failed_ids.push(item.id.clone());
-                    }
+
+                    let embedding = Embedding {
+                        id: Ulid::new().to_string(),
+                        document_id: item.document_id.clone(),
+                        chunk_index: chunk_index as i32,
+                        chunk_start_offset: chunk_span.0,
+                        chunk_end_offset: chunk_span.1,
+                        embedding: pgvector::Vector::from(chunk_embedding.clone()),
+                        model_name: model_name.clone().unwrap_or_else(|| "unknown".to_string()),
+                        created_at: sqlx::types::time::OffsetDateTime::now_utc(),
+                    };
+                    document_embedding_records.push(embedding);
+                }
+
+                if skipped_chunks > 0 {
+                    warn!(
+                        "Skipped {} invalid chunks out of {} total for document {}",
+                        skipped_chunks,
+                        document_embeddings.len(),
+                        item.document_id
+                    );
+                }
+
+                if !document_embedding_records.is_empty() {
+                    document_embedding_counts
+                        .insert(item.document_id.clone(), document_embedding_records.len());
+                    all_batch_embeddings.extend(document_embedding_records);
+                    success_ids.push(item.id.clone());
+                    debug!(
+                        "Prepared {} embeddings for document {}",
+                        document_embedding_counts[&item.document_id], item.document_id
+                    );
+                } else {
+                    error!(
+                        "No valid embeddings prepared for document {}",
+                        item.document_id
+                    );
+                    failed_ids.push(item.id.clone());
                 }
             } else {
                 error!("No embeddings found for document {}", item.document_id);
                 failed_ids.push(item.id.clone());
+            }
+        }
+
+        // Second pass: bulk insert all embeddings if any exist
+        if !all_batch_embeddings.is_empty() {
+            info!(
+                "Bulk inserting {} embeddings for {} documents",
+                all_batch_embeddings.len(),
+                document_embedding_counts.len()
+            );
+
+            // Bulk delete existing embeddings for all successful documents
+            let successful_document_ids: Vec<String> = batch
+                .iter()
+                .filter(|item| success_ids.contains(&item.id))
+                .map(|item| item.document_id.clone())
+                .collect();
+
+            if !successful_document_ids.is_empty() {
+                match embedding_repo
+                    .bulk_delete_by_document_ids(&successful_document_ids)
+                    .await
+                {
+                    Ok(deleted_count) => {
+                        debug!(
+                            "Bulk deleted {} existing embeddings for {} documents",
+                            deleted_count,
+                            successful_document_ids.len()
+                        );
+                    }
+                    Err(e) => {
+                        error!("Failed to bulk delete existing embeddings: {}", e);
+                        // Mark all previously successful items as failed
+                        failed_ids.extend(success_ids.drain(..));
+                    }
+                }
+            }
+
+            // Perform bulk insert for remaining successful documents
+            if !all_batch_embeddings.is_empty() {
+                match embedding_repo.bulk_create(all_batch_embeddings).await {
+                    Ok(_) => {
+                        info!(
+                            "Successfully bulk inserted embeddings for {} documents",
+                            success_ids.len()
+                        );
+                        // Log per-document counts
+                        for (doc_id, count) in document_embedding_counts {
+                            debug!("Stored {} embeddings for document {}", count, doc_id);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Bulk insert failed: {}", e);
+                        // Mark all previously successful items as failed
+                        failed_ids.extend(success_ids.drain(..));
+                    }
+                }
             }
         }
 
@@ -419,83 +502,6 @@ impl EmbeddingProcessor {
             success_ids.len(),
             failed_ids.len()
         );
-
-        Ok(())
-    }
-
-    async fn store_embeddings(
-        &self,
-        repo: &EmbeddingRepository,
-        document_id: &str,
-        text_embedding: &shared::clients::ai::TextEmbedding,
-    ) -> Result<()> {
-        // First, delete existing embeddings for this document
-        repo.delete_by_document_id(document_id).await?;
-
-        if text_embedding.chunk_embeddings.is_empty() {
-            warn!("No embeddings generated for document {}", document_id);
-            return Ok(());
-        }
-
-        info!(
-            "Storing {} chunks for document {}",
-            text_embedding.chunk_embeddings.len(),
-            document_id
-        );
-
-        // Create embedding records
-        let mut embeddings = Vec::new();
-        let mut skipped_chunks = 0;
-
-        for (chunk_index, (chunk_embedding, chunk_span)) in text_embedding
-            .chunk_embeddings
-            .iter()
-            .zip(text_embedding.chunk_spans.iter())
-            .enumerate()
-        {
-            // Validate chunk bounds
-            if chunk_span.0 >= chunk_span.1 {
-                warn!(
-                    "Skipping invalid chunk {} for document {} - invalid bounds: start={}, end={}",
-                    chunk_index, document_id, chunk_span.0, chunk_span.1
-                );
-                skipped_chunks += 1;
-                continue;
-            }
-
-            let embedding = Embedding {
-                id: Ulid::new().to_string(),
-                document_id: document_id.to_string(),
-                chunk_index: chunk_index as i32,
-                chunk_start_offset: chunk_span.0,
-                chunk_end_offset: chunk_span.1,
-                embedding: Vector::from(chunk_embedding.clone()),
-                model_name: text_embedding
-                    .model_name
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                created_at: sqlx::types::time::OffsetDateTime::now_utc(),
-            };
-            embeddings.push(embedding);
-        }
-
-        if skipped_chunks > 0 {
-            warn!(
-                "Skipped {} invalid chunks out of {} total for document {}",
-                skipped_chunks,
-                text_embedding.chunk_embeddings.len(),
-                document_id
-            );
-        }
-
-        if !embeddings.is_empty() {
-            let embedding_count = embeddings.len();
-            repo.bulk_create(embeddings).await?;
-            debug!(
-                "Successfully stored {} embeddings for document {}",
-                embedding_count, document_id
-            );
-        }
 
         Ok(())
     }
