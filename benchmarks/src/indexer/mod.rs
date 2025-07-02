@@ -3,6 +3,7 @@ use crate::datasets::{Dataset, Document};
 use anyhow::Result;
 use futures::stream::StreamExt;
 use futures::Stream;
+use shared::embedding_queue::EmbeddingQueueStatus;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
@@ -399,12 +400,12 @@ impl BenchmarkIndexer {
             // Check if both connector queue and embedding queue are empty and document count is stable
             let embedding_pending = embedding_queue_stats
                 .iter()
-                .find(|(status, _)| status == "pending")
+                .find(|(status, _)| status == EmbeddingQueueStatus::Pending.to_string())
                 .map(|(_, count)| *count)
                 .unwrap_or(0);
             let embedding_processing = embedding_queue_stats
                 .iter()
-                .find(|(status, _)| status == "processing")
+                .find(|(status, _)| status == EmbeddingQueueStatus::Processing.to_string())
                 .map(|(_, count)| *count)
                 .unwrap_or(0);
 
