@@ -13,6 +13,21 @@ impl DocumentRepository {
         Self { pool: pool.clone() }
     }
 
+    /// Generate SQL condition to check if user has permission to access document
+    fn generate_permission_filter(&self, user_email: &str) -> String {
+        format!(
+            r#"(
+                (permissions->>'public')::boolean = true OR
+                permissions->'users' ? '{}' OR
+                permissions->'groups' ? ANY(
+                    -- TODO: Add group membership lookup here
+                    ARRAY['{}']::text[]
+                )
+            )"#,
+            user_email, user_email
+        )
+    }
+
     pub async fn find_by_id(&self, id: &str) -> Result<Option<Document>, DatabaseError> {
         let document = sqlx::query_as::<_, Document>(
             r#"
@@ -96,6 +111,7 @@ impl DocumentRepository {
         content_types: Option<&[String]>,
         limit: i64,
         offset: i64,
+        user_email: Option<&str>,
     ) -> Result<Vec<Document>, DatabaseError> {
         let base_query = r#"
             SELECT id, source_id, external_id, title, content, content_type,
@@ -107,6 +123,7 @@ impl DocumentRepository {
 
         let has_sources = sources.map_or(false, |s| !s.is_empty());
         let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
+        let has_user_filter = user_email.is_some();
 
         let source_filter = if has_sources {
             " AND source_id = ANY($2)"
@@ -124,6 +141,16 @@ impl DocumentRepository {
             ""
         };
 
+        let permission_filter = if has_user_filter {
+            if let Some(email) = user_email {
+                format!(" AND {}", self.generate_permission_filter(email))
+            } else {
+                "".to_string()
+            }
+        } else {
+            "".to_string()
+        };
+
         let (limit_param, offset_param) = match (has_sources, has_content_types) {
             (true, true) => ("$4", "$5"),
             (true, false) | (false, true) => ("$3", "$4"),
@@ -131,7 +158,7 @@ impl DocumentRepository {
         };
 
         let full_query = format!(
-            r#"{}{}{} ORDER BY (
+            r#"{}{}{}{} ORDER BY (
                 -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
                 ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1)) *
                 -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
@@ -152,7 +179,12 @@ impl DocumentRepository {
                     ELSE 1.0
                 END
             ) DESC LIMIT {} OFFSET {}"#,
-            base_query, source_filter, content_type_filter, limit_param, offset_param
+            base_query,
+            source_filter,
+            content_type_filter,
+            permission_filter,
+            limit_param,
+            offset_param
         );
 
         let mut query = sqlx::query_as::<_, Document>(&full_query).bind(query);
@@ -279,10 +311,11 @@ impl DocumentRepository {
         offset: i64,
         max_distance: i32,
         min_word_length: usize,
+        user_email: Option<&str>,
     ) -> Result<(Vec<Document>, Option<String>), DatabaseError> {
         // First, try to search with the original query
         let original_results = self
-            .search_with_filters(query, sources, content_types, limit, offset)
+            .search_with_filters(query, sources, content_types, limit, offset, user_email)
             .await?;
 
         // If we get reasonable results, return them without correction
@@ -337,7 +370,14 @@ impl DocumentRepository {
 
         // Search with corrected query
         let corrected_results = self
-            .search_with_filters(&corrected_query, sources, content_types, limit, offset)
+            .search_with_filters(
+                &corrected_query,
+                sources,
+                content_types,
+                limit,
+                offset,
+                user_email,
+            )
             .await?;
 
         // Return the better result set

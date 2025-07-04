@@ -18,6 +18,7 @@ pub struct SearchRequest {
     pub offset: Option<i64>,
     pub mode: Option<SearchMode>,
     pub include_facets: Option<bool>,
+    pub user_email: Option<String>,
 }
 
 impl SearchRequest {
@@ -35,6 +36,10 @@ impl SearchRequest {
 
     pub fn include_facets(&self) -> bool {
         self.include_facets.unwrap_or(true)
+    }
+
+    pub fn user_email(&self) -> Option<&String> {
+        self.user_email.as_ref()
     }
 }
 

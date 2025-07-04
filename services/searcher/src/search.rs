@@ -145,6 +145,7 @@ impl SearchEngine {
                 request.offset(),
                 self.config.typo_tolerance_max_distance,
                 self.config.typo_tolerance_min_word_length,
+                request.user_email().map(|e| e.as_str()),
             )
             .await?
         } else {
@@ -156,6 +157,7 @@ impl SearchEngine {
                     content_types,
                     request.limit(),
                     request.offset(),
+                    request.user_email().map(|e| e.as_str()),
                 )
                 .await?,
                 None,
@@ -199,6 +201,7 @@ impl SearchEngine {
                 content_types,
                 request.limit(),
                 request.offset(),
+                request.user_email().map(|e| e.as_str()),
             )
             .await?;
 
@@ -331,6 +334,10 @@ impl SearchEngine {
         }
 
         request.include_facets().hash(&mut hasher);
+
+        if let Some(user_email) = &request.user_email {
+            user_email.hash(&mut hasher);
+        }
 
         format!("search:{:x}", hasher.finish())
     }
@@ -550,6 +557,7 @@ impl SearchEngine {
                 3,   // max 3 chunks per document
                 0.7, // similarity threshold
                 15,  // max 15 total chunks
+                request.user_email().map(|e| e.as_str()),
             )
             .await?;
 

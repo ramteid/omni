@@ -3,7 +3,7 @@ import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import type { SearchRequest } from '$lib/types/search.js'
 
-export const POST: RequestHandler = async ({ request, fetch }) => {
+export const POST: RequestHandler = async ({ request, fetch, locals }) => {
     let searchRequest: SearchRequest
 
     try {
@@ -29,6 +29,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
                 limit: searchRequest.limit || 20,
                 offset: searchRequest.offset || 0,
                 mode: searchRequest.mode || 'fulltext',
+                user_email: locals.user?.email,
             }),
         })
 

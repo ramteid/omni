@@ -24,6 +24,7 @@ CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
 CREATE INDEX IF NOT EXISTS idx_documents_external_id ON documents(external_id);
 CREATE INDEX IF NOT EXISTS idx_documents_content_type ON documents(content_type);
 CREATE INDEX IF NOT EXISTS idx_documents_tsv_content ON documents USING GIN(tsv_content);
+CREATE INDEX IF NOT EXISTS idx_documents_permissions ON documents USING GIN(permissions);
 CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at);
 CREATE INDEX IF NOT EXISTS idx_documents_updated_at ON documents(updated_at);
 

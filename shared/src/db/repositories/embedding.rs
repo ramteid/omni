@@ -14,6 +14,21 @@ impl EmbeddingRepository {
         Self { pool: pool.clone() }
     }
 
+    /// Generate SQL condition to check if user has permission to access document
+    fn generate_permission_filter(&self, user_email: &str) -> String {
+        format!(
+            r#"(
+                (d.permissions->>'public')::boolean = true OR
+                d.permissions->'users' ? '{}' OR
+                d.permissions->'groups' ? ANY(
+                    -- TODO: Add group membership lookup here
+                    ARRAY['{}']::text[]
+                )
+            )"#,
+            user_email, user_email
+        )
+    }
+
     /// Extract chunk text from document content using byte offsets
     pub fn extract_chunk_text(
         document_content: &str,
@@ -145,6 +160,7 @@ impl EmbeddingRepository {
         content_types: Option<&[String]>,
         limit: i64,
         offset: i64,
+        user_email: Option<&str>,
     ) -> Result<Vec<(Document, f32)>, DatabaseError> {
         let vector = Vector::from(embedding);
 
@@ -165,6 +181,11 @@ impl EmbeddingRepository {
                 where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
                 bind_index += 1;
             }
+        }
+
+        // Add permission filtering if user email is provided
+        if let Some(email) = user_email {
+            where_conditions.push(self.generate_permission_filter(email));
         }
 
         let where_clause = where_conditions.join(" AND ");
@@ -312,11 +333,18 @@ impl EmbeddingRepository {
         max_chunks_per_doc: i32,
         similarity_threshold: f32,
         max_total_chunks: i64,
+        user_email: Option<&str>,
     ) -> Result<Vec<(Document, f32, String)>, DatabaseError> {
         let vector = Vector::from(embedding);
         let distance_threshold = 1.0 - similarity_threshold;
 
-        let results = sqlx::query(
+        let permission_filter = if let Some(email) = user_email {
+            format!(" AND {}", self.generate_permission_filter(email))
+        } else {
+            "".to_string()
+        };
+
+        let query_str = format!(
             r#"
             WITH ranked_chunks AS (
                 SELECT 
@@ -337,17 +365,20 @@ impl EmbeddingRepository {
                 rc.chunk_end_offset
             FROM ranked_chunks rc
             JOIN documents d ON rc.document_id = d.id
-            WHERE rc.chunk_rank <= $2
+            WHERE rc.chunk_rank <= $2{}
             ORDER BY rc.distance
             LIMIT $3
             "#,
-        )
-        .bind(&vector)
-        .bind(max_chunks_per_doc)
-        .bind(max_total_chunks)
-        .bind(distance_threshold)
-        .fetch_all(&self.pool)
-        .await?;
+            permission_filter
+        );
+
+        let results = sqlx::query(&query_str)
+            .bind(&vector)
+            .bind(max_chunks_per_doc)
+            .bind(max_total_chunks)
+            .bind(distance_threshold)
+            .fetch_all(&self.pool)
+            .await?;
 
         let chunks_with_scores = results
             .into_iter()
