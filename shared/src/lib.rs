@@ -1,6 +1,8 @@
 pub mod clients;
 pub mod config;
 pub mod constants;
+pub mod content_chunker;
+pub mod content_storage;
 pub mod db;
 pub mod embedding_queue;
 pub mod encryption;
@@ -17,6 +19,8 @@ pub mod test_environment;
 
 pub use clients::ai::AIClient;
 pub use config::*;
+pub use content_chunker::ContentChunker;
+pub use content_storage::{ContentStorage, ContentStorageError};
 pub use db::repositories::{
     DocumentRepository, EmbeddingRepository, ServiceCredentialsRepo, SourceRepository,
     UserRepository,

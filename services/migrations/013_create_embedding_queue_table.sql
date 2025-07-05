@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS embedding_queue (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    content TEXT NOT NULL,
+    content_oid INTEGER NOT NULL,  -- PostgreSQL Large Object OID for content storage
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
     retry_count INTEGER NOT NULL DEFAULT 0,
     error_message TEXT,

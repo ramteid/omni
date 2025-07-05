@@ -36,6 +36,7 @@ pub struct AppState {
     pub db_pool: DatabasePool,
     pub redis_client: RedisClient,
     pub ai_client: AIClient,
+    pub content_storage: shared::ContentStorage,
     pub embedding_queue: shared::embedding_queue::EmbeddingQueue,
     pub service_credentials_repo: Arc<ServiceCredentialsRepo>,
 }
@@ -475,10 +476,14 @@ pub async fn run_server() -> anyhow::Result<()> {
     let service_credentials_repo = Arc::new(ServiceCredentialsRepo::new(db_pool.pool().clone())?);
     info!("Service credentials repository initialized");
 
+    let content_storage = shared::ContentStorage::new(db_pool.pool().clone());
+    info!("Content storage initialized");
+
     let app_state = AppState {
         db_pool,
         redis_client,
         ai_client,
+        content_storage,
         embedding_queue,
         service_credentials_repo,
     };

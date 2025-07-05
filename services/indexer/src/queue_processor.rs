@@ -326,7 +326,7 @@ impl QueueProcessor {
                 ConnectorEvent::DocumentCreated {
                     source_id,
                     document_id,
-                    content,
+                    content_oid,
                     metadata,
                     permissions,
                     ..
@@ -334,7 +334,7 @@ impl QueueProcessor {
                     let document = self.create_document_from_event(
                         source_id,
                         document_id,
-                        content,
+                        content_oid,
                         metadata,
                         permissions,
                     )?;
@@ -343,7 +343,7 @@ impl QueueProcessor {
                 ConnectorEvent::DocumentUpdated {
                     source_id,
                     document_id,
-                    content,
+                    content_oid,
                     metadata,
                     permissions,
                     ..
@@ -352,7 +352,7 @@ impl QueueProcessor {
                         .create_document_from_event_update(
                             source_id,
                             document_id,
-                            content,
+                            content_oid,
                             metadata,
                             permissions,
                         )
@@ -444,7 +444,7 @@ impl QueueProcessor {
         &self,
         source_id: String,
         document_id: String,
-        content: String,
+        content_oid: i32,
         metadata: DocumentMetadata,
         permissions: DocumentPermissions,
     ) -> Result<Document> {
@@ -471,7 +471,7 @@ impl QueueProcessor {
             source_id,
             external_id: document_id,
             title: metadata.title.unwrap_or_else(|| "Untitled".to_string()),
-            content: Some(content),
+            content_oid: Some(content_oid),
             content_type: metadata.mime_type,
             file_size,
             file_extension,
@@ -488,7 +488,7 @@ impl QueueProcessor {
         &self,
         source_id: String,
         document_id: String,
-        content: String,
+        content_oid: i32,
         metadata: DocumentMetadata,
         permissions: Option<DocumentPermissions>,
     ) -> Result<Option<Document>> {
@@ -499,7 +499,7 @@ impl QueueProcessor {
             let metadata_json = serde_json::to_value(&metadata)?;
 
             document.title = metadata.title.unwrap_or(document.title);
-            document.content = Some(content);
+            document.content_oid = Some(content_oid);
             document.metadata = metadata_json;
             if let Some(perms) = permissions {
                 document.permissions = serde_json::to_value(&perms)?;
@@ -541,26 +541,56 @@ impl QueueProcessor {
         let document_ids: Vec<String> = upserted_documents.iter().map(|d| d.id.clone()).collect();
         repo.batch_mark_as_indexed(document_ids.clone()).await?;
 
+        // Batch fetch content for embedding queue operations
+        let embedding_start = std::time::Instant::now();
+
+        // Collect all content_oids that need content fetching
+        let content_oids: Vec<u32> = upserted_documents
+            .iter()
+            .filter_map(|doc| doc.content_oid.map(|oid| oid as u32))
+            .collect();
+
+        // Batch fetch all content in a single operation
+        let content_map = if !content_oids.is_empty() {
+            match self
+                .state
+                .content_storage
+                .batch_get_text(content_oids)
+                .await
+            {
+                Ok(content_map) => content_map,
+                Err(e) => {
+                    error!("Failed to batch fetch content for embedding queue: {}", e);
+                    std::collections::HashMap::new()
+                }
+            }
+        } else {
+            std::collections::HashMap::new()
+        };
+
         // Queue embeddings for documents with content
         let mut embedding_tasks = Vec::new();
         for upserted_doc in upserted_documents.iter() {
-            if let Some(content) = &upserted_doc.content {
-                if !content.trim().is_empty() {
-                    let embedding_queue = self.state.embedding_queue.clone();
-                    let doc_id = upserted_doc.id.clone();
-                    let doc_content = content.clone();
+            if let Some(content_oid) = upserted_doc.content_oid {
+                if let Some(content) = content_map.get(&(content_oid as u32)) {
+                    if !content.trim().is_empty() {
+                        let embedding_queue = self.state.embedding_queue.clone();
+                        let doc_id = upserted_doc.id.clone();
+                        let doc_content = content.clone();
 
-                    embedding_tasks.push(tokio::spawn(async move {
-                        if let Err(e) = embedding_queue.enqueue(doc_id.clone(), doc_content).await {
-                            error!("Failed to queue embeddings for document {}: {}", doc_id, e);
-                        }
-                    }));
+                        embedding_tasks.push(tokio::spawn(async move {
+                            if let Err(e) =
+                                embedding_queue.enqueue(doc_id.clone(), doc_content).await
+                            {
+                                error!("Failed to queue embeddings for document {}: {}", doc_id, e);
+                            }
+                        }));
+                    }
                 }
             }
         }
 
         // Wait for all embedding queue operations to complete
-        let embedding_start = std::time::Instant::now();
         futures::future::join_all(embedding_tasks).await;
         debug!(
             "Embedding queue operations took {:?}",
@@ -590,29 +620,12 @@ impl QueueProcessor {
 
         // For updates, we need to handle them individually since we need to find existing documents
         let mut successful_event_ids = Vec::new();
+        let mut updated_documents = Vec::new();
 
         for (event_id, document) in documents_with_event_ids {
             match repo.update(&document.id, document.clone()).await {
                 Ok(Some(updated_doc)) => {
-                    // Queue embeddings if there's content
-                    if let Some(content) = &updated_doc.content {
-                        if !content.trim().is_empty() {
-                            if let Err(e) = self
-                                .state
-                                .embedding_queue
-                                .enqueue(updated_doc.id.clone(), content.clone())
-                                .await
-                            {
-                                error!(
-                                    "Failed to queue embeddings for updated document {}: {}",
-                                    updated_doc.id, e
-                                );
-                            }
-                        }
-                    }
-
-                    // Mark as indexed
-                    repo.mark_as_indexed(&updated_doc.id).await?;
+                    updated_documents.push((event_id.clone(), updated_doc));
                     successful_event_ids.push(event_id.clone());
                 }
                 Ok(None) => {
@@ -623,6 +636,68 @@ impl QueueProcessor {
                     return Err(e.into());
                 }
             }
+        }
+
+        if !updated_documents.is_empty() {
+            // Batch fetch content for updated documents
+            let content_oids: Vec<u32> = updated_documents
+                .iter()
+                .filter_map(|(_, doc)| doc.content_oid.map(|oid| oid as u32))
+                .collect();
+
+            let content_map = if !content_oids.is_empty() {
+                match self
+                    .state
+                    .content_storage
+                    .batch_get_text(content_oids)
+                    .await
+                {
+                    Ok(content_map) => content_map,
+                    Err(e) => {
+                        error!("Failed to batch fetch content for updated documents: {}", e);
+                        std::collections::HashMap::new()
+                    }
+                }
+            } else {
+                std::collections::HashMap::new()
+            };
+
+            // Queue embeddings and mark as indexed
+            let mut embedding_tasks = Vec::new();
+            for (event_id, updated_doc) in updated_documents {
+                // Queue embeddings if there's content
+                if let Some(content_oid) = updated_doc.content_oid {
+                    if let Some(content) = content_map.get(&(content_oid as u32)) {
+                        if !content.trim().is_empty() {
+                            let embedding_queue = self.state.embedding_queue.clone();
+                            let doc_id = updated_doc.id.clone();
+                            let doc_content = content.clone();
+
+                            embedding_tasks.push(tokio::spawn(async move {
+                                if let Err(e) =
+                                    embedding_queue.enqueue(doc_id.clone(), doc_content).await
+                                {
+                                    error!(
+                                        "Failed to queue embeddings for updated document {}: {}",
+                                        doc_id, e
+                                    );
+                                }
+                            }));
+                        }
+                    }
+                }
+
+                // Mark as indexed
+                if let Err(e) = repo.mark_as_indexed(&updated_doc.id).await {
+                    error!(
+                        "Failed to mark document {} as indexed: {}",
+                        updated_doc.id, e
+                    );
+                }
+            }
+
+            // Wait for all embedding operations to complete
+            futures::future::join_all(embedding_tasks).await;
         }
 
         info!(
@@ -803,14 +878,14 @@ impl ProcessorContext {
                 sync_run_id: _,
                 source_id,
                 document_id,
-                content,
+                content_oid,
                 metadata,
                 permissions,
             } => {
                 self.handle_document_created(
                     source_id,
                     document_id,
-                    content,
+                    content_oid,
                     metadata,
                     permissions,
                 )
@@ -820,14 +895,14 @@ impl ProcessorContext {
                 sync_run_id: _,
                 source_id,
                 document_id,
-                content,
+                content_oid,
                 metadata,
                 permissions,
             } => {
                 self.handle_document_updated(
                     source_id,
                     document_id,
-                    content,
+                    content_oid,
                     metadata,
                     permissions,
                 )
@@ -850,7 +925,7 @@ impl ProcessorContext {
         &self,
         source_id: String,
         document_id: String,
-        content: String,
+        content_oid: i32,
         metadata: DocumentMetadata,
         permissions: DocumentPermissions,
     ) -> Result<()> {
@@ -882,7 +957,7 @@ impl ProcessorContext {
             source_id: source_id.clone(),
             external_id: document_id.clone(),
             title: metadata.title.unwrap_or_else(|| "Untitled".to_string()),
-            content: Some(content.clone()),
+            content_oid: Some(content_oid),
             content_type: metadata.mime_type.clone(),
             file_size,
             file_extension,
@@ -898,6 +973,23 @@ impl ProcessorContext {
         let upsert_start = std::time::Instant::now();
         let upserted = repo.upsert(document).await?;
         debug!("Document upsert took: {:?}", upsert_start.elapsed());
+
+        // Fetch content from LOB storage for tsvector generation and embedding queueing
+        let content = match self
+            .state
+            .content_storage
+            .get_text(content_oid as u32)
+            .await
+        {
+            Ok(content) => content,
+            Err(e) => {
+                error!(
+                    "Failed to fetch content from LOB storage for document {}: {}",
+                    document_id, e
+                );
+                return Err(e.into());
+            }
+        };
 
         let search_vector_start = std::time::Instant::now();
         repo.update_search_vector(&upserted.id).await?;
@@ -945,7 +1037,7 @@ impl ProcessorContext {
         &self,
         source_id: String,
         document_id: String,
-        content: String,
+        content_oid: i32,
         metadata: DocumentMetadata,
         permissions: Option<DocumentPermissions>,
     ) -> Result<()> {
@@ -962,7 +1054,7 @@ impl ProcessorContext {
             let doc_id = document.id.clone();
 
             document.title = metadata.title.unwrap_or(document.title);
-            document.content = Some(content);
+            document.content_oid = Some(content_oid);
             document.metadata = metadata_json;
             if let Some(perms) = permissions {
                 document.permissions = serde_json::to_value(&perms)?;
@@ -970,23 +1062,39 @@ impl ProcessorContext {
             document.updated_at = now;
 
             let updated_document = repo.update(&doc_id, document).await?;
+
+            // Fetch content from LOB storage for tsvector generation and embedding queueing
+            let content = match self
+                .state
+                .content_storage
+                .get_text(content_oid as u32)
+                .await
+            {
+                Ok(content) => content,
+                Err(e) => {
+                    error!(
+                        "Failed to fetch content from LOB storage for document {}: {}",
+                        document_id, e
+                    );
+                    return Err(e.into());
+                }
+            };
+
             repo.update_search_vector(&doc_id).await?;
 
             // Queue embeddings for async generation
-            if let Some(updated_doc) = &updated_document {
-                if let Some(doc_content) = &updated_doc.content {
-                    if !doc_content.trim().is_empty() {
-                        if let Err(e) = self
-                            .state
-                            .embedding_queue
-                            .enqueue(doc_id.clone(), doc_content.clone())
-                            .await
-                        {
-                            error!(
-                                "Failed to queue embeddings for updated document {}: {}",
-                                document_id, e
-                            );
-                        }
+            if let Some(_updated_doc) = &updated_document {
+                if !content.trim().is_empty() {
+                    if let Err(e) = self
+                        .state
+                        .embedding_queue
+                        .enqueue(doc_id.clone(), content.clone())
+                        .await
+                    {
+                        error!(
+                            "Failed to queue embeddings for updated document {}: {}",
+                            document_id, e
+                        );
                     }
                 }
             }

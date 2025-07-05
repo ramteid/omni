@@ -2,7 +2,7 @@ use crate::models::{SearchMode, SearchRequest, SearchResponse, SearchResult, Sug
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
-use shared::{AIClient, DatabasePool, SearcherConfig};
+use shared::{AIClient, ContentStorage, DatabasePool, SearcherConfig};
 use std::time::Instant;
 use tracing::{debug, info};
 
@@ -10,6 +10,7 @@ pub struct SearchEngine {
     db_pool: DatabasePool,
     redis_client: RedisClient,
     ai_client: AIClient,
+    content_storage: ContentStorage,
     config: SearcherConfig,
 }
 
@@ -20,25 +21,22 @@ impl SearchEngine {
         ai_client: AIClient,
         config: SearcherConfig,
     ) -> Self {
+        let content_storage = ContentStorage::new(db_pool.pool().clone());
         Self {
             db_pool,
             redis_client,
             ai_client,
+            content_storage,
             config,
         }
     }
 
-    fn truncate_document_content(
+    fn prepare_document_for_response(
         &self,
         mut doc: shared::models::Document,
     ) -> shared::models::Document {
-        const MAX_CONTENT_LENGTH: usize = 500;
-        if let Some(content) = &doc.content {
-            if content.chars().count() > MAX_CONTENT_LENGTH {
-                let truncated: String = content.chars().take(MAX_CONTENT_LENGTH).collect();
-                doc.content = Some(format!("{}...", truncated));
-            }
-        }
+        // Clear content_oid from search responses for security and efficiency
+        doc.content_oid = None;
         doc
     }
 
@@ -164,22 +162,32 @@ impl SearchEngine {
             )
         };
 
-        let results = documents
-            .into_iter()
-            .map(|doc| {
-                let highlights = if let Some(content) = &doc.content {
-                    self.extract_highlights(content, &request.query)
-                } else {
-                    vec![]
-                };
-                SearchResult {
-                    document: self.truncate_document_content(doc),
-                    score: 1.0,
-                    highlights,
-                    match_type: "fulltext".to_string(),
+        let mut results = Vec::new();
+        for doc in documents {
+            // Fetch content from LOB storage for highlight generation
+            let highlights = if let Some(content_oid) = doc.content_oid {
+                match self.content_storage.get_text(content_oid as u32).await {
+                    Ok(content) => self.extract_highlights(&content, &request.query),
+                    Err(e) => {
+                        debug!(
+                            "Failed to fetch content for highlights from document {}: {}",
+                            doc.id, e
+                        );
+                        vec![]
+                    }
                 }
-            })
-            .collect();
+            } else {
+                vec![]
+            };
+
+            let prepared_doc = self.prepare_document_for_response(doc);
+            results.push(SearchResult {
+                document: prepared_doc,
+                score: 1.0,
+                highlights,
+                match_type: "fulltext".to_string(),
+            });
+        }
 
         Ok((results, corrected_query))
     }
@@ -205,15 +213,16 @@ impl SearchEngine {
             )
             .await?;
 
-        let results: Vec<SearchResult> = documents_with_scores
-            .into_iter()
-            .map(|(doc, score)| SearchResult {
-                document: self.truncate_document_content(doc),
+        let mut results = Vec::new();
+        for (doc, score) in documents_with_scores {
+            let prepared_doc = self.prepare_document_for_response(doc);
+            results.push(SearchResult {
+                document: prepared_doc,
                 score,
                 highlights: vec![],
                 match_type: "semantic".to_string(),
-            })
-            .collect();
+            });
+        }
 
         Ok(results)
     }
@@ -254,10 +263,11 @@ impl SearchEngine {
         for result in fts_results {
             let doc_id = result.document.id.clone();
             let normalized_score = self.normalize_fts_score(result.score);
+            let prepared_doc = self.prepare_document_for_response(result.document);
             combined_results.insert(
                 doc_id,
                 SearchResult {
-                    document: self.truncate_document_content(result.document),
+                    document: prepared_doc,
                     score: normalized_score * self.config.hybrid_search_fts_weight,
                     highlights: result.highlights,
                     match_type: "hybrid".to_string(),
@@ -276,10 +286,11 @@ impl SearchEngine {
                 }
                 None => {
                     // Add new semantic-only result
+                    let prepared_doc = self.prepare_document_for_response(result.document);
                     combined_results.insert(
                         doc_id,
                         SearchResult {
-                            document: self.truncate_document_content(result.document),
+                            document: prepared_doc,
                             score: result.score * self.config.hybrid_search_semantic_weight,
                             highlights: result.highlights,
                             match_type: "hybrid".to_string(),

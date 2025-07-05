@@ -25,7 +25,7 @@ use shared::models::{
 };
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
-use shared::RateLimiter;
+use shared::{ContentStorage, RateLimiter};
 
 pub struct SyncManager {
     pool: PgPool,
@@ -33,6 +33,7 @@ pub struct SyncManager {
     drive_client: DriveClient,
     admin_client: AdminClient,
     event_queue: EventQueue,
+    content_storage: ContentStorage,
     service_credentials_repo: ServiceCredentialsRepo,
     folder_cache: Arc<std::sync::Mutex<HashMap<String, String>>>, // folder_id -> folder_name
 }
@@ -157,12 +158,15 @@ impl SyncManager {
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone());
         let admin_client = AdminClient::with_rate_limiter(rate_limiter);
 
+        let content_storage = ContentStorage::new(pool.clone());
+
         Ok(Self {
             pool,
             redis_client,
             drive_client,
             admin_client,
             event_queue,
+            content_storage,
             service_credentials_repo,
             folder_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
@@ -617,11 +621,24 @@ impl SyncManager {
                                                 }
                                             };
 
+                                            debug!("Storing content in LOB storage for file: {} ({})", file.name, file.id);
+                                            let content_oid = match self.content_storage.store_text(&content).await {
+                                                Ok(oid) => {
+                                                    debug!("Content stored with OID {} for file: {} ({})", oid, file.name, file.id);
+                                                    oid as i32
+                                                }
+                                                Err(e) => {
+                                                    error!("Failed to store content for file {}: {}", file.name, e);
+                                                    failed_count.fetch_add(1, Ordering::SeqCst);
+                                                    return None;
+                                                }
+                                            };
+
                                             debug!("Creating connector event for file: {} ({})", file.name, file.id);
                                             let event = file.clone().to_connector_event_with_path(
                                                 sync_run_id.clone(),
                                                 source_id.clone(),
-                                                content,
+                                                content_oid,
                                                 file_path,
                                             );
 

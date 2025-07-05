@@ -3,17 +3,14 @@ CREATE TABLE IF NOT EXISTS documents (
     source_id CHAR(26) NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     external_id VARCHAR(500) NOT NULL,
     title TEXT NOT NULL,
-    content TEXT,
+    content_oid INTEGER,  -- PostgreSQL Large Object OID for content storage
     content_type VARCHAR(100),
     file_size BIGINT,
     file_extension VARCHAR(50),
     url TEXT,
     metadata JSONB NOT NULL DEFAULT '{}',
     permissions JSONB NOT NULL DEFAULT '[]',
-    tsv_content tsvector GENERATED ALWAYS AS (
-        setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
-        setweight(to_tsvector('english', COALESCE(content, '')), 'B')
-    ) STORED,
+    tsv_content tsvector,  -- Will be populated by indexer from LOB content
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_indexed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

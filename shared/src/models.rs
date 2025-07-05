@@ -58,7 +58,7 @@ pub struct Document {
     pub source_id: String,
     pub external_id: String,
     pub title: String,
-    pub content: Option<String>,
+    pub content_oid: Option<i32>, // PostgreSQL Large Object OID
     pub content_type: Option<String>,
     pub file_size: Option<i64>,
     pub file_extension: Option<String>,
@@ -159,7 +159,7 @@ pub enum ConnectorEvent {
         sync_run_id: String,
         source_id: String,
         document_id: String,
-        content: String,
+        content_oid: i32, // PostgreSQL Large Object OID
         metadata: DocumentMetadata,
         permissions: DocumentPermissions,
     },
@@ -167,7 +167,7 @@ pub enum ConnectorEvent {
         sync_run_id: String,
         source_id: String,
         document_id: String,
-        content: String,
+        content_oid: i32, // PostgreSQL Large Object OID
         metadata: DocumentMetadata,
         permissions: Option<DocumentPermissions>,
     },
@@ -210,66 +210,8 @@ pub struct DocumentChunk {
     pub index: i32,
 }
 
-impl Document {
-    /// Chunk document content into smaller pieces for embedding generation
-    pub fn chunk_content(&self, max_chunk_size: usize) -> Vec<DocumentChunk> {
-        let content = match &self.content {
-            Some(content) => content,
-            None => return vec![], // No content to chunk
-        };
-
-        if content.len() <= max_chunk_size {
-            return vec![DocumentChunk {
-                text: content.clone(),
-                index: 0,
-            }];
-        }
-
-        let mut chunks = Vec::new();
-        let mut current_pos = 0;
-        let mut chunk_index = 0;
-
-        while current_pos < content.len() {
-            let end_pos = std::cmp::min(current_pos + max_chunk_size, content.len());
-
-            // Try to break at sentence boundaries for better semantic coherence
-            let chunk_text = if end_pos < content.len() {
-                // Look for sentence endings within the last 100 characters
-                let search_start = std::cmp::max(current_pos, end_pos.saturating_sub(100));
-                let search_slice = &content[search_start..end_pos];
-
-                if let Some(sentence_end) = search_slice.rfind('.') {
-                    let actual_end = search_start + sentence_end + 1;
-                    content[current_pos..actual_end].to_string()
-                } else if let Some(paragraph_end) = search_slice.rfind('\n') {
-                    let actual_end = search_start + paragraph_end + 1;
-                    content[current_pos..actual_end].to_string()
-                } else {
-                    // Fallback to character boundary
-                    content[current_pos..end_pos].to_string()
-                }
-            } else {
-                content[current_pos..end_pos].to_string()
-            };
-
-            let chunk_end = current_pos + chunk_text.len();
-            chunks.push(DocumentChunk {
-                text: chunk_text,
-                index: chunk_index,
-            });
-
-            current_pos = chunk_end;
-            chunk_index += 1;
-
-            // Prevent infinite loops
-            if current_pos >= content.len() {
-                break;
-            }
-        }
-
-        chunks
-    }
-}
+// Note: Document chunking is now handled by the indexer service
+// which fetches content from LOB storage and uses the ContentChunker utility
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FacetValue {
