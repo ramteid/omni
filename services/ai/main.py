@@ -15,6 +15,7 @@ from embeddings_v2 import (
     generate_embeddings_sync,
     DEFAULT_TASK,
 )
+from providers import create_llm_provider, LLMProvider
 
 
 def get_required_env(key: str) -> str:
@@ -67,9 +68,15 @@ EMBEDDING_MODEL = get_required_env("EMBEDDING_MODEL")
 EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
     get_required_env("EMBEDDING_DIMENSIONS")
 )
-VLLM_URL = get_required_env("VLLM_URL")
 REDIS_URL = get_required_env("REDIS_URL")
 DATABASE_URL = get_required_env("DATABASE_URL")
+
+# LLM Provider configuration
+LLM_PROVIDER = get_optional_env("LLM_PROVIDER", "vllm").lower()
+VLLM_URL = get_optional_env("VLLM_URL", "http://vllm:8000")  # Make optional
+ANTHROPIC_API_KEY = get_optional_env("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = get_optional_env("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+ANTHROPIC_MAX_TOKENS = int(get_optional_env("ANTHROPIC_MAX_TOKENS", "4096"))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -79,6 +86,9 @@ app = FastAPI(title="Clio AI Service", version="0.1.0")
 
 # Thread pool for async operations
 _executor = ThreadPoolExecutor(max_workers=2)
+
+# Global LLM provider instance
+llm_provider: Optional[LLMProvider] = None
 
 
 # Pydantic models
@@ -127,19 +137,56 @@ class PromptResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Load model on startup"""
+    """Load model and initialize LLM provider on startup"""
+    global llm_provider
+
+    # Load embedding model
     await asyncio.get_event_loop().run_in_executor(_executor, load_model)
+
+    # Initialize LLM provider
+    try:
+        if LLM_PROVIDER == "vllm":
+            if not VLLM_URL:
+                raise ValueError("VLLM_URL is required when using vLLM provider")
+            llm_provider = create_llm_provider("vllm", vllm_url=VLLM_URL)
+            logger.info(f"Initialized vLLM provider with URL: {VLLM_URL}")
+        elif LLM_PROVIDER == "anthropic":
+            if not ANTHROPIC_API_KEY:
+                raise ValueError(
+                    "ANTHROPIC_API_KEY is required when using Anthropic provider"
+                )
+            llm_provider = create_llm_provider(
+                "anthropic", api_key=ANTHROPIC_API_KEY, model=ANTHROPIC_MODEL
+            )
+            logger.info(f"Initialized Anthropic provider with model: {ANTHROPIC_MODEL}")
+        else:
+            raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER}")
+    except Exception as e:
+        logger.error(f"Failed to initialize LLM provider: {e}")
+        raise e
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    global llm_provider
+
+    # Check LLM provider health
+    llm_health = False
+    if llm_provider:
+        try:
+            llm_health = await llm_provider.health_check()
+        except Exception:
+            llm_health = False
+
     return {
         "status": "healthy",
         "service": "ai",
         "model": EMBEDDING_MODEL,
         "port": PORT,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
+        "llm_provider": LLM_PROVIDER,
+        "llm_health": llm_health,
     }
 
 
@@ -208,9 +255,14 @@ async def rag_inference(request: RAGRequest):
 
 @app.post("/prompt")
 async def generate_response(request: PromptRequest):
-    """Generate a response from the vLLM model for any given prompt with streaming support"""
+    """Generate a response from the configured LLM provider with streaming support"""
+    global llm_provider
+
+    if not llm_provider:
+        raise HTTPException(status_code=500, detail="LLM provider not initialized")
+
     logger.info(
-        f"Generating response for prompt: {request.prompt[:50]}... (stream={request.stream})"
+        f"Generating response for prompt: {request.prompt[:50]}... (stream={request.stream}, provider={LLM_PROVIDER})"
     )
 
     if not request.stream:
@@ -220,60 +272,15 @@ async def generate_response(request: PromptRequest):
     # Streaming response
     async def stream_generator():
         try:
-            # Prepare the request payload for vLLM OpenAI-compatible API
-            vllm_payload = {
-                "model": "placeholder",  # vLLM ignores this but requires it
-                "messages": [{"role": "user", "content": request.prompt}],
-                "max_tokens": request.max_tokens,
-                "temperature": request.temperature,
-                "top_p": request.top_p,
-                "stream": True,
-            }
-
-            # Make streaming request to vLLM service
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                async with client.stream(
-                    "POST",
-                    f"{VLLM_URL}/v1/chat/completions",
-                    json=vllm_payload,
-                    headers={"Accept": "text/event-stream"},
-                ) as response:
-                    response.raise_for_status()
-
-                    async for chunk in response.aiter_lines():
-                        if chunk:
-                            # Skip empty lines and "data: " prefix
-                            if chunk.startswith("data: "):
-                                chunk_data = chunk[6:]  # Remove "data: " prefix
-
-                                # Skip [DONE] signal
-                                if chunk_data == "[DONE]":
-                                    break
-
-                                try:
-                                    # Parse the JSON chunk
-                                    chunk_json = json.loads(chunk_data)
-
-                                    # Extract content from OpenAI format
-                                    choices = chunk_json.get("choices", [])
-                                    if choices and len(choices) > 0:
-                                        delta = choices[0].get("delta", {})
-                                        content = delta.get("content", "")
-                                        if content:
-                                            yield content
-
-                                except json.JSONDecodeError:
-                                    # Skip malformed JSON chunks
-                                    continue
-
-        except httpx.TimeoutException:
-            logger.error("Timeout while calling vLLM service")
-            yield "Error: Request timeout"
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error from vLLM service: {e.response.status_code}")
-            yield f"Error: vLLM service error ({e.response.status_code})"
+            async for chunk in llm_provider.stream_response(
+                request.prompt,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                top_p=request.top_p,
+            ):
+                yield chunk
         except Exception as e:
-            logger.error(f"Failed to generate response: {str(e)}")
+            logger.error(f"Failed to generate streaming response: {str(e)}")
             yield f"Error: {str(e)}"
 
     return StreamingResponse(
@@ -285,54 +292,22 @@ async def generate_response(request: PromptRequest):
 
 async def generate_non_streaming_response(request: PromptRequest) -> PromptResponse:
     """Generate non-streaming response for backward compatibility"""
+    global llm_provider
+
+    if not llm_provider:
+        raise HTTPException(status_code=500, detail="LLM provider not initialized")
+
     try:
-        # Prepare the request payload for vLLM OpenAI-compatible API
-        vllm_payload = {
-            "model": "placeholder",  # vLLM ignores this but requires it
-            "messages": [{"role": "user", "content": request.prompt}],
-            "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
-            "top_p": request.top_p,
-            "stream": False,
-        }
-
-        # Make request to vLLM service
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{VLLM_URL}/v1/chat/completions", json=vllm_payload
-            )
-            response.raise_for_status()
-
-            vllm_response = response.json()
-
-            # Extract the generated text from OpenAI format
-            choices = vllm_response.get("choices", [])
-            if not choices:
-                raise HTTPException(
-                    status_code=500, detail="No choices in vLLM response"
-                )
-
-            message = choices[0].get("message", {})
-            generated_text = message.get("content", "")
-
-            if not generated_text:
-                raise HTTPException(
-                    status_code=500, detail="Empty response from vLLM service"
-                )
-
-            logger.info(
-                f"Successfully generated response of length: {len(generated_text)}"
-            )
-            return PromptResponse(response=generated_text)
-
-    except httpx.TimeoutException:
-        logger.error("Timeout while calling vLLM service")
-        raise HTTPException(status_code=504, detail="Request to vLLM service timed out")
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error from vLLM service: {e.response.status_code}")
-        raise HTTPException(
-            status_code=502, detail=f"vLLM service error: {e.response.status_code}"
+        generated_text = await llm_provider.generate_response(
+            request.prompt,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            top_p=request.top_p,
         )
+
+        logger.info(f"Successfully generated response of length: {len(generated_text)}")
+        return PromptResponse(response=generated_text)
+
     except Exception as e:
         logger.error(f"Failed to generate response: {str(e)}")
         raise HTTPException(
@@ -347,6 +322,11 @@ if __name__ == "__main__":
     logger.info(f"Using embedding model: {EMBEDDING_MODEL}")
     logger.info(f"Model path: {MODEL_PATH}")
     logger.info(f"Embedding dimensions: {EMBEDDING_DIMENSIONS}")
-    logger.info(f"vLLM URL: {VLLM_URL}")
+    logger.info(f"LLM Provider: {LLM_PROVIDER}")
+    if LLM_PROVIDER == "vllm":
+        logger.info(f"vLLM URL: {VLLM_URL}")
+    elif LLM_PROVIDER == "anthropic":
+        logger.info(f"Anthropic Model: {ANTHROPIC_MODEL}")
+        logger.info(f"Anthropic Max Tokens: {ANTHROPIC_MAX_TOKENS}")
 
     uvicorn.run(app, host="0.0.0.0", port=PORT)

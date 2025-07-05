@@ -71,10 +71,14 @@ services:
   slack-connector:
     environment:
       <<: *dev-database-url
+    profiles:
+      - production
 
   atlassian-connector:
     environment:
       <<: *dev-database-url
+    profiles:
+      - production
 
   vllm:
     profiles:

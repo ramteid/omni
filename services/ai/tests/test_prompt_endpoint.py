@@ -12,20 +12,21 @@ import os
 async def test_prompt_endpoint():
     """Test the /prompt endpoint"""
 
-    # Test payload
+    # Test payload for non-streaming
     test_payload = {
-        "prompt": "Hello, how are you today?",
+        "prompt": "What is the capital of France? Answer in one sentence.",
         "max_tokens": 100,
         "temperature": 0.7,
         "top_p": 0.9,
+        "stream": False,
     }
 
     # AI service URL from environment or default
-    ai_service_url = os.environ.get("AI_SERVICE_URL", "http://localhost:3003")
+    ai_service_url = os.environ.get("AI_SERVICE_URL", "http://localhost:8001")
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            print(f"Testing /prompt endpoint at {ai_service_url}")
+            print(f"Testing /prompt endpoint (non-streaming) at {ai_service_url}")
             print(f"Payload: {json.dumps(test_payload, indent=2)}")
 
             response = await client.post(f"{ai_service_url}/prompt", json=test_payload)
@@ -36,19 +37,65 @@ async def test_prompt_endpoint():
             if response.status_code == 200:
                 response_data = response.json()
                 print(f"Response data: {json.dumps(response_data, indent=2)}")
-                print("✅ Test passed!")
+                print("✅ Non-streaming test passed!")
             else:
-                print(f"❌ Test failed with status {response.status_code}")
+                print(
+                    f"❌ Non-streaming test failed with status {response.status_code}"
+                )
                 print(f"Error response: {response.text}")
 
     except Exception as e:
-        print(f"❌ Test failed with exception: {str(e)}")
-        sys.exit(1)
+        print(f"❌ Non-streaming test failed with exception: {str(e)}")
+        return False
+
+    return True
+
+
+async def test_prompt_endpoint_streaming():
+    """Test the /prompt endpoint with streaming"""
+
+    # Test payload for streaming
+    test_payload = {
+        "prompt": "Count from 1 to 5, with one number per line.",
+        "max_tokens": 50,
+        "temperature": 0.1,
+        "top_p": 0.9,
+        "stream": True,
+    }
+
+    # AI service URL from environment or default
+    ai_service_url = os.environ.get("AI_SERVICE_URL", "http://localhost:8001")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            print(f"Testing /prompt endpoint (streaming) at {ai_service_url}")
+            print(f"Payload: {json.dumps(test_payload, indent=2)}")
+
+            response = await client.post(f"{ai_service_url}/prompt", json=test_payload)
+
+            print(f"Response status: {response.status_code}")
+            print(f"Response headers: {dict(response.headers)}")
+
+            if response.status_code == 200:
+                print("Streaming response:")
+                async for chunk in response.aiter_text():
+                    print(chunk, end="", flush=True)
+                print("\n✅ Streaming test passed!")
+            else:
+                print(f"❌ Streaming test failed with status {response.status_code}")
+                print(f"Error response: {response.text}")
+                return False
+
+    except Exception as e:
+        print(f"❌ Streaming test failed with exception: {str(e)}")
+        return False
+
+    return True
 
 
 async def test_health_endpoint():
     """Test the health endpoint first"""
-    ai_service_url = os.environ.get("AI_SERVICE_URL", "http://localhost:3003")
+    ai_service_url = os.environ.get("AI_SERVICE_URL", "http://localhost:8001")
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -79,13 +126,26 @@ async def main():
     health_ok = await test_health_endpoint()
     if not health_ok:
         print("⚠️  Health check failed, service may not be running")
-        print("Make sure the clio-ai service is running on port 3003")
+        print("Make sure the clio-ai service is running on port 8001")
         return
 
     print("\n" + "=" * 50)
 
-    # Test the new prompt endpoint
-    await test_prompt_endpoint()
+    # Test the prompt endpoint (non-streaming)
+    non_streaming_ok = await test_prompt_endpoint()
+
+    print("\n" + "=" * 50)
+
+    # Test the prompt endpoint (streaming)
+    if non_streaming_ok:
+        streaming_ok = await test_prompt_endpoint_streaming()
+
+    print("\n" + "=" * 50)
+    print("Test Summary:")
+    print(f"Health check: {'✅' if health_ok else '❌'}")
+    print(f"Non-streaming prompt: {'✅' if non_streaming_ok else '❌'}")
+    if non_streaming_ok:
+        print(f"Streaming prompt: {'✅' if streaming_ok else '❌'}")
 
 
 if __name__ == "__main__":
