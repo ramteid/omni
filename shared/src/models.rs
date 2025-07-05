@@ -13,15 +13,25 @@ pub enum UserRole {
     Viewer,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+pub enum AuthMethod {
+    Password,
+    MagicLink,
+    Both,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct User {
     pub id: String,
     pub email: String,
-    pub password_hash: String,
+    pub password_hash: Option<String>,
     pub full_name: Option<String>,
     pub avatar_url: Option<String>,
     pub role: UserRole,
     pub is_active: bool,
+    pub auth_method: AuthMethod,
+    pub domain: Option<String>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
     pub last_login_at: Option<OffsetDateTime>,
@@ -340,4 +350,24 @@ pub struct WebhookChannel {
     pub expires_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ApprovedDomain {
+    pub id: String,
+    pub domain: String,
+    pub approved_by: String,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MagicLink {
+    pub id: String,
+    pub email: String,
+    pub token_hash: String,
+    pub expires_at: OffsetDateTime,
+    pub used_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub user_id: Option<String>,
 }

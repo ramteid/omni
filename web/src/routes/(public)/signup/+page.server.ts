@@ -5,6 +5,7 @@ import { db } from '$lib/server/db/index.js'
 import { user } from '$lib/server/db/schema.js'
 import { ulid } from 'ulid'
 import { generateSessionToken, createSession, setSessionTokenCookie } from '$lib/server/auth.js'
+import { DomainService } from '$lib/server/domains.js'
 import type { Actions, PageServerLoad } from './$types.js'
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -90,6 +91,9 @@ export const actions: Actions = {
                 parallelism: 1,
             })
 
+            // Extract domain from email
+            const domain = DomainService.extractDomainFromEmail(email.toLowerCase())
+
             // Create user
             const newUserId = ulid()
             await db.insert(user).values({
@@ -97,9 +101,16 @@ export const actions: Actions = {
                 email: email.toLowerCase(),
                 passwordHash,
                 role: isFirstUser ? 'admin' : 'user',
+                authMethod: 'password',
+                domain,
                 isActive: true,
                 createdAt: new Date(),
             })
+
+            // If this is the first user (admin), auto-approve their domain
+            if (isFirstUser && domain) {
+                await DomainService.autoApproveDomainForAdmin(newUserId)
+            }
 
             // Create session and log the user in
             const sessionToken = generateSessionToken()

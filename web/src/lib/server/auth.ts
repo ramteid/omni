@@ -105,3 +105,24 @@ export function deleteSessionTokenCookie(cookies: any) {
         path: '/',
     })
 }
+
+export async function createUserSession(userId: string) {
+    try {
+        const token = generateSessionToken()
+        const session = await createSession(token, userId)
+
+        return {
+            success: true,
+            session: {
+                token,
+                ...session,
+            },
+        }
+    } catch (error) {
+        console.error('Error creating session:', error)
+        return {
+            success: false,
+            error: 'Failed to create session',
+        }
+    }
+}

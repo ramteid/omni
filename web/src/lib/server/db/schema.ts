@@ -3,9 +3,11 @@ import { pgTable, text, timestamp, boolean, jsonb, bigint, integer } from 'drizz
 export const user = pgTable('users', {
     id: text('id').primaryKey(),
     email: text('email').notNull().unique(),
-    passwordHash: text('password_hash').notNull(),
+    passwordHash: text('password_hash'),
     role: text('role').notNull().default('user'),
     isActive: boolean('is_active').notNull().default(true),
+    authMethod: text('auth_method').notNull().default('password'),
+    domain: text('domain'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
@@ -104,6 +106,26 @@ export const syncRuns = pgTable('sync_runs', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const approvedDomains = pgTable('approved_domains', {
+    id: text('id').primaryKey(),
+    domain: text('domain').notNull().unique(),
+    approvedBy: text('approved_by')
+        .notNull()
+        .references(() => user.id),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
+export const magicLinks = pgTable('magic_links', {
+    id: text('id').primaryKey(),
+    email: text('email').notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true, mode: 'date' }),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    userId: text('user_id').references(() => user.id),
+})
+
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
@@ -111,3 +133,5 @@ export type Embedding = typeof embeddings.$inferSelect
 export type ServiceCredentials = typeof serviceCredentials.$inferSelect
 export type ConnectorEventsQueue = typeof connectorEventsQueue.$inferSelect
 export type SyncRun = typeof syncRuns.$inferSelect
+export type ApprovedDomain = typeof approvedDomains.$inferSelect
+export type MagicLink = typeof magicLinks.$inferSelect

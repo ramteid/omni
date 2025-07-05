@@ -76,6 +76,33 @@
             </Button>
         </form>
 
+        <div class="mt-6 space-y-4">
+            <div class="relative">
+                <div class="absolute inset-0 flex items-center">
+                    <div class="border-muted w-full border-t"></div>
+                </div>
+                <div class="relative flex justify-center text-xs uppercase">
+                    <span class="bg-card text-muted-foreground px-2">Or</span>
+                </div>
+            </div>
+
+            <Button
+                variant="outline"
+                class="w-full"
+                onclick="window.location.href='/auth/request-magic-link'"
+            >
+                <svg class="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+                    />
+                </svg>
+                Sign in with Email Link
+            </Button>
+        </div>
+
         <div class="mt-6 text-center text-sm">
             <span class="text-muted-foreground">Don't have an account?</span>
             <a href="/signup" class="text-foreground hover:text-foreground/80 font-medium">

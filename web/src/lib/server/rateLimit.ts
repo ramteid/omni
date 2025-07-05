@@ -50,6 +50,54 @@ export function resetRateLimit(event: RequestEvent): void {
     attempts.delete(key)
 }
 
+interface RateLimitResult {
+    success: boolean
+    remainingAttempts?: number
+    resetTime?: number
+}
+
+export async function rateLimit(
+    key: string,
+    maxAttempts: number,
+    windowSeconds: number,
+): Promise<RateLimitResult> {
+    const now = Date.now()
+    const windowMs = windowSeconds * 1000
+
+    const current = attempts.get(key)
+
+    // Clean up old entries
+    if (current && now - current.firstAttempt > windowMs) {
+        attempts.delete(key)
+    }
+
+    const existing = attempts.get(key)
+
+    if (!existing) {
+        attempts.set(key, { count: 1, firstAttempt: now })
+        return {
+            success: true,
+            remainingAttempts: maxAttempts - 1,
+            resetTime: now + windowMs,
+        }
+    }
+
+    if (existing.count >= maxAttempts) {
+        return {
+            success: false,
+            remainingAttempts: 0,
+            resetTime: existing.firstAttempt + windowMs,
+        }
+    }
+
+    existing.count++
+    return {
+        success: true,
+        remainingAttempts: maxAttempts - existing.count,
+        resetTime: existing.firstAttempt + windowMs,
+    }
+}
+
 function getClientIp(event: RequestEvent): string {
     // Check various headers for the real IP
     const forwarded = event.request.headers.get('x-forwarded-for')
