@@ -12,8 +12,8 @@ pub use redis::Client as RedisClient;
 pub use serde::{Deserialize, Serialize};
 pub use serde_json::Value;
 pub use shared::db::pool::DatabasePool;
-use shared::service_auth::ServiceCredentialsRepo;
 pub use shared::AIClient;
+use shared::ServiceCredentialsRepo;
 use std::sync::Arc;
 
 use axum::{

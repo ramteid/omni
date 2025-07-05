@@ -87,6 +87,7 @@ pub enum SourceType {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "varchar", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum ServiceProvider {
     Google,
     Slack,
@@ -97,6 +98,7 @@ pub enum ServiceProvider {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "varchar", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum AuthType {
     Jwt,
     ApiKey,

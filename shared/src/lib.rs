@@ -18,7 +18,8 @@ pub mod test_environment;
 pub use clients::ai::AIClient;
 pub use config::*;
 pub use db::repositories::{
-    DocumentRepository, EmbeddingRepository, SourceRepository, UserRepository,
+    DocumentRepository, EmbeddingRepository, ServiceCredentialsRepo, SourceRepository,
+    UserRepository,
 };
 pub use db::{DatabaseError, DatabasePool};
 pub use embedding_queue::{EmbeddingQueue, EmbeddingQueueItem};
@@ -26,7 +27,7 @@ pub use encryption::{EncryptedData, EncryptionService};
 pub use models::*;
 pub use queue::{EventQueue, QueueStats};
 pub use rate_limiter::RateLimiter;
-pub use service_auth::{create_service_auth, ServiceAuth, ServiceCredentialsRepo};
+pub use service_auth::{create_service_auth, ServiceAuth};
 pub use traits::Repository;
 
 pub fn init() {

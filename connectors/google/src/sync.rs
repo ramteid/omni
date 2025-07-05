@@ -16,9 +16,10 @@ use crate::admin::AdminClient;
 use crate::auth::ServiceAccountAuth;
 use crate::drive::DriveClient;
 use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
+use shared::db::repositories::ServiceCredentialsRepo;
 use shared::models::{
-    ConnectorEvent, ServiceCredentials, Source, SourceType, SyncRun, SyncStatus, SyncType,
-    WebhookChannel as DatabaseWebhookChannel,
+    ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
+    SyncType, WebhookChannel as DatabaseWebhookChannel,
 };
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
@@ -30,6 +31,7 @@ pub struct SyncManager {
     drive_client: DriveClient,
     admin_client: AdminClient,
     event_queue: EventQueue,
+    service_credentials_repo: ServiceCredentialsRepo,
     folder_cache: Arc<std::sync::Mutex<HashMap<String, String>>>, // folder_id -> folder_name
 }
 
@@ -129,6 +131,7 @@ impl SyncState {
 impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
+        let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
 
         let api_rate_limit = std::env::var("GOOGLE_API_RATE_LIMIT")
             .unwrap_or_else(|_| "180".to_string())
@@ -150,6 +153,7 @@ impl SyncManager {
             drive_client,
             admin_client,
             event_queue,
+            service_credentials_repo,
             folder_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
@@ -683,13 +687,22 @@ impl SyncManager {
     }
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
-        let creds = sqlx::query_as::<_, ServiceCredentials>(
-            "SELECT * FROM service_credentials 
-             WHERE source_id = $1 AND provider = 'google'",
-        )
-        .bind(source_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let creds = self
+            .service_credentials_repo
+            .get_by_source_id(source_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Service credentials not found for source {}", source_id)
+            })?;
+
+        // Verify it's a Google credentials record
+        if creds.provider != ServiceProvider::Google {
+            return Err(anyhow::anyhow!(
+                "Expected Google credentials for source {}, found {:?}",
+                source_id,
+                creds.provider
+            ));
+        }
 
         Ok(creds)
     }
