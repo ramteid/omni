@@ -2,6 +2,7 @@ use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::models::{Source, SourceType};
 use shared::queue::EventQueue;
+use shared::ContentStorage;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
 use tracing::{debug, error, info, warn};
@@ -16,6 +17,7 @@ pub struct SyncManager {
     auth_manager: AuthManager,
     slack_client: SlackClient,
     event_queue: EventQueue,
+    content_storage: ContentStorage,
 }
 
 pub struct SyncState {
@@ -95,6 +97,7 @@ impl SyncState {
 impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
+        let content_storage = ContentStorage::new(pool.clone());
 
         Ok(Self {
             pool,
@@ -102,6 +105,7 @@ impl SyncManager {
             auth_manager: AuthManager::new(),
             slack_client: SlackClient::new(),
             event_queue,
+            content_storage,
         })
     }
 
@@ -321,7 +325,28 @@ impl SyncManager {
         for group in message_groups {
             // TODO: Add proper sync_run_id when sync runs are implemented for Slack
             let placeholder_sync_run_id = shared::utils::generate_ulid();
-            let event = group.to_connector_event(placeholder_sync_run_id, source_id.to_string());
+
+            // Store content in LOB and get OID
+            let content_id = match self
+                .content_storage
+                .store_text(&group.to_document_content())
+                .await
+            {
+                Ok(oid) => oid,
+                Err(e) => {
+                    error!(
+                        "Failed to store content in LOB storage for Slack message group: {}",
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            let event = group.to_connector_event(
+                placeholder_sync_run_id,
+                source_id.to_string(),
+                content_id,
+            );
             match self.event_queue.enqueue(source_id, &event).await {
                 Ok(_) => published_groups += 1,
                 Err(e) => error!("Failed to queue message group event: {}", e),
@@ -335,12 +360,25 @@ impl SyncManager {
                 Ok(content) if !content.is_empty() => {
                     // TODO: Add proper sync_run_id when sync runs are implemented for Slack
                     let placeholder_sync_run_id = shared::utils::generate_ulid();
+
+                    // Store content in LOB and get OID
+                    let content_id = match self.content_storage.store_text(&content).await {
+                        Ok(oid) => oid,
+                        Err(e) => {
+                            error!(
+                                "Failed to store content in LOB storage for Slack file {}: {}",
+                                file.name, e
+                            );
+                            continue;
+                        }
+                    };
+
                     let event = file.to_connector_event(
                         placeholder_sync_run_id,
                         source_id.to_string(),
                         channel.id.clone(),
                         channel.name.clone(),
-                        content,
+                        content_id,
                     );
                     match self.event_queue.enqueue(source_id, &event).await {
                         Ok(_) => published_files += 1,

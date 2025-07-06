@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::models::{Source, SourceType};
 use shared::queue::EventQueue;
+use shared::ContentStorage;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
 use tracing::{debug, error, info, warn};
@@ -180,13 +181,17 @@ impl SyncState {
 impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
+        let content_storage = ContentStorage::new(pool.clone());
 
         Ok(Self {
             pool,
             redis_client,
             auth_manager: AuthManager::new(),
-            confluence_processor: ConfluenceProcessor::new(event_queue.clone()),
-            jira_processor: JiraProcessor::new(event_queue.clone()),
+            confluence_processor: ConfluenceProcessor::new(
+                event_queue.clone(),
+                content_storage.clone(),
+            ),
+            jira_processor: JiraProcessor::new(event_queue.clone(), content_storage.clone()),
             event_queue,
         })
     }

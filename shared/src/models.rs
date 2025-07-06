@@ -58,7 +58,7 @@ pub struct Document {
     pub source_id: String,
     pub external_id: String,
     pub title: String,
-    pub content_oid: Option<i32>, // PostgreSQL Large Object OID
+    pub content_id: Option<String>, // Content blob ID in content_blobs table
     pub content_type: Option<String>,
     pub file_size: Option<i64>,
     pub file_extension: Option<String>,
@@ -159,7 +159,7 @@ pub enum ConnectorEvent {
         sync_run_id: String,
         source_id: String,
         document_id: String,
-        content_oid: i32, // PostgreSQL Large Object OID
+        content_id: String, // Content blob ID in content_blobs table
         metadata: DocumentMetadata,
         permissions: DocumentPermissions,
     },
@@ -167,7 +167,7 @@ pub enum ConnectorEvent {
         sync_run_id: String,
         source_id: String,
         document_id: String,
-        content_oid: i32, // PostgreSQL Large Object OID
+        content_id: String, // Content blob ID in content_blobs table
         metadata: DocumentMetadata,
         permissions: Option<DocumentPermissions>,
     },

@@ -7,6 +7,7 @@ use shared::embedding_queue::EmbeddingQueueStatus;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
+use shared::ContentStorage;
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -17,6 +18,7 @@ pub struct BenchmarkIndexer {
     config: BenchmarkConfig,
     db_pool: Pool<Postgres>,
     event_queue: EventQueue,
+    content_storage: ContentStorage,
 }
 
 impl BenchmarkIndexer {
@@ -28,11 +30,13 @@ impl BenchmarkIndexer {
             .await?;
 
         let event_queue = EventQueue::new(db_pool.clone());
+        let content_storage = ContentStorage::new(db_pool.clone());
 
         Ok(Self {
             config,
             db_pool,
             event_queue,
+            content_storage,
         })
     }
 
@@ -306,12 +310,12 @@ impl BenchmarkIndexer {
         Ok(sync_run_id)
     }
 
-    fn convert_document_to_event(
+    async fn convert_document_to_event(
         &self,
         doc: &Document,
         source_id: &str,
         sync_run_id: &str,
-    ) -> ConnectorEvent {
+    ) -> Result<ConnectorEvent> {
         let mut extra_metadata = HashMap::new();
         for (key, value) in &doc.metadata {
             extra_metadata.insert(key.clone(), serde_json::Value::String(value.clone()));
@@ -336,14 +340,17 @@ impl BenchmarkIndexer {
             groups: vec![],
         };
 
-        ConnectorEvent::DocumentCreated {
+        // Store content in content storage and get ID
+        let content_id = self.content_storage.store_text(&doc.content).await?;
+
+        Ok(ConnectorEvent::DocumentCreated {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
             document_id: doc.id.clone(),
-            content: doc.content.clone(),
+            content_id,
             metadata,
             permissions,
-        }
+        })
     }
 
     async fn queue_document_batch(
@@ -354,7 +361,16 @@ impl BenchmarkIndexer {
     ) -> Result<()> {
         // Convert documents to connector events and enqueue them
         for doc in documents {
-            let event = self.convert_document_to_event(doc, source_id, sync_run_id);
+            let event = match self
+                .convert_document_to_event(doc, source_id, sync_run_id)
+                .await
+            {
+                Ok(event) => event,
+                Err(e) => {
+                    warn!("Failed to convert document {} to event: {}", doc.id, e);
+                    continue;
+                }
+            };
 
             if let Err(e) = self.event_queue.enqueue(source_id, &event).await {
                 warn!("Failed to enqueue document {}: {}", doc.id, e);

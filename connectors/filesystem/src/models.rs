@@ -29,7 +29,7 @@ impl FilesystemFile {
         self,
         sync_run_id: String,
         source_id: String,
-        content: String,
+        content_id: String,
     ) -> ConnectorEvent {
         let mut extra = HashMap::new();
         extra.insert(
@@ -81,7 +81,7 @@ impl FilesystemFile {
             sync_run_id,
             source_id,
             document_id: self.path.to_string_lossy().to_string(),
-            content,
+            content_id,
             metadata,
             permissions,
         }

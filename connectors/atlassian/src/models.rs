@@ -247,6 +247,7 @@ impl ConfluencePage {
         sync_run_id: String,
         source_id: String,
         base_url: &str,
+        content_id: String,
     ) -> ConnectorEvent {
         let document_id = format!("confluence_page_{}_{}", self.space.key, self.id);
 
@@ -327,7 +328,7 @@ impl ConfluencePage {
             sync_run_id,
             source_id,
             document_id,
-            content: self.extract_plain_text(),
+            content_id,
             metadata,
             permissions,
         }
@@ -422,6 +423,7 @@ impl JiraIssue {
         sync_run_id: String,
         source_id: String,
         base_url: &str,
+        content_id: String,
     ) -> ConnectorEvent {
         let document_id = format!("jira_issue_{}_{}", self.fields.project.key, self.key);
 
@@ -503,7 +505,7 @@ impl JiraIssue {
             sync_run_id,
             source_id,
             document_id,
-            content: self.to_document_content(),
+            content_id,
             metadata,
             permissions,
         }

@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use shared::models::ConnectorEvent;
 use shared::queue::EventQueue;
+use shared::ContentStorage;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
@@ -11,13 +12,15 @@ use crate::models::{JiraIssue, JiraSearchResponse};
 pub struct JiraProcessor {
     client: AtlassianClient,
     event_queue: EventQueue,
+    content_storage: ContentStorage,
 }
 
 impl JiraProcessor {
-    pub fn new(event_queue: EventQueue) -> Self {
+    pub fn new(event_queue: EventQueue, content_storage: ContentStorage) -> Self {
         Self {
             client: AtlassianClient::new(),
             event_queue,
+            content_storage,
         }
     }
 
@@ -99,7 +102,9 @@ impl JiraProcessor {
             }
 
             let issues_count = response.issues.len();
-            let events = self.process_issues(response.issues, source_id, &creds.base_url)?;
+            let events = self
+                .process_issues(response.issues, source_id, &creds.base_url)
+                .await?;
             self.queue_events(events).await?;
 
             total_issues += issues_count as u32;
@@ -163,7 +168,9 @@ impl JiraProcessor {
             }
 
             let issues_count = response.issues.len();
-            let events = self.process_issues(response.issues, source_id, &creds.base_url)?;
+            let events = self
+                .process_issues(response.issues, source_id, &creds.base_url)
+                .await?;
             self.queue_events(events).await?;
 
             total_issues += issues_count as u32;
@@ -194,7 +201,7 @@ impl JiraProcessor {
         Ok(projects)
     }
 
-    fn process_issues(
+    async fn process_issues(
         &self,
         issues: Vec<JiraIssue>,
         source_id: &str,
@@ -218,8 +225,25 @@ impl JiraProcessor {
 
             // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
             let placeholder_sync_run_id = shared::utils::generate_ulid();
-            let event =
-                issue.to_connector_event(placeholder_sync_run_id, source_id.to_string(), base_url);
+
+            // Store content in LOB and get OID
+            let content_id = match self.content_storage.store_text(&content).await {
+                Ok(oid) => oid,
+                Err(e) => {
+                    error!(
+                        "Failed to store content in LOB storage for Jira issue {}: {}",
+                        issue.key, e
+                    );
+                    continue;
+                }
+            };
+
+            let event = issue.to_connector_event(
+                placeholder_sync_run_id,
+                source_id.to_string(),
+                base_url,
+                content_id,
+            );
             events.push(event);
         }
 
@@ -274,10 +298,25 @@ impl JiraProcessor {
 
         // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
         let placeholder_sync_run_id = shared::utils::generate_ulid();
+
+        // Store content in LOB and get OID
+        let content_id = self
+            .content_storage
+            .store_text(&content)
+            .await
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to store content in LOB storage for Jira issue {}: {}",
+                    issue.key,
+                    e
+                )
+            })?;
+
         let event = issue.to_connector_event(
             placeholder_sync_run_id,
             source_id.to_string(),
             &creds.base_url,
+            content_id,
         );
         self.event_queue.enqueue(source_id, &event).await?;
 
@@ -354,7 +393,9 @@ impl JiraProcessor {
             }
 
             let issues_count = response.issues.len();
-            let events = self.process_issues(response.issues, source_id, &creds.base_url)?;
+            let events = self
+                .process_issues(response.issues, source_id, &creds.base_url)
+                .await?;
             self.queue_events(events).await?;
 
             total_issues += issues_count as u32;

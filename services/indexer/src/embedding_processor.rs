@@ -202,25 +202,59 @@ impl EmbeddingProcessor {
     async fn process_embedding_batch(&self, batch: Vec<EmbeddingQueueItem>) -> Result<()> {
         let start_time = std::time::Instant::now();
 
-        // Step 1: Split all documents into input chunks and build metadata
+        // Step 1: Fetch content for all documents and split into input chunks
         #[derive(Debug)]
-        struct InputChunkInfo<'a> {
+        struct InputChunkInfo {
             document_id: String,
             input_chunk_index: usize, // Index within this document's input chunks
-            input_text: &'a str,
+            input_text: String,
         }
 
         let mut all_input_chunks = Vec::new();
         let mut document_metadata = std::collections::HashMap::new(); // document_id -> original item
+        let doc_repo = shared::db::repositories::DocumentRepository::new(self.state.db_pool.pool());
 
         for item in &batch {
-            let input_chunks = Self::split_large_content(&item.content);
+            // Fetch document to get content_id
+            let document = match doc_repo.find_by_id(&item.document_id).await? {
+                Some(doc) => doc,
+                None => {
+                    warn!(
+                        "Document {} not found, skipping embedding",
+                        item.document_id
+                    );
+                    continue;
+                }
+            };
+
+            // Fetch content from content storage
+            let content = match document.content_id {
+                Some(content_id) => match self.state.content_storage.get_text(&content_id).await {
+                    Ok(content) => content,
+                    Err(e) => {
+                        warn!(
+                            "Failed to fetch content for document {}: {}",
+                            item.document_id, e
+                        );
+                        continue;
+                    }
+                },
+                None => {
+                    warn!(
+                        "Document {} has no content_id, skipping embedding",
+                        item.document_id
+                    );
+                    continue;
+                }
+            };
+
+            let input_chunks = Self::split_large_content(&content);
 
             if input_chunks.len() > 1 {
                 info!(
                     "Document {} ({}KB) split into {} input chunks",
                     item.document_id,
-                    item.content.len() / 1024,
+                    content.len() / 1024,
                     input_chunks.len()
                 );
             }
@@ -231,7 +265,7 @@ impl EmbeddingProcessor {
                 all_input_chunks.push(InputChunkInfo {
                     document_id: item.document_id.clone(),
                     input_chunk_index: chunk_idx,
-                    input_text,
+                    input_text: input_text.to_string(),
                 });
             }
         }
@@ -264,7 +298,7 @@ impl EmbeddingProcessor {
             // Extract just the text for the API call
             let input_texts: Vec<String> = input_batch
                 .iter()
-                .map(|chunk| chunk.input_text.to_string())
+                .map(|chunk| chunk.input_text.clone())
                 .collect();
 
             // Call AI service for this batch

@@ -202,7 +202,7 @@ impl EmbeddingRepository {
                 FROM embeddings e
             )
             SELECT 
-                d.id, d.source_id, d.external_id, d.title, d.content,
+                d.id, d.source_id, d.external_id, d.title, d.content_id,
                 d.content_type, d.file_size, d.file_extension, d.url,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 re.distance,
@@ -242,7 +242,7 @@ impl EmbeddingRepository {
                     source_id: row.get("source_id"),
                     external_id: row.get("external_id"),
                     title: row.get("title"),
-                    content: row.get("content"),
+                    content_id: row.get("content_id"),
                     content_type: row.get("content_type"),
                     file_size: row.get("file_size"),
                     file_extension: row.get("file_extension"),
@@ -272,7 +272,7 @@ impl EmbeddingRepository {
         let results = sqlx::query(
             r#"
             SELECT 
-                d.id, d.source_id, d.external_id, d.title, d.content,
+                d.id, d.source_id, d.external_id, d.title, d.content_id,
                 d.content_type, d.file_size, d.file_extension, d.url,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 e.embedding <=> $1 as distance,
@@ -297,7 +297,7 @@ impl EmbeddingRepository {
                     source_id: row.get("source_id"),
                     external_id: row.get("external_id"),
                     title: row.get("title"),
-                    content: row.get("content"),
+                    content_id: row.get("content_id"),
                     content_type: row.get("content_type"),
                     file_size: row.get("file_size"),
                     file_extension: row.get("file_extension"),
@@ -313,11 +313,8 @@ impl EmbeddingRepository {
                 // Extract chunk text from document content using offsets
                 let chunk_start_offset: i32 = row.get("chunk_start_offset");
                 let chunk_end_offset: i32 = row.get("chunk_end_offset");
-                let chunk_text = if let Some(content) = &doc.content {
-                    Self::extract_chunk_text(content, chunk_start_offset, chunk_end_offset)
-                } else {
-                    String::new()
-                };
+                // TODO: Extract chunk text from LOB storage if needed for debugging
+                let chunk_text = String::new();
                 (doc, similarity, chunk_text)
             })
             .collect();
@@ -357,7 +354,7 @@ impl EmbeddingRepository {
                 WHERE e.embedding <=> $1 <= $4
             )
             SELECT 
-                d.id, d.source_id, d.external_id, d.title, d.content,
+                d.id, d.source_id, d.external_id, d.title, d.content_id,
                 d.content_type, d.file_size, d.file_extension, d.url,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 rc.distance,
@@ -388,7 +385,7 @@ impl EmbeddingRepository {
                     source_id: row.get("source_id"),
                     external_id: row.get("external_id"),
                     title: row.get("title"),
-                    content: row.get("content"),
+                    content_id: row.get("content_id"),
                     content_type: row.get("content_type"),
                     file_size: row.get("file_size"),
                     file_extension: row.get("file_extension"),
@@ -404,11 +401,8 @@ impl EmbeddingRepository {
                 // Extract chunk text from document content using offsets
                 let chunk_start_offset: i32 = row.get("chunk_start_offset");
                 let chunk_end_offset: i32 = row.get("chunk_end_offset");
-                let chunk_text = if let Some(content) = &doc.content {
-                    Self::extract_chunk_text(content, chunk_start_offset, chunk_end_offset)
-                } else {
-                    String::new()
-                };
+                // TODO: Extract chunk text from LOB storage if needed for debugging
+                let chunk_text = String::new();
                 (doc, similarity, chunk_text)
             })
             .collect();

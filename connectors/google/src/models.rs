@@ -38,16 +38,16 @@ impl GoogleDriveFile {
         self,
         sync_run_id: String,
         source_id: String,
-        content_oid: i32,
+        content_id: String,
     ) -> ConnectorEvent {
-        self.to_connector_event_with_path(sync_run_id, source_id, content_oid, None)
+        self.to_connector_event_with_path(sync_run_id, source_id, content_id, None)
     }
 
     pub fn to_connector_event_with_path(
         self,
         sync_run_id: String,
         source_id: String,
-        content_oid: i32,
+        content_id: String,
         path: Option<String>,
     ) -> ConnectorEvent {
         let mut users = Vec::new();
@@ -110,7 +110,7 @@ impl GoogleDriveFile {
             sync_run_id,
             source_id,
             document_id: self.id.clone(),
-            content_oid,
+            content_id,
             metadata,
             permissions,
         }

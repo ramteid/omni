@@ -31,7 +31,7 @@ impl DocumentRepository {
     pub async fn find_by_id(&self, id: &str) -> Result<Option<Document>, DatabaseError> {
         let document = sqlx::query_as::<_, Document>(
             r#"
-            SELECT id, source_id, external_id, title, content, content_type,
+            SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
@@ -48,7 +48,7 @@ impl DocumentRepository {
     pub async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<Document>, DatabaseError> {
         let documents = sqlx::query_as::<_, Document>(
             r#"
-            SELECT id, source_id, external_id, title, content, content_type,
+            SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
@@ -67,7 +67,7 @@ impl DocumentRepository {
     pub async fn search(&self, query: &str, limit: i64) -> Result<Vec<Document>, DatabaseError> {
         let documents = sqlx::query_as::<_, Document>(
             r#"
-            SELECT id, source_id, external_id, title, content, content_type,
+            SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
@@ -114,7 +114,7 @@ impl DocumentRepository {
         user_email: Option<&str>,
     ) -> Result<Vec<Document>, DatabaseError> {
         let base_query = r#"
-            SELECT id, source_id, external_id, title, content, content_type,
+            SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
@@ -391,7 +391,7 @@ impl DocumentRepository {
     pub async fn find_by_source(&self, source_id: &str) -> Result<Vec<Document>, DatabaseError> {
         let documents = sqlx::query_as::<_, Document>(
             r#"
-            SELECT id, source_id, external_id, title, content, content_type,
+            SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
@@ -413,7 +413,7 @@ impl DocumentRepository {
     ) -> Result<Option<Document>, DatabaseError> {
         let document = sqlx::query_as::<_, Document>(
             r#"
-            SELECT id, source_id, external_id, title, content, content_type,
+            SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
@@ -433,7 +433,7 @@ impl DocumentRepository {
             r#"
             INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, source_id, external_id, title, content, content_type,
+            RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
             "#
@@ -442,7 +442,7 @@ impl DocumentRepository {
         .bind(&document.source_id)
         .bind(&document.external_id)
         .bind(&document.title)
-        .bind(&document.content)
+        .bind(&document.content_id)
         .bind(&document.metadata)
         .bind(&document.permissions)
         .fetch_one(&self.pool)
@@ -467,14 +467,14 @@ impl DocumentRepository {
             UPDATE documents
             SET title = $2, content = $3, metadata = $4, permissions = $5
             WHERE id = $1
-            RETURNING id, source_id, external_id, title, content, content_type,
+            RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
             "#,
         )
         .bind(id)
         .bind(&document.title)
-        .bind(&document.content)
+        .bind(&document.content_id)
         .bind(&document.metadata)
         .bind(&document.permissions)
         .fetch_optional(&self.pool)
@@ -520,7 +520,7 @@ impl DocumentRepository {
                 permissions = EXCLUDED.permissions,
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = EXCLUDED.last_indexed_at
-            RETURNING id, source_id, external_id, title, content, content_type,
+            RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
             "#
@@ -529,7 +529,7 @@ impl DocumentRepository {
         .bind(&document.source_id)
         .bind(&document.external_id)
         .bind(&document.title)
-        .bind(&document.content)
+        .bind(&document.content_id)
         .bind(&document.content_type)
         .bind(&document.file_size)
         .bind(&document.file_extension)
@@ -667,7 +667,8 @@ impl DocumentRepository {
         let source_ids: Vec<String> = documents.iter().map(|d| d.source_id.clone()).collect();
         let external_ids: Vec<String> = documents.iter().map(|d| d.external_id.clone()).collect();
         let titles: Vec<String> = documents.iter().map(|d| d.title.clone()).collect();
-        let contents: Vec<Option<String>> = documents.iter().map(|d| d.content.clone()).collect();
+        let content_ids: Vec<Option<String>> =
+            documents.iter().map(|d| d.content_id.clone()).collect();
         let content_types: Vec<Option<String>> =
             documents.iter().map(|d| d.content_type.clone()).collect();
         let file_sizes: Vec<Option<i64>> = documents.iter().map(|d| d.file_size).collect();
@@ -687,21 +688,21 @@ impl DocumentRepository {
 
         let upserted_documents = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
             SELECT * FROM UNNEST(
                 $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], 
                 $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[], 
                 $12::timestamptz[], $13::timestamptz[], $14::timestamptz[]
-            ) AS t(id, source_id, external_id, title, content, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
+            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = EXCLUDED.title,
-                content = EXCLUDED.content,
+                content_id = EXCLUDED.content_id,
                 metadata = EXCLUDED.metadata,
                 permissions = EXCLUDED.permissions,
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = EXCLUDED.last_indexed_at
-            RETURNING id, source_id, external_id, title, content, content_type,
+            RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
             "#
@@ -710,7 +711,7 @@ impl DocumentRepository {
         .bind(&source_ids)
         .bind(&external_ids)
         .bind(&titles)
-        .bind(&contents)
+        .bind(&content_ids)
         .bind(&content_types)
         .bind(&file_sizes)
         .bind(&file_extensions)

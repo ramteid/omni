@@ -483,7 +483,7 @@ async fn test_embedding_queue_recovery() {
     let content = "This is test content for embedding recovery";
 
     let queue_id = embedding_queue
-        .enqueue(document_id.to_string(), content.to_string())
+        .enqueue(document_id.to_string())
         .await
         .unwrap();
 

@@ -3649,6 +3649,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "testcontainers",
  "testcontainers-modules",

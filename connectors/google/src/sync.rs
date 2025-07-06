@@ -7,7 +7,7 @@ use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use time;
 use tokio::sync::Semaphore;
@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 use crate::admin::AdminClient;
 use crate::auth::ServiceAccountAuth;
 use crate::drive::DriveClient;
+use crate::models::GoogleDriveFile;
 use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
 use shared::db::repositories::ServiceCredentialsRepo;
 use shared::models::{
@@ -35,7 +36,7 @@ pub struct SyncManager {
     event_queue: EventQueue,
     content_storage: ContentStorage,
     service_credentials_repo: ServiceCredentialsRepo,
-    folder_cache: Arc<std::sync::Mutex<HashMap<String, String>>>, // folder_id -> folder_name
+    folder_cache: Arc<Mutex<HashMap<String, GoogleDriveFile>>>,
 }
 
 #[derive(Clone)]
@@ -168,7 +169,7 @@ impl SyncManager {
             event_queue,
             content_storage,
             service_credentials_repo,
-            folder_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            folder_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -622,10 +623,10 @@ impl SyncManager {
                                             };
 
                                             debug!("Storing content in LOB storage for file: {} ({})", file.name, file.id);
-                                            let content_oid = match self.content_storage.store_text(&content).await {
-                                                Ok(oid) => {
-                                                    debug!("Content stored with OID {} for file: {} ({})", oid, file.name, file.id);
-                                                    oid as i32
+                                            let content_id = match self.content_storage.store_text(&content).await {
+                                                Ok(id) => {
+                                                    debug!("Content stored with ID {} for file: {} ({})", id, file.name, file.id);
+                                                    id
                                                 }
                                                 Err(e) => {
                                                     error!("Failed to store content for file {}: {}", file.name, e);
@@ -638,7 +639,7 @@ impl SyncManager {
                                             let event = file.clone().to_connector_event_with_path(
                                                 sync_run_id.clone(),
                                                 source_id.clone(),
-                                                content_oid,
+                                                content_id,
                                                 file_path,
                                             );
 
@@ -1298,11 +1299,24 @@ impl SyncManager {
                                                     }
                                                 };
 
+                                                // Store content in LOB and get OID
+                                                let content_id = match self
+                                                    .content_storage
+                                                    .store_text(&content)
+                                                    .await
+                                                {
+                                                    Ok(oid) => oid,
+                                                    Err(e) => {
+                                                        error!("Failed to store content in LOB storage for file {}: {}", file.name, e);
+                                                        continue;
+                                                    }
+                                                };
+
                                                 let event =
                                                     file.clone().to_connector_event_with_path(
                                                         sync_run_id.clone(),
                                                         source.id.clone(),
-                                                        content,
+                                                        content_id,
                                                         file_path,
                                                     );
 
@@ -1667,7 +1681,7 @@ impl SyncManager {
                 depth, current_folder_id
             );
 
-            // Safety check to prevent infinite loops
+            // TODO: Remove this
             if depth > 50 {
                 warn!(
                     "Path building depth exceeded 50 levels for file: {}, folder: {}",
@@ -1676,71 +1690,85 @@ impl SyncManager {
                 break;
             }
 
-            // Check cache first
-            let folder_name = {
-                let cache = self.folder_cache.lock().unwrap();
-                cache.get(&current_folder_id).cloned()
+            let cached_folder = match self.folder_cache.lock() {
+                Ok(cache) => cache.get(&current_folder_id).cloned(),
+                Err(e) => {
+                    warn!("Failed to lock folder cache: {}", e);
+                    None
+                }
             };
 
-            let folder_name = match folder_name {
-                Some(name) => {
-                    debug!(
-                        "Found cached folder name: {} for folder: {}",
-                        name, current_folder_id
-                    );
-                    name
+            let parent_folder_id: Option<String> = match cached_folder {
+                Some(folder) => {
+                    debug!("Found folder {} [id: {}] in cache", folder.name, folder.id);
+                    path_components.push(folder.name.clone());
+                    folder
+                        .parents
+                        .as_ref()
+                        .map(|p| p.first())
+                        .flatten()
+                        .cloned()
                 }
                 None => {
                     debug!(
-                        "Fetching folder metadata from Drive API for folder: {}",
+                        "Folder {} not found in cache, fetching metadata.",
                         current_folder_id
                     );
-                    // Fetch folder metadata from Drive API using rate limiter
-                    match rate_limiter.execute_with_retry(|| {
+                    let folder_metadata = rate_limiter.execute_with_retry(|| {
                         let drive_client = self.drive_client.clone();
                         let token = token.to_string();
                         let folder_id = current_folder_id.clone();
                         async move {
                             drive_client.get_folder_metadata(&token, &folder_id).await
                         }
-                    }).await {
+                    }).await;
+
+                    match folder_metadata {
                         Ok(folder_metadata) => {
                             let name = folder_metadata.name.clone();
-                            debug!("Successfully fetched folder metadata: {} for folder: {}", name, current_folder_id);
+                            debug!(
+                                "Successfully fetched folder metadata: {} for folder: {}",
+                                name, current_folder_id
+                            );
 
-                            // Cache the folder name
+                            let parent_folder_id = folder_metadata
+                                .parents
+                                .as_ref()
+                                .map(|p| p.first())
+                                .flatten()
+                                .cloned();
+                            debug!(
+                                "Folder {} has parent: {:?}",
+                                current_folder_id, parent_folder_id
+                            );
+
+                            // Cache the folder
                             {
                                 let mut cache = self.folder_cache.lock().unwrap();
-                                cache.insert(current_folder_id.clone(), name.clone());
+                                cache.insert(current_folder_id.clone(), folder_metadata);
                             }
 
-                            // Check if this folder has parents
-                            if let Some(folder_parents) = &folder_metadata.parents {
-                                if let Some(parent_id) = folder_parents.first() {
-                                    debug!("Folder {} has parent: {}", current_folder_id, parent_id);
-                                    current_folder_id = parent_id.clone();
-                                    path_components.push(name);
-                                    continue;
-                                }
-                            }
-
-                            // No more parents, this is the root or shared drive root
-                            debug!("Reached root folder: {}", name);
                             path_components.push(name);
-                            break;
+                            parent_folder_id
                         }
                         Err(e) => {
                             warn!(
                                 "Failed to get folder metadata for {}: {}",
                                 current_folder_id, e
                             );
-                            // Use folder ID as fallback
-                            path_components.push(format!("folder-{}", current_folder_id));
-                            break;
+                            None
                         }
                     }
                 }
             };
+
+            if let Some(parent_id) = parent_folder_id {
+                debug!("Folder {} has parent: {:?}", current_folder_id, parent_id);
+                current_folder_id = parent_id;
+            } else {
+                debug!("Reached root folder {}", current_folder_id);
+                break;
+            }
         }
 
         // Reverse to get correct order (root to file)

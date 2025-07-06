@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use shared::models::ConnectorEvent;
 use shared::queue::EventQueue;
+use shared::ContentStorage;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
@@ -11,13 +12,15 @@ use crate::models::{ConfluencePage, ConfluenceSearchResponse};
 pub struct ConfluenceProcessor {
     client: AtlassianClient,
     event_queue: EventQueue,
+    content_storage: ContentStorage,
 }
 
 impl ConfluenceProcessor {
-    pub fn new(event_queue: EventQueue) -> Self {
+    pub fn new(event_queue: EventQueue, content_storage: ContentStorage) -> Self {
         Self {
             client: AtlassianClient::new(),
             event_queue,
+            content_storage,
         }
     }
 
@@ -90,7 +93,9 @@ impl ConfluenceProcessor {
                 break;
             }
 
-            let events = self.process_pages(response.results, source_id, &creds.base_url)?;
+            let events = self
+                .process_pages(response.results, source_id, &creds.base_url)
+                .await?;
             self.queue_events(events).await?;
 
             total_pages += response.size as u32;
@@ -142,7 +147,9 @@ impl ConfluenceProcessor {
                 break;
             }
 
-            let events = self.process_pages(response.results, source_id, &creds.base_url)?;
+            let events = self
+                .process_pages(response.results, source_id, &creds.base_url)
+                .await?;
             self.queue_events(events).await?;
 
             total_pages += response.size as u32;
@@ -199,7 +206,7 @@ impl ConfluenceProcessor {
         Ok(all_spaces)
     }
 
-    fn process_pages(
+    async fn process_pages(
         &self,
         pages: Vec<ConfluencePage>,
         source_id: &str,
@@ -230,8 +237,25 @@ impl ConfluenceProcessor {
 
             // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
             let placeholder_sync_run_id = shared::utils::generate_ulid();
-            let event =
-                page.to_connector_event(placeholder_sync_run_id, source_id.to_string(), base_url);
+
+            // Store content in LOB and get OID
+            let content_id = match self.content_storage.store_text(&content).await {
+                Ok(oid) => oid,
+                Err(e) => {
+                    error!(
+                        "Failed to store content in LOB storage for Confluence page {}: {}",
+                        page.title, e
+                    );
+                    continue;
+                }
+            };
+
+            let event = page.to_connector_event(
+                placeholder_sync_run_id,
+                source_id.to_string(),
+                base_url,
+                content_id,
+            );
             events.push(event);
         }
 
@@ -285,10 +309,25 @@ impl ConfluenceProcessor {
 
         // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
         let placeholder_sync_run_id = shared::utils::generate_ulid();
+
+        // Store content in LOB and get OID
+        let content_id = self
+            .content_storage
+            .store_text(&content)
+            .await
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to store content in LOB storage for Confluence page {}: {}",
+                    page.title,
+                    e
+                )
+            })?;
+
         let event = page.to_connector_event(
             placeholder_sync_run_id,
             source_id.to_string(),
             &creds.base_url,
+            content_id,
         );
         self.event_queue.enqueue(source_id, &event).await?;
 

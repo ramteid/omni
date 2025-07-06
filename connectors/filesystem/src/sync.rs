@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use sqlx::types::time::OffsetDateTime;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,21 +9,25 @@ use tracing::{error, info, warn};
 use crate::models::FilesystemSource;
 use crate::scanner::FilesystemScanner;
 use crate::watcher::{FilesystemEventProcessor, FilesystemWatcher};
-use shared::models::{Source, SyncRun, SyncStatus, SyncType};
+use shared::models::Source;
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
+use shared::ContentStorage;
 
 pub struct FilesystemSyncManager {
     pool: PgPool,
     event_queue: EventQueue,
+    content_storage: ContentStorage,
     sources: HashMap<String, FilesystemSource>,
 }
 
 impl FilesystemSyncManager {
     pub fn new(pool: PgPool, event_queue: EventQueue) -> Self {
+        let content_storage = ContentStorage::new(pool.clone());
         Self {
             pool,
             event_queue,
+            content_storage,
             sources: HashMap::new(),
         }
     }
@@ -151,7 +154,9 @@ impl FilesystemSyncManager {
             tokio::select! {
                 _ = scan_timer.tick() => {
                     info!("Starting periodic scan for source: {}", source.name);
-                    if let Err(e) = Self::perform_full_scan(&scanner, &pool, &event_queue, &source_id).await {
+                    // Create content storage for this task
+                    let content_storage = ContentStorage::new(pool.clone());
+                    if let Err(e) = Self::perform_full_scan(&scanner, &pool, &event_queue, &source_id, &content_storage).await {
                         error!("Full scan failed for source {}: {}", source.name, e);
                     }
                 }
@@ -174,6 +179,7 @@ impl FilesystemSyncManager {
         pool: &PgPool,
         event_queue: &EventQueue,
         source_id: &str,
+        content_storage: &ContentStorage,
     ) -> Result<()> {
         let sync_run_id = generate_ulid();
 
@@ -200,9 +206,22 @@ impl FilesystemSyncManager {
                 }
             };
 
+            // Store content in LOB and get OID
+            let content_id = match content_storage.store_text(&content).await {
+                Ok(oid) => oid,
+                Err(e) => {
+                    error!(
+                        "Failed to store content in LOB storage for file {}: {}",
+                        file_path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
             // Convert to connector event
             let event =
-                file.to_connector_event(sync_run_id.clone(), source_id.to_string(), content);
+                file.to_connector_event(sync_run_id.clone(), source_id.to_string(), content_id);
 
             // Queue the event
             if let Err(e) = event_queue.enqueue(source_id, &event).await {

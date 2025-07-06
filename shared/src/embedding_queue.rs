@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use ulid::Ulid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +41,6 @@ impl std::str::FromStr for EmbeddingQueueStatus {
 pub struct EmbeddingQueueItem {
     pub id: String,
     pub document_id: String,
-    pub content: String,
     pub status: EmbeddingQueueStatus,
     pub retry_count: i32,
     pub error_message: Option<String>,
@@ -66,7 +65,6 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for EmbeddingQueueItem {
         Ok(EmbeddingQueueItem {
             id: row.try_get("id")?,
             document_id: row.try_get("document_id")?,
-            content: row.try_get("content")?,
             status,
             retry_count: row.try_get("retry_count")?,
             error_message: row.try_get("error_message")?,
@@ -87,34 +85,30 @@ impl EmbeddingQueue {
         Self { pool }
     }
 
-    pub async fn enqueue(&self, document_id: String, content: String) -> Result<String> {
+    pub async fn enqueue(&self, document_id: String) -> Result<String> {
         let id = Ulid::new().to_string();
 
-        sqlx::query("INSERT INTO embedding_queue (id, document_id, content) VALUES ($1, $2, $3)")
+        sqlx::query("INSERT INTO embedding_queue (id, document_id) VALUES ($1, $2)")
             .bind(&id)
             .bind(&document_id)
-            .bind(&content)
             .execute(&self.pool)
             .await?;
 
         Ok(id)
     }
 
-    pub async fn enqueue_batch(&self, items: Vec<(String, String)>) -> Result<Vec<String>> {
+    pub async fn enqueue_batch(&self, document_ids: Vec<String>) -> Result<Vec<String>> {
         let mut tx = self.pool.begin().await?;
         let mut ids = Vec::new();
 
-        for (document_id, content) in items {
+        for document_id in document_ids {
             let id = Ulid::new().to_string();
 
-            sqlx::query(
-                "INSERT INTO embedding_queue (id, document_id, content) VALUES ($1, $2, $3)",
-            )
-            .bind(&id)
-            .bind(&document_id)
-            .bind(&content)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query("INSERT INTO embedding_queue (id, document_id) VALUES ($1, $2)")
+                .bind(&id)
+                .bind(&document_id)
+                .execute(&mut *tx)
+                .await?;
 
             ids.push(id);
         }
