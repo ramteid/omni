@@ -165,9 +165,8 @@ impl EmbeddingRepository {
         let vector = Vector::from(embedding);
 
         let mut where_conditions = Vec::new();
-        where_conditions.push("re.rn = 1".to_string());
 
-        let mut bind_index = 3; // Starting after $1 (vector) and $2 (limit)
+        let mut bind_index = 4; // Starting after $1 (vector) and $2 (limit) and $3 (offset)
 
         if let Some(src) = sources {
             if !src.is_empty() {
@@ -188,36 +187,50 @@ impl EmbeddingRepository {
             where_conditions.push(self.generate_permission_filter(email));
         }
 
-        let where_clause = where_conditions.join(" AND ");
+        let where_clause = if where_conditions.len() > 0 {
+            format!("WHERE {}", where_conditions.join(" AND "))
+        } else {
+            "".to_string()
+        };
 
         let query_str = format!(
             r#"
-            WITH ranked_embeddings AS (
+            WITH matching_chunks AS (
                 SELECT 
                     e.document_id,
                     e.embedding <=> $1 as distance,
                     e.chunk_start_offset,
-                    e.chunk_end_offset,
-                    ROW_NUMBER() OVER (PARTITION BY e.document_id ORDER BY e.embedding <=> $1) as rn
+                    e.chunk_end_offset
                 FROM embeddings e
+                JOIN documents d ON e.document_id = d.id
+                {}
+                ORDER BY e.embedding <=> $1
+                LIMIT ${} -- Number of candidates to fetch
+            ),
+            matching_documents AS (
+                SELECT
+                    c.document_id,
+                    MIN(c.distance) AS distance
+                FROM matching_chunks c
+                GROUP BY c.document_id
             )
             SELECT 
                 d.id, d.source_id, d.external_id, d.title, d.content_id,
                 d.content_type, d.file_size, d.file_extension, d.url,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
-                re.distance,
-                re.chunk_start_offset,
-                re.chunk_end_offset
-            FROM ranked_embeddings re
-            JOIN documents d ON re.document_id = d.id
-            WHERE {}
-            ORDER BY re.distance
-            LIMIT $2 OFFSET ${}
+                c.distance
+            FROM matching_documents c
+            JOIN documents d ON c.document_id = d.id
+            ORDER BY c.distance
+            LIMIT $2 OFFSET $3
             "#,
             where_clause, bind_index
         );
 
-        let mut query = sqlx::query(&query_str).bind(&vector).bind(limit);
+        let mut query = sqlx::query(&query_str)
+            .bind(&vector)
+            .bind(limit)
+            .bind(offset);
 
         if let Some(src) = sources {
             if !src.is_empty() {
@@ -231,7 +244,8 @@ impl EmbeddingRepository {
             }
         }
 
-        query = query.bind(offset);
+        let num_candidates = (limit + offset) * 5;
+        query = query.bind(num_candidates);
 
         let results = query.fetch_all(&self.pool).await?;
         let documents_with_scores: Vec<(Document, f32)> = results

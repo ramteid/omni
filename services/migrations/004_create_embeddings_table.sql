@@ -20,4 +20,4 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_model_name ON embeddings(model_name);
 -- Create HNSW index for fast similarity search
 CREATE INDEX IF NOT EXISTS idx_embeddings_vector ON embeddings 
     USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
+    WITH (m = 32, ef_construction = 200);

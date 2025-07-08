@@ -130,6 +130,7 @@ impl SearchEngine {
         repo: &DocumentRepository,
         request: &SearchRequest,
     ) -> Result<(Vec<SearchResult>, Option<String>)> {
+        let start_time = Instant::now();
         let sources = request.sources.as_deref();
         let content_types = request.content_types.as_deref();
 
@@ -199,10 +200,15 @@ impl SearchEngine {
             });
         }
 
+        info!(
+            "Fulltext search completed in {}ms",
+            start_time.elapsed().as_millis()
+        );
         Ok((results, corrected_query))
     }
 
     async fn semantic_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
+        let start_time = Instant::now();
         info!("Performing semantic search for query: '{}'", request.query);
 
         let query_embedding = self.generate_query_embedding(&request.query).await?;
@@ -235,6 +241,10 @@ impl SearchEngine {
             });
         }
 
+        info!(
+            "Semantic search completed in {}ms",
+            start_time.elapsed().as_millis()
+        );
         Ok(results)
     }
 
@@ -256,12 +266,18 @@ impl SearchEngine {
         request: &SearchRequest,
     ) -> Result<(Vec<SearchResult>, Option<String>)> {
         info!("Performing hybrid search for query: '{}'", request.query);
+        let start_time = Instant::now();
 
-        // Get results from both FTS and semantic search
+        // Get results from both FTS and semantic search in parallel
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let (fts_results, corrected_query) = self.fulltext_search(&repo, request).await?;
+        let (fts_future, semantic_future) = (
+            self.fulltext_search(&repo, request),
+            self.semantic_search(request),
+        );
+        let (fts_results, semantic_results) = tokio::join!(fts_future, semantic_future);
+        let (fts_results, corrected_query) = fts_results?;
+        let semantic_results = semantic_results?;
         info!("Retrieved {} results from FTS", fts_results.len());
-        let semantic_results = self.semantic_search(request).await?;
         info!(
             "Retrieved {} results from semantic search",
             semantic_results.len()
@@ -326,6 +342,10 @@ impl SearchEngine {
             final_results.truncate(request.limit() as usize);
         }
 
+        info!(
+            "Hybrid search completed in {}ms",
+            start_time.elapsed().as_millis()
+        );
         Ok((final_results, corrected_query))
     }
 

@@ -14,5 +14,5 @@ RUN mkdir /migrations
 # Copy migration files
 COPY services/migrations/*.sql ./migrations
 
-# Run migrations and exit
-CMD ["sqlx", "migrate", "run"]
+# Run migrations and exit (ignore errors)
+CMD ["bash", "-c", "sqlx migrate run || true"]

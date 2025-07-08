@@ -53,3 +53,25 @@ CREATE INDEX IF NOT EXISTS idx_documents_updated_at ON documents(updated_at);
 DROP TRIGGER IF EXISTS update_documents_updated_at ON documents;
 CREATE TRIGGER update_documents_updated_at BEFORE UPDATE ON documents
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Function to update tsv_content with weighted vectors
+CREATE OR REPLACE FUNCTION update_document_tsv_content()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Update tsv_content with weighted vectors: title gets weight A, content gets weight B
+    IF NEW.content_id IS NOT NULL THEN
+        NEW.tsv_content := setweight(to_tsvector('english', NEW.title), 'A') || 
+                          setweight(to_tsvector('english', COALESCE(convert_from((SELECT content FROM content_blobs WHERE id = NEW.content_id), 'UTF8'), '')), 'B');
+    ELSE
+        NEW.tsv_content := setweight(to_tsvector('english', NEW.title), 'A');
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger to automatically update tsv_content when documents are inserted or updated
+DROP TRIGGER IF EXISTS update_document_tsv_content_trigger ON documents;
+CREATE TRIGGER update_document_tsv_content_trigger
+    BEFORE INSERT OR UPDATE OF title, content_id ON documents
+    FOR EACH ROW EXECUTE FUNCTION update_document_tsv_content();
