@@ -32,8 +32,11 @@ pub struct User {
     pub is_active: bool,
     pub auth_method: AuthMethod,
     pub domain: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601::option")]
     pub last_login_at: Option<OffsetDateTime>,
 }
 
@@ -44,10 +47,13 @@ pub struct Source {
     pub source_type: SourceType,
     pub config: JsonValue,
     pub is_active: bool,
+    #[serde(with = "time::serde::iso8601::option")]
     pub last_sync_at: Option<OffsetDateTime>,
     pub sync_status: Option<String>,
     pub sync_error: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
     pub created_by: String,
 }
@@ -65,8 +71,11 @@ pub struct Document {
     pub url: Option<String>,
     pub metadata: JsonValue,
     pub permissions: JsonValue,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
     pub last_indexed_at: OffsetDateTime,
 }
 
@@ -79,6 +88,7 @@ pub struct Embedding {
     pub chunk_end_offset: i32,   // Character end offset in original document
     pub embedding: Vector,
     pub model_name: String,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
 }
 
@@ -126,9 +136,13 @@ pub struct ServiceCredentials {
     pub principal_email: Option<String>,
     pub credentials: JsonValue,
     pub config: JsonValue,
+    #[serde(with = "time::serde::iso8601::option")]
     pub expires_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::iso8601::option")]
     pub last_validated_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -136,7 +150,9 @@ pub struct ServiceCredentials {
 pub struct DocumentMetadata {
     pub title: Option<String>,
     pub author: Option<String>,
+    #[serde(with = "time::serde::iso8601::option")]
     pub created_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::iso8601::option")]
     pub updated_at: Option<OffsetDateTime>,
     pub mime_type: Option<String>,
     pub size: Option<String>,
@@ -225,6 +241,14 @@ pub struct Facet {
     pub values: Vec<FacetValue>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkResult {
+    pub document_id: String,
+    pub similarity_score: f32,
+    pub chunk_start_offset: i32,
+    pub chunk_end_offset: i32,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "text", rename_all = "lowercase")]
 pub enum EventStatus {
@@ -246,7 +270,9 @@ pub struct ConnectorEventQueueItem {
     pub status: EventStatus,
     pub retry_count: i32,
     pub max_retries: i32,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601::option")]
     pub processed_at: Option<OffsetDateTime>,
     pub error_message: Option<String>,
 }
@@ -271,13 +297,17 @@ pub struct SyncRun {
     pub id: String,
     pub source_id: String,
     pub sync_type: SyncType,
+    #[serde(with = "time::serde::iso8601")]
     pub started_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601::option")]
     pub completed_at: Option<OffsetDateTime>,
     pub status: SyncStatus,
     pub documents_processed: i32,
     pub documents_updated: i32,
     pub error_message: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -289,8 +319,11 @@ pub struct WebhookChannel {
     pub resource_id: String,
     pub resource_uri: Option<String>,
     pub webhook_url: String,
+    #[serde(with = "time::serde::iso8601::option")]
     pub expires_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -299,7 +332,9 @@ pub struct ApprovedDomain {
     pub id: String,
     pub domain: String,
     pub approved_by: String,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -309,7 +344,9 @@ pub struct MagicLink {
     pub email: String,
     pub token_hash: String,
     pub expires_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601::option")]
     pub used_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     pub user_id: Option<String>,
 }

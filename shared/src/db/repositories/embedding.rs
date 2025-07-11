@@ -1,6 +1,6 @@
 use crate::{
     db::error::DatabaseError,
-    models::{Document, Embedding},
+    models::{ChunkResult, Document, Embedding},
 };
 use pgvector::Vector;
 use sqlx::{PgPool, Row};
@@ -161,7 +161,7 @@ impl EmbeddingRepository {
         limit: i64,
         offset: i64,
         user_email: Option<&str>,
-    ) -> Result<Vec<(Document, f32)>, DatabaseError> {
+    ) -> Result<Vec<ChunkResult>, DatabaseError> {
         let vector = Vector::from(embedding);
 
         let mut where_conditions = Vec::new();
@@ -195,36 +195,18 @@ impl EmbeddingRepository {
 
         let query_str = format!(
             r#"
-            WITH matching_chunks AS (
-                SELECT 
-                    e.document_id,
-                    e.embedding <=> $1 as distance,
-                    e.chunk_start_offset,
-                    e.chunk_end_offset
-                FROM embeddings e
-                JOIN documents d ON e.document_id = d.id
-                {}
-                ORDER BY e.embedding <=> $1
-                LIMIT ${} -- Number of candidates to fetch
-            ),
-            matching_documents AS (
-                SELECT
-                    c.document_id,
-                    MIN(c.distance) AS distance
-                FROM matching_chunks c
-                GROUP BY c.document_id
-            )
             SELECT 
-                d.id, d.source_id, d.external_id, d.title, d.content_id,
-                d.content_type, d.file_size, d.file_extension, d.url,
-                d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
-                c.distance
-            FROM matching_documents c
-            JOIN documents d ON c.document_id = d.id
-            ORDER BY c.distance
+                e.document_id,
+                e.embedding <=> $1 as distance,
+                e.chunk_start_offset,
+                e.chunk_end_offset
+            FROM embeddings e
+            JOIN documents d ON e.document_id = d.id
+            {}
+            ORDER BY e.embedding <=> $1
             LIMIT $2 OFFSET $3
             "#,
-            where_clause, bind_index
+            where_clause
         );
 
         let mut query = sqlx::query(&query_str)
@@ -244,36 +226,22 @@ impl EmbeddingRepository {
             }
         }
 
-        let num_candidates = (limit + offset) * 5;
-        query = query.bind(num_candidates);
-
         let results = query.fetch_all(&self.pool).await?;
-        let documents_with_scores: Vec<(Document, f32)> = results
+        let chunk_results: Vec<ChunkResult> = results
             .into_iter()
             .map(|row| {
-                let doc = Document {
-                    id: row.get("id"),
-                    source_id: row.get("source_id"),
-                    external_id: row.get("external_id"),
-                    title: row.get("title"),
-                    content_id: row.get("content_id"),
-                    content_type: row.get("content_type"),
-                    file_size: row.get("file_size"),
-                    file_extension: row.get("file_extension"),
-                    url: row.get("url"),
-                    metadata: row.get("metadata"),
-                    permissions: row.get("permissions"),
-                    created_at: row.get("created_at"),
-                    updated_at: row.get("updated_at"),
-                    last_indexed_at: row.get("last_indexed_at"),
-                };
                 let distance: Option<f64> = row.get("distance");
                 let similarity = (1.0 - distance.unwrap_or(1.0)) as f32;
-                (doc, similarity)
+                ChunkResult {
+                    document_id: row.get("document_id"),
+                    similarity_score: similarity,
+                    chunk_start_offset: row.get("chunk_start_offset"),
+                    chunk_end_offset: row.get("chunk_end_offset"),
+                }
             })
             .collect();
 
-        Ok(documents_with_scores)
+        Ok(chunk_results)
     }
 
     pub async fn find_similar_chunks(

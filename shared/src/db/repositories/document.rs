@@ -2,7 +2,14 @@ use crate::{
     db::error::DatabaseError,
     models::{Document, Facet, FacetValue},
 };
-use sqlx::PgPool;
+use sqlx::{FromRow, PgPool};
+
+#[derive(FromRow)]
+pub struct DocumentWithHighlight {
+    #[sqlx(flatten)]
+    pub document: Document,
+    pub highlight: String,
+}
 
 pub struct DocumentRepository {
     pool: PgPool,
@@ -43,6 +50,27 @@ impl DocumentRepository {
         .await?;
 
         Ok(document)
+    }
+
+    pub async fn find_by_ids(&self, ids: &[String]) -> Result<Vec<Document>, DatabaseError> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let documents = sqlx::query_as::<_, Document>(
+            r#"
+            SELECT id, source_id, external_id, title, content_id, content_type,
+                   file_size, file_extension, url,
+                   metadata, permissions, created_at, updated_at, last_indexed_at
+            FROM documents
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(documents)
     }
 
     pub async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<Document>, DatabaseError> {
@@ -112,13 +140,14 @@ impl DocumentRepository {
         limit: i64,
         offset: i64,
         user_email: Option<&str>,
-    ) -> Result<Vec<Document>, DatabaseError> {
+    ) -> Result<Vec<DocumentWithHighlight>, DatabaseError> {
         let base_query = r#"
-            SELECT id, source_id, external_id, title, content_id, content_type,
-                   file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at
-            FROM documents
-            WHERE tsv_content @@ websearch_to_tsquery('english', $1)
+            WITH top_results AS (
+                SELECT id, source_id, external_id, title, content_id, content_type,
+                       file_size, file_extension, url,
+                       metadata, permissions, created_at, updated_at, last_indexed_at
+                FROM documents
+                WHERE tsv_content @@ websearch_to_tsquery('english', $1)
         "#;
 
         let has_sources = sources.map_or(false, |s| !s.is_empty());
@@ -158,27 +187,40 @@ impl DocumentRepository {
         };
 
         let full_query = format!(
-            r#"{}{}{}{} ORDER BY (
-                -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
-                ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1)) *
-                -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
-                (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400.0 / -365.0)) * 0.3) *
-                -- Document type boost based on actual Google Drive content types
-                CASE 
-                    WHEN content_type = 'application/vnd.google-apps.document' THEN 1.3
-                    WHEN content_type = 'application/vnd.google-apps.spreadsheet' THEN 1.2
-                    WHEN content_type = 'application/pdf' THEN 1.2
-                    WHEN content_type = 'text/html' THEN 1.1
-                    WHEN content_type = 'text/plain' THEN 1.0
-                    WHEN content_type = 'text/csv' THEN 0.9
-                    ELSE 1.0
-                END *
-                -- Title exact match boost
-                CASE 
-                    WHEN title ILIKE '%' || $1 || '%' THEN 1.4
-                    ELSE 1.0
-                END
-            ) DESC LIMIT {} OFFSET {}"#,
+            r#"{}{}{}{}
+                ORDER BY (
+                    -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
+                    ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1)) *
+                    -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
+                    (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400.0 / -365.0)) * 0.3) *
+                    -- Document type boost based on actual Google Drive content types
+                    CASE 
+                        WHEN content_type = 'application/vnd.google-apps.document' THEN 1.3
+                        WHEN content_type = 'application/vnd.google-apps.spreadsheet' THEN 1.2
+                        WHEN content_type = 'application/pdf' THEN 1.2
+                        WHEN content_type = 'text/html' THEN 1.1
+                        WHEN content_type = 'text/plain' THEN 1.0
+                        WHEN content_type = 'text/csv' THEN 0.9
+                        ELSE 1.0
+                    END *
+                    -- Title exact match boost
+                    CASE 
+                        WHEN title ILIKE '%' || $1 || '%' THEN 1.4
+                        ELSE 1.0
+                    END
+                ) DESC
+                LIMIT {} OFFSET {}
+            )
+            SELECT d.id, d.source_id, d.external_id, d.title, d.content_id, d.content_type,
+                   d.file_size, d.file_extension, d.url,
+                   d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
+                   COALESCE(
+                       ts_headline('english', convert_from(c.content, 'utf8'), plainto_tsquery('english', $1),
+                                  'StartSel=**, StopSel=**, MaxWords=50, MinWords=20, MaxFragments=3, FragmentDelimiter=...'),
+                       ''
+                   ) as highlight
+            FROM top_results d
+            LEFT JOIN content_blobs c ON d.content_id = c.id"#,
             base_query,
             source_filter,
             content_type_filter,
@@ -187,7 +229,7 @@ impl DocumentRepository {
             offset_param
         );
 
-        let mut query = sqlx::query_as::<_, Document>(&full_query).bind(query);
+        let mut query = sqlx::query_as::<_, DocumentWithHighlight>(&full_query).bind(query);
 
         if let Some(src) = sources {
             if !src.is_empty() {
@@ -203,9 +245,9 @@ impl DocumentRepository {
 
         query = query.bind(limit).bind(offset);
 
-        let documents = query.fetch_all(&self.pool).await?;
+        let results = query.fetch_all(&self.pool).await?;
 
-        Ok(documents)
+        Ok(results)
     }
 
     pub async fn find_similar_words(
@@ -312,7 +354,7 @@ impl DocumentRepository {
         max_distance: i32,
         min_word_length: usize,
         user_email: Option<&str>,
-    ) -> Result<(Vec<Document>, Option<String>), DatabaseError> {
+    ) -> Result<(Vec<DocumentWithHighlight>, Option<String>), DatabaseError> {
         // First, try to search with the original query
         let original_results = self
             .search_with_filters(query, sources, content_types, limit, offset, user_email)

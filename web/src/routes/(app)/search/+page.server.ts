@@ -15,7 +15,7 @@ export const load = async ({ url, fetch }) => {
             query: query.trim(),
             limit: 20,
             offset: 0,
-            mode: 'semantic',
+            mode: 'hybrid',
         }
 
         console.log('Waiting for searcher...')
@@ -37,6 +37,7 @@ export const load = async ({ url, fetch }) => {
 
         const searchResults: SearchResponse = await response.json()
 
+        console.log('Search Results:', JSON.stringify(searchResults, null, 2))
         return {
             searchResults,
         }

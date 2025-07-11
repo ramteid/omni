@@ -131,6 +131,7 @@
     }
 
     function formatDate(dateStr: string) {
+        console.log('Formatting date string', dateStr)
         return new Date(dateStr).toLocaleDateString()
     }
 
@@ -285,9 +286,6 @@
                                             <div class="flex items-center gap-1">
                                                 <Calendar class="h-3 w-3" />
                                                 {formatDate(result.document.created_at)}
-                                            </div>
-                                            <div class="rounded bg-gray-100 px-2 py-1 text-xs">
-                                                Score: {result.score?.toFixed(2)}
                                             </div>
                                         </div>
                                     </div>

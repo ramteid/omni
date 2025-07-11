@@ -85,6 +85,71 @@ type BatchCharSpanList = BatchSpanList
 type BatchTokenSpanList = BatchSpanList
 
 
+def generate_sentence_chunks(
+    inputs: BatchEncoding, 
+    tokenizer: AutoTokenizer, 
+    k_sentences: int = 5
+) -> tuple[BatchCharSpanList, BatchTokenSpanList]:
+    """Generate overlapping chunks of K consecutive sentences."""
+    start = time.time_ns()
+    batch_size = inputs.input_ids.shape[0]
+
+    eos_indices = torch.where(inputs.input_ids == tokenizer.eos_token_id)[1]
+
+    batch_chunk_char_spans = []
+    batch_chunk_token_spans = []
+
+    for i in range(batch_size):
+        tokens = inputs.tokens(i)
+        offset_mapping = inputs.offset_mapping[i]
+
+        eos_idx = int(eos_indices[i].item())
+
+        # First, find all sentence boundaries
+        sentence_boundaries = []
+        sentence_start = 1
+        
+        for j in range(1, eos_idx):
+            if tokens[j] in [".", "!", "?"] or j == eos_idx - 1:
+                start_token_span = offset_mapping[sentence_start].tolist()
+                end_token_span = offset_mapping[j].tolist()
+                sentence_len = end_token_span[1] - start_token_span[0]
+                
+                if sentence_len >= 4:  # Meaningful sentence
+                    sentence_boundaries.append({
+                        'token_start': sentence_start,
+                        'token_end': j + 1,
+                        'char_start': start_token_span[0],
+                        'char_end': end_token_span[1] + 1
+                    })
+                    sentence_start = j + 1
+
+        # Generate overlapping chunks of k_sentences
+        chunk_char_spans = []
+        chunk_token_spans = []
+
+        for start_idx in range(0, len(sentence_boundaries), k_sentences):
+            end_idx = min(start_idx + k_sentences, len(sentence_boundaries))
+            
+            if end_idx > start_idx:  # Valid chunk
+                chunk_token_start = sentence_boundaries[start_idx]['token_start']
+                chunk_token_end = sentence_boundaries[end_idx - 1]['token_end']
+                chunk_char_start = sentence_boundaries[start_idx]['char_start']
+                chunk_char_end = sentence_boundaries[end_idx - 1]['char_end']
+                
+                chunk_token_spans.append((chunk_token_start, chunk_token_end))
+                chunk_char_spans.append((chunk_char_start, chunk_char_end))
+
+        batch_chunk_token_spans.append(chunk_token_spans)
+        batch_chunk_char_spans.append(chunk_char_spans)
+
+    end = time.time_ns()
+    print(
+        f"Sentence chunks: {[len(x) for x in batch_chunk_char_spans]} [took {(end - start) / 1e6:.2f} ms]"
+    )
+    return batch_chunk_char_spans, batch_chunk_token_spans
+
+
 def chunk_by_sentences(
     inputs: BatchEncoding, tokenizer: AutoTokenizer, chunk_size: int = 512
 ) -> tuple[BatchCharSpanList, BatchTokenSpanList]:
@@ -163,6 +228,13 @@ def apply_late_chunking(
         for chunk_start, chunk_end in spans
     ]
 
+    # Handle case where no chunks were generated
+    if not all_chunks:
+        # Create a single chunk from each batch item
+        logger.warning("No chunks generated, using entire input as single chunk")
+        batch_size = token_embeddings.shape[0]
+        all_chunks = [token_embeddings[i, :, :].mean(dim=0) for i in range(batch_size)]
+
     # Stack and normalize all at once
     chunks = torch.stack(all_chunks, dim=0)
     norm_chunks = F.normalize(chunks, p=2, dim=1)  # dim=1 for feature dimension
@@ -202,32 +274,53 @@ def generate_embeddings_sync(
 
             return [[Chunk((0, len(t)), embeddings[i])] for i, t in enumerate(texts)]
 
-        # We will always use sentenced-based chunk-size limited chunking
-        batch_chunk_char_spans, batch_chunk_token_spans = chunk_by_sentences(
+        # Generate large chunks (existing logic)
+        large_chunk_char_spans, large_chunk_token_spans = chunk_by_sentences(
             tokens, tokenizer, chunk_size=chunk_size
         )
+
+        # Generate small sentence chunks (K consecutive sentences)
+        small_chunk_char_spans, small_chunk_token_spans = generate_sentence_chunks(
+            tokens, tokenizer, k_sentences=5
+        )
+
+        # Combine all chunks
+        batch_chunk_char_spans = []
+        batch_chunk_token_spans = []
+
+        for i in range(len(texts)):
+            combined_char_spans = large_chunk_char_spans[i] + small_chunk_char_spans[i]
+            combined_token_spans = large_chunk_token_spans[i] + small_chunk_token_spans[i]
+            batch_chunk_char_spans.append(combined_char_spans)
+            batch_chunk_token_spans.append(combined_token_spans)
 
         embeddings = forward(
             model, tokens, task=task
         )  # Embeddings is a (B, T, C) tensor
 
         # Chunk embeddings is a (N, C) tensor, where N is the total number of chunks
-        # across all input texts
+        # across all input texts (both large and small chunks)
         all_chunk_embeddings = apply_late_chunking(embeddings, batch_chunk_token_spans)
 
         all_chunks = []
         chunk_idx = 0
         for i, text in enumerate(texts):
             num_chunks = len(batch_chunk_char_spans[i])
-            chunk_embeddings = all_chunk_embeddings[
-                chunk_idx : (chunk_idx + num_chunks), :
-            ]
-            chunks = [
-                Chunk(batch_chunk_char_spans[i][chunk_idx], em)
-                for chunk_idx, em in enumerate(chunk_embeddings.tolist())
-            ]
+            if num_chunks == 0:
+                # No chunks generated, create a single chunk for the entire text
+                chunk_embeddings = all_chunk_embeddings[chunk_idx:chunk_idx+1, :]
+                chunks = [Chunk((0, len(text)), chunk_embeddings[0].tolist())]
+                chunk_idx += 1
+            else:
+                chunk_embeddings = all_chunk_embeddings[
+                    chunk_idx : (chunk_idx + num_chunks), :
+                ]
+                chunks = [
+                    Chunk(batch_chunk_char_spans[i][chunk_idx], em)
+                    for chunk_idx, em in enumerate(chunk_embeddings.tolist())
+                ]
+                chunk_idx += num_chunks
             all_chunks.append(chunks)
-            chunk_idx += num_chunks
 
         return all_chunks
     except Exception as e:

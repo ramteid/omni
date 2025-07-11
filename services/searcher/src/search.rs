@@ -2,9 +2,10 @@ use crate::models::{SearchMode, SearchRequest, SearchResponse, SearchResult, Sug
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
+use shared::models::ChunkResult;
 use shared::{AIClient, ContentStorage, DatabasePool, SearcherConfig};
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub struct SearchEngine {
     db_pool: DatabasePool,
@@ -134,7 +135,7 @@ impl SearchEngine {
         let sources = request.sources.as_deref();
         let content_types = request.content_types.as_deref();
 
-        let (documents, corrected_query) = if self.config.typo_tolerance_enabled {
+        let (results_with_highlights, corrected_query) = if self.config.typo_tolerance_enabled {
             debug!("Searching for {} with typo tolerance", &request.query);
             repo.search_with_typo_tolerance_and_filters(
                 &request.query,
@@ -164,39 +165,22 @@ impl SearchEngine {
         };
 
         let mut results = Vec::new();
-        for doc in documents {
-            // Fetch content from LOB storage for highlight generation and content display
-            let (highlights, content) = if let Some(content_id) = &doc.content_id {
-                match self.content_storage.get_text(content_id).await {
-                    Ok(content) => {
-                        let highlights = self.extract_highlights(&content, &request.query);
-                        // Truncate content for display (first 500 chars)
-                        let truncated_content = if content.len() > 500 {
-                            format!("{}...", content.chars().take(500).collect::<String>())
-                        } else {
-                            content.clone()
-                        };
-                        (highlights, Some(truncated_content))
-                    }
-                    Err(e) => {
-                        debug!(
-                            "Failed to fetch content for highlights from document {}: {}",
-                            doc.id, e
-                        );
-                        (vec![], None)
-                    }
-                }
+        for result_with_highlight in results_with_highlights {
+            let prepared_doc = self.prepare_document_for_response(result_with_highlight.document);
+
+            // Convert the single highlight string into a Vec<String> for the highlights field
+            let highlights = if result_with_highlight.highlight.trim().is_empty() {
+                vec![]
             } else {
-                (vec![], None)
+                vec![result_with_highlight.highlight]
             };
 
-            let prepared_doc = self.prepare_document_for_response(doc);
             results.push(SearchResult {
                 document: prepared_doc,
                 score: 1.0,
                 highlights,
                 match_type: "fulltext".to_string(),
-                content,
+                content: None, // No longer fetching full content since we have highlights
             });
         }
 
@@ -214,11 +198,12 @@ impl SearchEngine {
         let query_embedding = self.generate_query_embedding(&request.query).await?;
 
         let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
+        let doc_repo = DocumentRepository::new(self.db_pool.pool());
 
         let sources = request.sources.as_deref();
         let content_types = request.content_types.as_deref();
 
-        let documents_with_scores = embedding_repo
+        let chunk_results = embedding_repo
             .find_similar_with_filters(
                 query_embedding,
                 sources,
@@ -229,23 +214,129 @@ impl SearchEngine {
             )
             .await?;
 
-        let mut results = Vec::new();
-        for (doc, score) in documents_with_scores {
-            let prepared_doc = self.prepare_document_for_response(doc);
-            results.push(SearchResult {
-                document: prepared_doc,
-                score,
-                highlights: vec![],
-                match_type: "semantic".to_string(),
-                content: None, // Semantic search doesn't need full content
-            });
+        // Get unique document IDs and batch fetch documents
+        let document_ids: Vec<String> = chunk_results
+            .iter()
+            .map(|chunk| chunk.document_id.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let documents = doc_repo.find_by_ids(&document_ids).await?;
+        let documents_map: std::collections::HashMap<String, _> = documents
+            .into_iter()
+            .map(|doc| (doc.id.clone(), doc))
+            .collect();
+
+        // Group chunks by document_id to collect all matching chunks per document
+        let mut document_chunks: std::collections::HashMap<String, Vec<&ChunkResult>> =
+            std::collections::HashMap::new();
+        for chunk_result in &chunk_results {
+            document_chunks
+                .entry(chunk_result.document_id.clone())
+                .or_insert_with(Vec::new)
+                .push(chunk_result);
         }
+
+        let mut results = Vec::new();
+        for (document_id, chunks) in document_chunks {
+            if let Some(doc) = documents_map.get(&document_id) {
+                // Use the highest scoring chunk as the document score
+                let max_score = chunks
+                    .iter()
+                    .map(|chunk| chunk.similarity_score)
+                    .fold(f32::NEG_INFINITY, f32::max);
+
+                // Fetch document content and extract chunk text using offsets
+                let mut chunk_highlights: Vec<(f32, String)> = Vec::new();
+                if let Some(content_id) = &doc.content_id {
+                    if let Ok(content) = self.content_storage.get_text(content_id).await {
+                        for chunk in chunks {
+                            let chunk_text = self.extract_chunk_from_content(
+                                &content,
+                                chunk.chunk_start_offset,
+                                chunk.chunk_end_offset,
+                            );
+                            let trimmed_text = chunk_text.trim();
+
+                            if !trimmed_text.is_empty() {
+                                let highlight_text = if trimmed_text.len() > 240 {
+                                    format!("{}...", &trimmed_text[..240])
+                                } else {
+                                    trimmed_text.to_string()
+                                };
+                                chunk_highlights.push((chunk.similarity_score, highlight_text));
+                            }
+                        }
+                    }
+                }
+
+                // Sort by similarity score (highest first)
+                chunk_highlights
+                    .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+                // Extract just the snippets in sorted order, limited to top 5
+                let all_highlights: Vec<String> = chunk_highlights
+                    .into_iter()
+                    .take(5)
+                    .map(|(_, snippet)| snippet)
+                    .collect();
+
+                let prepared_doc = self.prepare_document_for_response(doc.clone());
+                results.push(SearchResult {
+                    document: prepared_doc,
+                    score: max_score,
+                    highlights: all_highlights,
+                    match_type: "semantic".to_string(),
+                    content: None, // Using highlights instead of single content snippet
+                });
+            }
+        }
+
+        // Sort results by score in descending order
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         info!(
             "Semantic search completed in {}ms",
             start_time.elapsed().as_millis()
         );
         Ok(results)
+    }
+
+    fn extract_chunk_from_content(
+        &self,
+        content: &str,
+        start_offset: i32,
+        end_offset: i32,
+    ) -> String {
+        let start = start_offset as usize;
+        let end = end_offset as usize;
+
+        if start >= content.len() || end > content.len() || start >= end {
+            return String::new();
+        }
+
+        // Find the nearest character boundary at or after start
+        let mut actual_start = start;
+        while actual_start < content.len() && !content.is_char_boundary(actual_start) {
+            actual_start += 1;
+        }
+
+        // Find the nearest character boundary at or before end
+        let mut actual_end = end;
+        while actual_end > actual_start && !content.is_char_boundary(actual_end) {
+            actual_end -= 1;
+        }
+
+        if actual_start >= actual_end {
+            return String::new();
+        }
+
+        content[actual_start..actual_end].to_string()
     }
 
     async fn generate_query_embedding(&self, query: &str) -> Result<Vec<f32>> {
@@ -386,6 +477,7 @@ impl SearchEngine {
         format!("search:{:x}", hasher.finish())
     }
 
+    // Simple highlight extraction for semantic search (not using database ts_headline)
     fn extract_highlights(&self, content: &str, query: &str) -> Vec<String> {
         if content.is_empty() || query.is_empty() {
             return vec![];
@@ -393,93 +485,52 @@ impl SearchEngine {
 
         let query_lower = query.to_lowercase();
         let content_lower = content.to_lowercase();
-        let mut highlights = Vec::new();
-
-        // Find all occurrences of the query terms
         let terms: Vec<&str> = query_lower.split_whitespace().collect();
 
+        // For semantic search, just look for the first occurrence of any term
         for term in terms {
             if term.len() < 3 {
-                continue; // Skip very short terms
+                continue;
             }
 
-            // Find all positions where this term appears
-            let mut search_start = 0;
-            while let Some(pos) = content_lower[search_start..].find(term) {
-                let absolute_pos = search_start + pos;
+            if let Some(pos) = content_lower.find(term) {
+                let start = pos.saturating_sub(30);
+                let end = (pos + term.len() + 30).min(content.len());
 
-                // Extract context around the match (50 chars before and after)
-                let context_start = absolute_pos.saturating_sub(50);
-                let context_end = (absolute_pos + term.len() + 50).min(content.len());
-
-                // Find word boundaries, ensuring we respect UTF-8 char boundaries
-                let start = if context_start == 0 {
-                    0
-                } else {
-                    // Find a safe position that's on a char boundary
-                    let safe_start = content
-                        .char_indices()
-                        .take_while(|(i, _)| *i <= context_start)
-                        .last()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-
-                    content[..safe_start]
-                        .rfind(char::is_whitespace)
-                        .map(|i| i + 1)
-                        .unwrap_or(safe_start)
-                };
-
-                let end = if context_end >= content.len() {
-                    content.len()
-                } else {
-                    // Find a safe position that's on a char boundary
-                    let safe_end = content
-                        .char_indices()
-                        .find(|(i, _)| *i >= context_end)
-                        .map(|(i, _)| i)
-                        .unwrap_or(content.len());
-
-                    content[safe_end..]
-                        .find(char::is_whitespace)
-                        .map(|i| safe_end + i)
-                        .unwrap_or(safe_end)
-                };
+                // Ensure we're on valid UTF-8 character boundaries
+                let safe_start = self.find_char_boundary(content, start, true);
+                let safe_end = self.find_char_boundary(content, end, false);
 
                 let mut snippet = String::new();
-                if start > 0 {
+                if safe_start > 0 {
                     snippet.push_str("...");
                 }
 
-                // Add the snippet with the term highlighted using markdown bold
-                let snippet_text = &content[start..end];
-                let highlighted = snippet_text.replace(
-                    &content[absolute_pos..absolute_pos + term.len()],
-                    &format!("**{}**", &content[absolute_pos..absolute_pos + term.len()]),
-                );
-                snippet.push_str(&highlighted);
+                let snippet_text = &content[safe_start..safe_end];
 
-                if end < content.len() {
+                // Find the actual term position within the safe boundaries
+                let term_start = pos.max(safe_start);
+                let term_end = (pos + term.len()).min(safe_end);
+
+                if term_start < term_end && term_start >= safe_start && term_end <= safe_end {
+                    let highlighted = snippet_text.replace(
+                        &content[term_start..term_end],
+                        &format!("**{}**", &content[term_start..term_end]),
+                    );
+                    snippet.push_str(&highlighted);
+                } else {
+                    snippet.push_str(snippet_text);
+                }
+
+                if safe_end < content.len() {
                     snippet.push_str("...");
                 }
 
-                highlights.push(snippet);
-
-                // Only keep first 3 highlights per term
-                if highlights.len() >= 3 {
-                    break;
-                }
-
-                search_start = absolute_pos + term.len();
+                return vec![snippet];
             }
         }
 
-        // Deduplicate and limit total highlights
-        highlights.sort();
-        highlights.dedup();
-        highlights.truncate(5);
-
-        highlights
+        vec![]
     }
 
     fn extract_context_around_matches(&self, content: &str, query: &str) -> String {
@@ -507,14 +558,7 @@ impl SearchEngine {
                 let start = if context_start == 0 {
                     0
                 } else {
-                    // Find a safe position that's on a char boundary
-                    let safe_start = content
-                        .char_indices()
-                        .take_while(|(i, _)| *i <= context_start)
-                        .last()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-
+                    let safe_start = self.find_char_boundary(content, context_start, true);
                     content[..safe_start]
                         .rfind('.')
                         .map(|i| i + 1)
@@ -524,13 +568,7 @@ impl SearchEngine {
                 let end = if context_end >= content.len() {
                     content.len()
                 } else {
-                    // Find a safe position that's on a char boundary
-                    let safe_end = content
-                        .char_indices()
-                        .find(|(i, _)| *i >= context_end)
-                        .map(|(i, _)| i)
-                        .unwrap_or(content.len());
-
+                    let safe_end = self.find_char_boundary(content, context_end, false);
                     content[safe_end..]
                         .find('.')
                         .map(|i| safe_end + i + 1)
@@ -653,6 +691,36 @@ impl SearchEngine {
             combined_results.len()
         );
         Ok(combined_results)
+    }
+
+    /// Helper function to find a safe UTF-8 character boundary
+    fn find_char_boundary(&self, content: &str, pos: usize, round_down: bool) -> usize {
+        if pos == 0 {
+            return 0;
+        }
+        if pos >= content.len() {
+            return content.len();
+        }
+
+        if content.is_char_boundary(pos) {
+            return pos;
+        }
+
+        if round_down {
+            // Find the nearest character boundary at or before pos
+            let mut safe_pos = pos;
+            while safe_pos > 0 && !content.is_char_boundary(safe_pos) {
+                safe_pos -= 1;
+            }
+            safe_pos
+        } else {
+            // Find the nearest character boundary at or after pos
+            let mut safe_pos = pos;
+            while safe_pos < content.len() && !content.is_char_boundary(safe_pos) {
+                safe_pos += 1;
+            }
+            safe_pos
+        }
     }
 
     /// Build RAG prompt with context chunks and citation instructions

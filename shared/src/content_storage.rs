@@ -201,8 +201,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_content_storage() {
-        let env = TestEnvironment::new().await;
-        let content_storage = ContentStorage::new(env.database_pool.clone());
+        let env = TestEnvironment::new().await.unwrap();
+        let content_storage = ContentStorage::new(env.db_pool.pool().clone());
 
         // Test storing and retrieving content
         let test_content = b"Hello, World! This is a test content.";
@@ -240,8 +240,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_get_text() {
-        let env = TestEnvironment::new().await;
-        let content_storage = ContentStorage::new(env.database_pool.clone());
+        let env = TestEnvironment::new().await.unwrap();
+        let content_storage = ContentStorage::new(env.db_pool.pool().clone());
 
         // Store multiple pieces of content
         let content1 = "First document content";
@@ -282,8 +282,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_content_deduplication() {
-        let env = TestEnvironment::new().await;
-        let content_storage = ContentStorage::new(env.database_pool.clone());
+        let env = TestEnvironment::new().await.unwrap();
+        let content_storage = ContentStorage::new(env.db_pool.pool().clone());
 
         // Store the same content twice
         let content = "This is duplicate content";
