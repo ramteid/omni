@@ -2,7 +2,7 @@ mod common;
 
 use clio_indexer::QueueProcessor;
 use shared::db::repositories::DocumentRepository;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
@@ -563,10 +563,41 @@ async fn test_embedding_queue_recovery() {
     let fixture = common::setup_test_fixture().await.unwrap();
     let embedding_queue = shared::EmbeddingQueue::new(fixture.state.db_pool.pool().clone());
 
-    // Add a document to the embedding queue
+    // First create a document that we can add to the embedding queue
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
     let document_id = "test_doc_for_embedding";
-    let _content = "This is test content for embedding recovery";
+    let content = "This is test content for embedding recovery";
 
+    // Create content in content storage
+    let content_id = fixture
+        .state
+        .content_storage
+        .store_content(content.as_bytes())
+        .await
+        .unwrap();
+
+    // Create the document in the database first
+    let repo = DocumentRepository::new(fixture.state.db_pool.pool());
+    let document = Document {
+        id: document_id.to_string(),
+        source_id: source_id.to_string(),
+        external_id: "embedding_test_external_id".to_string(),
+        title: "Embedding Test Document".to_string(),
+        content_id: Some(content_id),
+        content_type: Some("text/plain".to_string()),
+        file_size: Some(content.len() as i64),
+        file_extension: None,
+        url: None,
+        metadata: serde_json::json!({}),
+        permissions: serde_json::json!({"public": true, "users": [], "groups": []}),
+        created_at: OffsetDateTime::now_utc(),
+        updated_at: OffsetDateTime::now_utc(),
+        last_indexed_at: OffsetDateTime::now_utc(),
+    };
+
+    repo.create(document).await.unwrap();
+
+    // Now add the document to the embedding queue
     let queue_id = embedding_queue
         .enqueue(document_id.to_string())
         .await

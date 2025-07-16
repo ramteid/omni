@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shared::models::{Document, Embedding, SourceType};
 use shared::test_environment::TestEnvironment;
-use shared::{AIClient, SearcherConfig};
+use shared::{AIClient, ContentStorage, SearcherConfig};
 use sqlx::types::time::OffsetDateTime;
 use std::fs;
 use ulid::Ulid;
@@ -56,6 +56,7 @@ async fn setup_test_environment() -> TestEnvironment {
 
 async fn insert_test_documents(env: &TestEnvironment) {
     let test_data = load_test_embeddings().await;
+    let content_storage = ContentStorage::new(env.db_pool.pool().clone());
 
     // Get first available user from database
     let user_id: String = sqlx::query_scalar("SELECT id FROM users LIMIT 1")
@@ -85,12 +86,18 @@ async fn insert_test_documents(env: &TestEnvironment) {
 
     // Insert test documents with real embeddings
     for doc in test_data.documents {
+        // Store content in content_blobs table
+        let content_id = content_storage
+            .store_text(&doc.content)
+            .await
+            .expect("Failed to store content");
+
         let document = Document {
             id: Ulid::new().to_string(),
             source_id: source_id.clone(),
             external_id: doc.id.clone(),
             title: doc.title.clone(),
-            content: Some(doc.content.clone()),
+            content_id: Some(content_id.clone()),
             content_type: Some("text/plain".to_string()),
             file_size: None,
             file_extension: None,
@@ -106,7 +113,7 @@ async fn insert_test_documents(env: &TestEnvironment) {
         // Insert document
         sqlx::query(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content, content_type, file_size, file_extension, url, parent_id, metadata, permissions, created_at, updated_at, last_indexed_at)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, parent_id, metadata, permissions, created_at, updated_at, last_indexed_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             "#,
         )
@@ -114,7 +121,7 @@ async fn insert_test_documents(env: &TestEnvironment) {
         .bind(&document.source_id)
         .bind(&document.external_id)
         .bind(&document.title)
-        .bind(&document.content)
+        .bind(&document.content_id)
         .bind(&document.content_type)
         .bind(&document.file_size)
         .bind(&document.file_extension)

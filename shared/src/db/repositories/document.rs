@@ -473,7 +473,7 @@ impl DocumentRepository {
     pub async fn create(&self, document: Document) -> Result<Document, DatabaseError> {
         let created_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
@@ -507,7 +507,7 @@ impl DocumentRepository {
         let updated_document = sqlx::query_as::<_, Document>(
             r#"
             UPDATE documents
-            SET title = $2, content = $3, metadata = $4, permissions = $5
+            SET title = $2, content_id = $3, metadata = $4, permissions = $5
             WHERE id = $1
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
@@ -552,12 +552,12 @@ impl DocumentRepository {
     pub async fn upsert(&self, document: Document) -> Result<Document, DatabaseError> {
         let upserted_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = EXCLUDED.title,
-                content = EXCLUDED.content,
+                content_id = EXCLUDED.content_id,
                 metadata = EXCLUDED.metadata,
                 permissions = EXCLUDED.permissions,
                 updated_at = EXCLUDED.updated_at,

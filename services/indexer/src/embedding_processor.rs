@@ -192,7 +192,7 @@ impl EmbeddingProcessor {
     async fn process_embedding_batch(&self, batch: Vec<EmbeddingQueueItem>) -> Result<()> {
         let start_time = std::time::Instant::now();
 
-        // Step 1: Fetch content for all documents and split into input chunks
+        // Step 1: Deduplicate documents in batch and fetch content
         #[derive(Debug)]
         struct InputChunkInfo {
             document_id: String,
@@ -201,18 +201,30 @@ impl EmbeddingProcessor {
         }
 
         let mut all_input_chunks = Vec::new();
-        let mut document_metadata = std::collections::HashMap::new(); // document_id -> original item
+        let mut document_to_queue_items = std::collections::HashMap::new(); // document_id -> Vec<queue_item_id>
         let doc_repo = shared::db::repositories::DocumentRepository::new(self.state.db_pool.pool());
 
+        // Group queue items by document_id to handle duplicates
         for item in &batch {
+            document_to_queue_items
+                .entry(item.document_id.clone())
+                .or_insert_with(Vec::new)
+                .push(item.id.clone());
+        }
+
+        info!(
+            "Processing batch of {} queue items for {} unique documents",
+            batch.len(),
+            document_to_queue_items.len()
+        );
+
+        // Process each unique document once
+        for (document_id, _queue_item_ids) in &document_to_queue_items {
             // Fetch document to get content_id
-            let document = match doc_repo.find_by_id(&item.document_id).await? {
+            let document = match doc_repo.find_by_id(document_id).await? {
                 Some(doc) => doc,
                 None => {
-                    warn!(
-                        "Document {} not found, skipping embedding",
-                        item.document_id
-                    );
+                    warn!("Document {} not found, skipping embedding", document_id);
                     continue;
                 }
             };
@@ -224,7 +236,7 @@ impl EmbeddingProcessor {
                     Err(e) => {
                         warn!(
                             "Failed to fetch content for document {}: {}",
-                            item.document_id, e
+                            document_id, e
                         );
                         continue;
                     }
@@ -232,7 +244,7 @@ impl EmbeddingProcessor {
                 None => {
                     warn!(
                         "Document {} has no content_id, skipping embedding",
-                        item.document_id
+                        document_id
                     );
                     continue;
                 }
@@ -243,17 +255,15 @@ impl EmbeddingProcessor {
             if input_chunks.len() > 1 {
                 info!(
                     "Document {} ({}KB) split into {} input chunks",
-                    item.document_id,
+                    document_id,
                     content.len() / 1024,
                     input_chunks.len()
                 );
             }
 
-            document_metadata.insert(item.document_id.clone(), item);
-
             for (chunk_idx, input_text) in input_chunks.into_iter().enumerate() {
                 all_input_chunks.push(InputChunkInfo {
-                    document_id: item.document_id.clone(),
+                    document_id: document_id.clone(),
                     input_chunk_index: chunk_idx,
                     input_text: input_text.to_string(),
                 });
@@ -261,8 +271,8 @@ impl EmbeddingProcessor {
         }
 
         info!(
-            "Processing {} documents with total {} input chunks",
-            batch.len(),
+            "Processing {} unique documents with total {} input chunks",
+            document_to_queue_items.len(),
             all_input_chunks.len()
         );
 
@@ -369,16 +379,16 @@ impl EmbeddingProcessor {
         let mut document_embedding_counts: HashMap<String, usize> = HashMap::new();
 
         // First pass: collect all embeddings and identify failures
-        for item in &batch {
-            if failed_document_ids.contains(&item.document_id) {
-                failed_ids.push(item.id.clone());
+        for (document_id, queue_item_ids) in &document_to_queue_items {
+            if failed_document_ids.contains(document_id) {
+                failed_ids.extend(queue_item_ids.iter().cloned());
                 continue;
             }
 
-            if let Some(document_embeddings) = all_embeddings_by_document.get(&item.document_id) {
+            if let Some(document_embeddings) = all_embeddings_by_document.get(document_id) {
                 if document_embeddings.is_empty() {
-                    error!("No embeddings generated for document {}", item.document_id);
-                    failed_ids.push(item.id.clone());
+                    error!("No embeddings generated for document {}", document_id);
+                    failed_ids.extend(queue_item_ids.iter().cloned());
                     continue;
                 }
 
@@ -393,7 +403,7 @@ impl EmbeddingProcessor {
                     if chunk_span.0 >= chunk_span.1 {
                         warn!(
                             "Skipping invalid chunk {} for document {} - invalid bounds: start={}, end={}",
-                            chunk_index, item.document_id, chunk_span.0, chunk_span.1
+                            chunk_index, document_id, chunk_span.0, chunk_span.1
                         );
                         skipped_chunks += 1;
                         continue;
@@ -401,7 +411,7 @@ impl EmbeddingProcessor {
 
                     let embedding = Embedding {
                         id: Ulid::new().to_string(),
-                        document_id: item.document_id.clone(),
+                        document_id: document_id.clone(),
                         chunk_index: chunk_index as i32,
                         chunk_start_offset: chunk_span.0,
                         chunk_end_offset: chunk_span.1,
@@ -417,29 +427,26 @@ impl EmbeddingProcessor {
                         "Skipped {} invalid chunks out of {} total for document {}",
                         skipped_chunks,
                         document_embeddings.len(),
-                        item.document_id
+                        document_id
                     );
                 }
 
                 if !document_embedding_records.is_empty() {
                     document_embedding_counts
-                        .insert(item.document_id.clone(), document_embedding_records.len());
+                        .insert(document_id.clone(), document_embedding_records.len());
                     all_batch_embeddings.extend(document_embedding_records);
-                    success_ids.push(item.id.clone());
+                    success_ids.extend(queue_item_ids.iter().cloned());
                     debug!(
                         "Prepared {} embeddings for document {}",
-                        document_embedding_counts[&item.document_id], item.document_id
+                        document_embedding_counts[document_id], document_id
                     );
                 } else {
-                    error!(
-                        "No valid embeddings prepared for document {}",
-                        item.document_id
-                    );
-                    failed_ids.push(item.id.clone());
+                    error!("No valid embeddings prepared for document {}", document_id);
+                    failed_ids.extend(queue_item_ids.iter().cloned());
                 }
             } else {
-                error!("No embeddings found for document {}", item.document_id);
-                failed_ids.push(item.id.clone());
+                error!("No embeddings found for document {}", document_id);
+                failed_ids.extend(queue_item_ids.iter().cloned());
             }
         }
 
@@ -452,10 +459,12 @@ impl EmbeddingProcessor {
             );
 
             // Bulk delete existing embeddings for all successful documents
-            let successful_document_ids: Vec<String> = batch
+            let successful_document_ids: Vec<String> = document_to_queue_items
                 .iter()
-                .filter(|item| success_ids.contains(&item.id))
-                .map(|item| item.document_id.clone())
+                .filter(|(_, queue_item_ids)| {
+                    queue_item_ids.iter().any(|id| success_ids.contains(id))
+                })
+                .map(|(document_id, _)| document_id.clone())
                 .collect();
 
             if !successful_document_ids.is_empty() {
@@ -504,10 +513,10 @@ impl EmbeddingProcessor {
         if !success_ids.is_empty() {
             self.embedding_queue.mark_completed(&success_ids).await?;
 
-            // Update document embedding status
-            for id in &success_ids {
-                if let Some(item) = batch.iter().find(|i| i.id == *id) {
-                    self.update_document_embedding_status(&item.document_id, "completed")
+            // Update document embedding status for successful documents
+            for (document_id, queue_item_ids) in &document_to_queue_items {
+                if queue_item_ids.iter().any(|id| success_ids.contains(id)) {
+                    self.update_document_embedding_status(document_id, "completed")
                         .await?;
                 }
             }

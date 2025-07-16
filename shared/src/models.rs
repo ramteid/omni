@@ -146,7 +146,7 @@ pub struct ServiceCredentials {
     pub updated_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DocumentMetadata {
     pub title: Option<String>,
     pub author: Option<String>,

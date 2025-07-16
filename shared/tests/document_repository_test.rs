@@ -4,6 +4,7 @@ mod tests {
     use shared::db::repositories::DocumentRepository;
     use shared::models::Document;
     use shared::test_utils::BaseTestFixture;
+    use shared::ContentStorage;
     use sqlx::types::time::OffsetDateTime;
     use ulid::Ulid;
 
@@ -50,18 +51,24 @@ mod tests {
     async fn test_search_with_typo_tolerance_no_correction_needed() {
         let fixture = BaseTestFixture::new().await.unwrap();
         let repo = DocumentRepository::new(fixture.db_pool().pool());
+        let content_storage = ContentStorage::new(fixture.db_pool().pool().clone());
 
         // Create test documents
+        let content_id = content_storage
+            .store_text("Test document about search")
+            .await
+            .unwrap();
         let doc = Document {
             id: Ulid::new().to_string(),
             source_id: Ulid::new().to_string(),
             external_id: Ulid::new().to_string(),
             title: "Test document".to_string(),
-            content: Some("Test document about search".to_string()),
+            content_id: Some(content_id),
             content_type: Some("text/plain".to_string()),
             file_size: None,
             file_extension: None,
             url: None,
+            parent_id: None,
             metadata: json!({}),
             permissions: json!([]),
             created_at: OffsetDateTime::now_utc(),
@@ -95,22 +102,25 @@ mod tests {
     async fn test_search_with_typo_tolerance_with_correction() {
         let fixture = BaseTestFixture::new().await.unwrap();
         let repo = DocumentRepository::new(fixture.db_pool().pool());
+        let content_storage = ContentStorage::new(fixture.db_pool().pool().clone());
 
         // Create test documents
         for content in &[
             "Document about search functionality",
             "Another document with search terms",
         ] {
+            let content_id = content_storage.store_text(content).await.unwrap();
             let doc = Document {
                 id: Ulid::new().to_string(),
                 source_id: Ulid::new().to_string(),
                 external_id: Ulid::new().to_string(),
                 title: "Test document".to_string(),
-                content: Some(content.to_string()),
+                content_id: Some(content_id),
                 content_type: Some("text/plain".to_string()),
                 file_size: None,
                 file_extension: None,
                 url: None,
+                parent_id: None,
                 metadata: json!({}),
                 permissions: json!([]),
                 created_at: OffsetDateTime::now_utc(),
@@ -148,18 +158,21 @@ mod tests {
     async fn test_min_word_length_filtering() {
         let fixture = BaseTestFixture::new().await.unwrap();
         let repo = DocumentRepository::new(fixture.db_pool().pool());
+        let content_storage = ContentStorage::new(fixture.db_pool().pool().clone());
 
         // Create test document
+        let content_id = content_storage.store_text("The cat ran").await.unwrap();
         let doc = Document {
             id: Ulid::new().to_string(),
             source_id: Ulid::new().to_string(),
             external_id: Ulid::new().to_string(),
             title: "Test document".to_string(),
-            content: Some("The cat ran".to_string()),
+            content_id: Some(content_id),
             content_type: Some("text/plain".to_string()),
             file_size: None,
             file_extension: None,
             url: None,
+            parent_id: None,
             metadata: json!({}),
             permissions: json!([]),
             created_at: OffsetDateTime::now_utc(),

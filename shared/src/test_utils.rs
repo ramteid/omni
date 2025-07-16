@@ -262,12 +262,15 @@ pub async fn wait_for_document_deleted(
 pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
     let mut doc_ids = Vec::new();
+    let content_storage = crate::ContentStorage::new(pool.clone());
 
     // Document 1: Technical documentation
     let doc_1_id = Ulid::new().to_string();
+    let content_1 = "This is a comprehensive guide to Rust programming language. It covers memory safety, ownership, borrowing, and lifetimes. Rust is a systems programming language that runs blazingly fast, prevents segfaults, and guarantees thread safety.";
+    let content_1_id = content_storage.store_text(content_1).await?;
     sqlx::query(
         r#"
-        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at)
+        INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
         "#,
     )
@@ -275,7 +278,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
     .bind(source_id)
     .bind("tech_doc_1")
     .bind("Rust Programming Guide")
-    .bind("This is a comprehensive guide to Rust programming language. It covers memory safety, ownership, borrowing, and lifetimes. Rust is a systems programming language that runs blazingly fast, prevents segfaults, and guarantees thread safety.")
+    .bind(&content_1_id)
     .bind(json!({"type": "documentation", "category": "programming"}))
     .bind(json!({"users": ["user1"], "groups": ["engineers"]}))
     .execute(pool)
@@ -284,9 +287,11 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 2: Meeting notes
     let doc_2_id = Ulid::new().to_string();
+    let content_2 = "Attendees discussed the roadmap for Q4. Key priorities include improving search functionality, implementing semantic search, and optimizing database queries. The team will focus on PostgreSQL performance and Redis caching.";
+    let content_2_id = content_storage.store_text(content_2).await?;
     sqlx::query(
         r#"
-        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at)
+        INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
         "#,
     )
@@ -294,7 +299,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
     .bind(source_id)
     .bind("meeting_notes_1")
     .bind("Q4 Planning Meeting")
-    .bind("Attendees discussed the roadmap for Q4. Key priorities include improving search functionality, implementing semantic search, and optimizing database queries. The team will focus on PostgreSQL performance and Redis caching.")
+    .bind(&content_2_id)
     .bind(json!({"type": "meeting", "date": "2024-01-15"}))
     .bind(json!({"users": ["user1", "user2"], "groups": ["team"]}))
     .execute(pool)
@@ -303,9 +308,11 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 3: Project specifications
     let doc_3_id = Ulid::new().to_string();
+    let content_3 = "The search engine combines full-text search with vector embeddings. It uses PostgreSQL with pgvector extension for similarity search. The architecture includes caching layer with Redis and supports multiple search modes: fulltext, semantic, and hybrid.";
+    let content_3_id = content_storage.store_text(content_3).await?;
     sqlx::query(
         r#"
-        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at)
+        INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
         "#,
     )
@@ -313,7 +320,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
     .bind(source_id)
     .bind("project_spec_1")
     .bind("Search Engine Architecture")
-    .bind("The search engine combines full-text search with vector embeddings. It uses PostgreSQL with pgvector extension for similarity search. The architecture includes caching layer with Redis and supports multiple search modes: fulltext, semantic, and hybrid.")
+    .bind(&content_3_id)
     .bind(json!({"type": "specification", "project": "clio"}))
     .bind(json!({"users": ["user1"], "groups": ["architects"]}))
     .execute(pool)
@@ -322,9 +329,11 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 4: API documentation
     let doc_4_id = Ulid::new().to_string();
+    let content_4 = "The API provides endpoints for document management and search. POST /search accepts queries with different modes. GET /suggestions returns autocomplete suggestions. All endpoints require authentication via JWT tokens.";
+    let content_4_id = content_storage.store_text(content_4).await?;
     sqlx::query(
         r#"
-        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at)
+        INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
         "#,
     )
@@ -332,7 +341,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
     .bind(source_id)
     .bind("api_doc_1")
     .bind("REST API Endpoints")
-    .bind("The API provides endpoints for document management and search. POST /search accepts queries with different modes. GET /suggestions returns autocomplete suggestions. All endpoints require authentication via JWT tokens.")
+    .bind(&content_4_id)
     .bind(json!({"type": "api_documentation", "version": "1.0"}))
     .bind(json!({"users": ["user1", "user2"], "groups": ["developers"]}))
     .execute(pool)
@@ -341,9 +350,11 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 5: User guide
     let doc_5_id = Ulid::new().to_string();
+    let content_5 = "Welcome to Clio! This guide will help you get started with searching across your organization's documents. You can search using keywords, phrases, or ask questions in natural language. The system will find relevant documents and highlight important passages.";
+    let content_5_id = content_storage.store_text(content_5).await?;
     sqlx::query(
         r#"
-        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at)
+        INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
         "#,
     )
@@ -351,7 +362,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
     .bind(source_id)
     .bind("user_guide_1")
     .bind("Getting Started Guide")
-    .bind("Welcome to Clio! This guide will help you get started with searching across your organization's documents. You can search using keywords, phrases, or ask questions in natural language. The system will find relevant documents and highlight important passages.")
+    .bind(&content_5_id)
     .bind(json!({"type": "user_guide", "audience": "end_users"}))
     .bind(json!({"users": ["user1", "user2", "user3"], "groups": ["all_users"]}))
     .execute(pool)

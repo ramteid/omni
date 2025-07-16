@@ -56,7 +56,7 @@ impl TestEnvironment {
         );
         let db_pool = DatabasePool::new(&database_url).await?;
 
-        // Run migrations - migrations are always in services/indexer/migrations
+        // Run migrations
         let mut current_dir = std::env::current_dir()?;
         loop {
             let migration_dir = current_dir.join("services/migrations");
@@ -165,12 +165,18 @@ impl MockAIServer {
 
         #[derive(Deserialize)]
         struct EmbeddingRequest {
-            text: String,
+            texts: Vec<String>,
+            task: Option<String>,
+            chunk_size: Option<i32>,
+            chunking_mode: Option<String>,
         }
 
         #[derive(Serialize)]
         struct EmbeddingResponse {
-            embedding: Vec<f32>,
+            embeddings: Vec<Vec<Vec<f32>>>, // embeddings per text per chunk
+            chunks_count: Vec<i32>,         // number of chunks per text
+            chunks: Vec<Vec<(i32, i32)>>,   // character offset spans for each chunk
+            model_name: String,             // name of the model used for embeddings
         }
 
         #[derive(Deserialize)]
@@ -196,13 +202,30 @@ impl MockAIServer {
 
         // Mock embeddings endpoint - returns a fixed 1024-dim vector
         async fn mock_embeddings(Json(req): Json<EmbeddingRequest>) -> Json<EmbeddingResponse> {
-            // Generate a deterministic embedding based on text hash
-            let mut embedding = vec![0.0; 1024];
-            let hash = req.text.len() as f32;
-            for i in 0..1024 {
-                embedding[i] = (hash + i as f32) / 1024.0;
+            let mut embeddings = Vec::new();
+            let mut chunks_count = Vec::new();
+            let mut chunks = Vec::new();
+
+            for text in &req.texts {
+                // Generate a deterministic embedding based on text hash
+                let mut embedding = vec![0.0; 1024];
+                let hash = text.len() as f32;
+                for i in 0..1024 {
+                    embedding[i] = (hash + i as f32) / 1024.0;
+                }
+
+                // For simplicity, treat each text as a single chunk
+                embeddings.push(vec![embedding]);
+                chunks_count.push(1);
+                chunks.push(vec![(0, text.len() as i32)]);
             }
-            Json(EmbeddingResponse { embedding })
+
+            Json(EmbeddingResponse {
+                embeddings,
+                chunks_count,
+                chunks,
+                model_name: "test-model".to_string(),
+            })
         }
 
         // Mock RAG endpoint

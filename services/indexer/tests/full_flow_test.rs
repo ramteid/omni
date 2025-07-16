@@ -10,7 +10,7 @@ use tokio::time::{sleep, Duration};
 #[tokio::test]
 async fn test_full_indexing_flow() {
     let fixture = common::setup_test_fixture().await.unwrap();
-    let server = axum_test::TestServer::new(fixture.app()).unwrap();
+    let server = axum_test::TestServer::new(fixture.app().clone()).unwrap();
 
     // Start queue processor
     let processor = QueueProcessor::new(fixture.state.clone());

@@ -57,6 +57,7 @@ impl BatchProcessingResult {
     }
 }
 
+#[derive(Clone)]
 pub struct QueueProcessor {
     pub state: AppState,
     pub event_queue: EventQueue,
@@ -441,6 +442,24 @@ impl QueueProcessor {
     }
 
     // Helper methods for batch processing
+    fn convert_metadata_to_json(&self, metadata: &DocumentMetadata) -> Result<serde_json::Value> {
+        let mut metadata_json = serde_json::to_value(metadata)?;
+
+        // Convert size from string to number if present
+        if let Some(size_str) = &metadata.size {
+            if let Ok(size_num) = size_str.parse::<i64>() {
+                if let Some(obj) = metadata_json.as_object_mut() {
+                    obj.insert(
+                        "size".to_string(),
+                        serde_json::Value::Number(size_num.into()),
+                    );
+                }
+            }
+        }
+
+        Ok(metadata_json)
+    }
+
     fn create_document_from_event(
         &self,
         source_id: String,
@@ -450,7 +469,7 @@ impl QueueProcessor {
         permissions: DocumentPermissions,
     ) -> Result<Document> {
         let now = sqlx::types::time::OffsetDateTime::now_utc();
-        let metadata_json = serde_json::to_value(&metadata)?;
+        let metadata_json = self.convert_metadata_to_json(&metadata)?;
         let permissions_json = serde_json::to_value(&permissions)?;
 
         // Extract file extension from URL or mime type
@@ -467,6 +486,9 @@ impl QueueProcessor {
             .as_ref()
             .and_then(|size_str| size_str.parse::<i64>().ok());
 
+        // Ensure last_indexed_at is after created_at
+        let last_indexed_at = now + std::time::Duration::from_millis(1);
+
         Ok(Document {
             id: ulid::Ulid::new().to_string(),
             source_id,
@@ -481,7 +503,7 @@ impl QueueProcessor {
             permissions: permissions_json,
             created_at: now,
             updated_at: now,
-            last_indexed_at: now,
+            last_indexed_at,
         })
     }
 
@@ -497,7 +519,7 @@ impl QueueProcessor {
 
         if let Some(mut document) = repo.find_by_external_id(&source_id, &document_id).await? {
             let now = sqlx::types::time::OffsetDateTime::now_utc();
-            let metadata_json = serde_json::to_value(&metadata)?;
+            let metadata_json = self.convert_metadata_to_json(&metadata)?;
 
             document.title = metadata.title.unwrap_or(document.title);
             document.content_id = Some(content_id);
