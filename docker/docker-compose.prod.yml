@@ -2,8 +2,22 @@
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up
 
 services:
-  # Add vLLM dependency for AI service in production
+  # Use pre-built images from GitHub Container Registry
+  migrator:
+    image: ghcr.io/cliohq/clio/clio-migrator:latest
+    build: null
+
+  searcher:
+    image: ghcr.io/cliohq/clio/clio-searcher:latest
+    build: null
+
+  indexer:
+    image: ghcr.io/cliohq/clio/clio-indexer:latest
+    build: null
+
   ai:
+    image: ghcr.io/cliohq/clio/clio-ai:latest
+    build: null
     depends_on:
       postgres:
         condition: service_healthy
@@ -11,6 +25,22 @@ services:
         condition: service_healthy
       vllm:
         condition: service_healthy
+
+  google-connector:
+    image: ghcr.io/cliohq/clio/clio-google-connector:latest
+    build: null
+
+  slack-connector:
+    image: ghcr.io/cliohq/clio/clio-slack-connector:latest
+    build: null
+
+  atlassian-connector:
+    image: ghcr.io/cliohq/clio/clio-atlassian-connector:latest
+    build: null
+
+  web:
+    image: ghcr.io/cliohq/clio/clio-web:latest
+    build: null
 
   # Enable vLLM in production
   vllm:

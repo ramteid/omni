@@ -542,9 +542,7 @@ impl SyncManager {
 
                     discovered_count.fetch_add(1, Ordering::SeqCst);
 
-                    let file_name = user_file.file.name.clone();
-                    let file_id = user_file.file.id.clone();
-                    debug!("Processing file: {} ({}) for user: {}", file_name, file_id, user_file.user_email);
+                    debug!("Processing file: {} ({}) for user: {}", user_file.file.name, user_file.file.id, user_file.user_email);
 
                     // Use rate limiter for file content download
                     let _result = match rate_limiter.execute_with_retry(|| {
