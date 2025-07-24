@@ -41,9 +41,9 @@ impl DriveClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(60)) // 60 second timeout for all requests
             .connect_timeout(Duration::from_secs(10)) // 10 second connection timeout
-            .pool_max_idle_per_host(10) // Reuse connections to reduce SSL handshakes
-            .pool_idle_timeout(Duration::from_secs(90)) // Keep connections alive longer
-            .tcp_keepalive(Duration::from_secs(60)) // Enable TCP keepalive
+            // .pool_max_idle_per_host(10) // Reuse connections to reduce SSL handshakes
+            // .pool_idle_timeout(Duration::from_secs(90)) // Keep connections alive longer
+            // .tcp_keepalive(Duration::from_secs(60)) // Enable TCP keepalive
             .build()
             .expect("Failed to build HTTP client");
 
@@ -446,6 +446,7 @@ impl DriveClient {
                     .with_context(|| format!("Failed to send request for PDF file {}", file_id))?;
 
                 let status = response.status();
+                debug!("Download file {} response status: {}", file_id, status);
                 if is_auth_error(status) {
                     return Ok(ApiResult::AuthError);
                 } else if !status.is_success() {
