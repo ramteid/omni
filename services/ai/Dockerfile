@@ -5,7 +5,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
 # Install Python 3.12
-RUN apt-get update && apt-get install -y \
+# Temporarily disable NVIDIA sources to avoid mirror sync issues
+RUN mv /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list.bak && \
+    apt-get update && apt-get install -y \
     software-properties-common \
     tzdata \
     && add-apt-repository ppa:deadsnakes/ppa \
@@ -17,7 +19,8 @@ RUN apt-get update && apt-get install -y \
     g++ \
     ninja-build \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mv /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list.bak /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list
 
 # Create symlinks for python
 RUN ln -s /usr/bin/python3.12 /usr/bin/python
@@ -45,4 +48,4 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Run the application
-CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT}"
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
