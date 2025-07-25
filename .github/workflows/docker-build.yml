@@ -29,10 +29,8 @@ jobs:
             dockerfile: services/indexer/Dockerfile
           - name: clio-ai
             context: services/ai
-            dockerfile: Dockerfile
           - name: clio-web
             context: web
-            dockerfile: Dockerfile
           - name: clio-migrator
             context: .
             dockerfile: services/migrations/Dockerfile
