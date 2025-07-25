@@ -1,4 +1,4 @@
-import { SEARCHER_URL } from '$env/static/private'
+import { env } from '$env/dynamic/private'
 import { error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import type { SearchRequest } from '$lib/types/search.js'
@@ -18,7 +18,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
 
     try {
         // Call the searcher AI answer endpoint
-        const response = await fetch(`${SEARCHER_URL}/search/ai-answer`, {
+        const response = await fetch(`${env.SEARCHER_URL}/search/ai-answer`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

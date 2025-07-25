@@ -5,7 +5,7 @@ import { serviceCredentials, sources } from '$lib/server/db/schema'
 import { eq } from 'drizzle-orm'
 import { ServiceProvider, AuthType } from '$lib/types'
 import { ulid } from 'ulid'
-import { INDEXER_URL } from '$env/static/private'
+import { env } from '$env/dynamic/private'
 
 export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     if (!locals.user) {
@@ -44,7 +44,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
 
     try {
         // Call indexer service to create encrypted credentials
-        const indexerResponse = await fetch(`${INDEXER_URL}/service-credentials`, {
+        const indexerResponse = await fetch(`${env.INDEXER_URL}/service-credentials`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

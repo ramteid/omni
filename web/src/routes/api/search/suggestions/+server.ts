@@ -1,4 +1,4 @@
-import { SEARCHER_URL } from '$env/static/private'
+import { env } from '$env/dynamic/private'
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 
@@ -13,7 +13,7 @@ export const GET: RequestHandler = async ({ url, fetch }) => {
     const limit = limitParam ? Math.min(parseInt(limitParam), 20) : 5
 
     try {
-        const searchUrl = new URL(`${SEARCHER_URL}/suggestions`)
+        const searchUrl = new URL(`${env.SEARCHER_URL}/suggestions`)
         searchUrl.searchParams.set('q', query.trim())
         searchUrl.searchParams.set('limit', limit.toString())
 

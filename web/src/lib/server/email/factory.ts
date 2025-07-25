@@ -1,16 +1,7 @@
 import type { EmailProvider, EmailConfig } from './types'
 import { ResendEmailProvider } from './providers/resend'
 import { SMTPEmailProvider } from './providers/smtp'
-import {
-    EMAIL_PROVIDER,
-    RESEND_API_KEY,
-    EMAIL_FROM,
-    EMAIL_HOST,
-    EMAIL_PORT,
-    EMAIL_USER,
-    EMAIL_PASSWORD,
-    EMAIL_SECURE,
-} from '$env/static/private'
+import { env } from '$env/dynamic/private'
 
 let emailProvider: EmailProvider | null = null
 
@@ -20,14 +11,14 @@ export function getEmailProvider(): EmailProvider {
     }
 
     const config: EmailConfig = {
-        provider: (EMAIL_PROVIDER as 'resend' | 'smtp') || 'resend',
-        resendApiKey: RESEND_API_KEY || undefined,
-        fromEmail: EMAIL_FROM || 'Clio <noreply@yourdomain.com>',
-        smtpHost: EMAIL_HOST || undefined,
-        smtpPort: EMAIL_PORT ? parseInt(EMAIL_PORT) : undefined,
-        smtpUser: EMAIL_USER || undefined,
-        smtpPassword: EMAIL_PASSWORD || undefined,
-        smtpSecure: EMAIL_SECURE === 'true',
+        provider: (env.EMAIL_PROVIDER as 'resend' | 'smtp') || 'resend',
+        resendApiKey: env.RESEND_API_KEY || undefined,
+        fromEmail: env.EMAIL_FROM || 'Clio <noreply@yourdomain.com>',
+        smtpHost: env.EMAIL_HOST || undefined,
+        smtpPort: env.EMAIL_PORT ? parseInt(env.EMAIL_PORT) : undefined,
+        smtpUser: env.EMAIL_USER || undefined,
+        smtpPassword: env.EMAIL_PASSWORD || undefined,
+        smtpSecure: env.EMAIL_SECURE === 'true',
     }
 
     if (config.provider === 'resend') {

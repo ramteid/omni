@@ -1,4 +1,4 @@
-import { SEARCHER_URL } from '$env/static/private'
+import { env } from '$env/dynamic/private'
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import type { SearchRequest } from '$lib/types/search.js'
@@ -17,7 +17,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
     }
 
     try {
-        const response = await fetch(`${SEARCHER_URL}/search`, {
+        const response = await fetch(`${env.SEARCHER_URL}/search`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

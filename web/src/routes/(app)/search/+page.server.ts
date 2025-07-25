@@ -1,4 +1,4 @@
-import { SEARCHER_URL } from '$env/static/private'
+import { env } from '$env/dynamic/private'
 import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
 
 export const load = async ({ url, fetch }) => {
@@ -19,7 +19,7 @@ export const load = async ({ url, fetch }) => {
         }
 
         console.log('Waiting for searcher...')
-        const response = await fetch(`${SEARCHER_URL}/search`, {
+        const response = await fetch(`${env.SEARCHER_URL}/search`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
