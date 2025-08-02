@@ -113,6 +113,71 @@ impl GmailClient {
         .await
     }
 
+    pub async fn list_threads(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        query: Option<&str>,
+        max_results: Option<u32>,
+        page_token: Option<&str>,
+    ) -> Result<ThreadsListResponse> {
+        let query = query.map(|s| s.to_string());
+        let page_token = page_token.map(|s| s.to_string());
+
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+            let query = query.clone();
+            let page_token = page_token.clone();
+            async move {
+                let url = format!("{}/users/{}/threads", GMAIL_API_BASE, user_email);
+
+                let mut params = vec![("maxResults", max_results.unwrap_or(100).to_string())];
+
+                if let Some(ref q) = query {
+                    params.push(("q", q.clone()));
+                }
+
+                if let Some(ref page_token) = page_token {
+                    params.push(("pageToken", page_token.clone()));
+                }
+
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&params)
+                    .send()
+                    .await?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to list threads: HTTP {} - {}",
+                        status,
+                        error_text
+                    )));
+                }
+
+                debug!("Gmail API list threads response status: {}", status);
+                let response_text = response.text().await?;
+                debug!("Gmail API raw response: {}", response_text);
+
+                let parsed_response = serde_json::from_str(&response_text).map_err(|e| {
+                    anyhow!(
+                        "Failed to parse Gmail threads API response: {}. Raw response: {}",
+                        e,
+                        response_text
+                    )
+                })?;
+
+                Ok(ApiResult::Success(parsed_response))
+            }
+        })
+        .await
+    }
+
     pub async fn get_message(
         &self,
         auth: &ServiceAccountAuth,
@@ -184,6 +249,233 @@ impl GmailClient {
             }
         })
         .await
+    }
+
+    pub async fn get_thread(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        thread_id: &str,
+        format: MessageFormat,
+    ) -> Result<GmailThreadResponse> {
+        let thread_id = thread_id.to_string();
+
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+            let thread_id = thread_id.clone();
+            async move {
+                let url = format!(
+                    "{}/users/{}/threads/{}",
+                    GMAIL_API_BASE, user_email, thread_id
+                );
+
+                let format_str = match format {
+                    MessageFormat::Full => "full",
+                    MessageFormat::Metadata => "metadata",
+                    MessageFormat::Minimal => "minimal",
+                    MessageFormat::Raw => "raw",
+                };
+
+                let params = vec![("format", format_str)];
+
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&params)
+                    .send()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to send request to Gmail API for thread {}",
+                            thread_id
+                        )
+                    })?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Gmail API returned error for thread {}: HTTP {} - {}",
+                        thread_id,
+                        status,
+                        error_text
+                    )));
+                }
+
+                debug!("Gmail API get thread response status: {}", status);
+                let response_text = response
+                    .text()
+                    .await
+                    .context("Failed to read response body from Gmail API")?;
+
+                let thread: GmailThreadResponse = serde_json::from_str(&response_text)
+                    .with_context(|| {
+                        format!(
+                            "Failed to parse Gmail API response for thread {}. Raw response: {}",
+                            thread_id, response_text
+                        )
+                    })?;
+
+                Ok(ApiResult::Success(thread))
+            }
+        })
+        .await
+    }
+
+    pub async fn batch_get_threads(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        thread_ids: &[String],
+        format: MessageFormat,
+    ) -> Result<Vec<Result<GmailThreadResponse>>> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Gmail batch API allows up to 100 requests per batch
+        let chunk_size = std::cmp::min(100, thread_ids.len());
+        let thread_chunk = &thread_ids[..chunk_size];
+
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+            let thread_chunk = thread_chunk.to_vec();
+            async move {
+                let batch_url = "https://www.googleapis.com/batch/gmail/v1";
+
+                let format_str = match format {
+                    MessageFormat::Full => "full",
+                    MessageFormat::Metadata => "metadata",
+                    MessageFormat::Minimal => "minimal",
+                    MessageFormat::Raw => "raw",
+                };
+
+                // Construct multipart batch request body
+                let boundary = "batch_boundary_123456789";
+                let mut batch_body = String::new();
+
+                for (i, thread_id) in thread_chunk.iter().enumerate() {
+                    batch_body.push_str(&format!("--{}\r\n", boundary));
+                    batch_body.push_str("Content-Type: application/http\r\n");
+                    batch_body.push_str(&format!("Content-ID: <item{}>\r\n\r\n", i + 1));
+
+                    let thread_url = format!(
+                        "GET /gmail/v1/users/{}/threads/{}?format={} HTTP/1.1\r\n",
+                        user_email, thread_id, format_str
+                    );
+                    batch_body.push_str(&thread_url);
+                    batch_body.push_str("Host: gmail.googleapis.com\r\n\r\n");
+                }
+
+                batch_body.push_str(&format!("--{}--\r\n", boundary));
+
+                let response = self
+                    .client
+                    .post(batch_url)
+                    .bearer_auth(&token)
+                    .header(
+                        "Content-Type",
+                        format!("multipart/mixed; boundary={}", boundary),
+                    )
+                    .body(batch_body)
+                    .send()
+                    .await
+                    .context("Failed to send batch request to Gmail API")?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Gmail batch API returned error: HTTP {} - {}",
+                        status,
+                        error_text
+                    )));
+                }
+
+                let response_text = response
+                    .text()
+                    .await
+                    .context("Failed to read batch response body from Gmail API")?;
+
+                // Parse multipart response
+                let results = self.parse_batch_response(&response_text, &thread_chunk)?;
+
+                Ok(ApiResult::Success(results))
+            }
+        })
+        .await
+    }
+
+    fn parse_batch_response(
+        &self,
+        response_text: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<Result<GmailThreadResponse>>> {
+        let mut results = Vec::with_capacity(thread_ids.len());
+
+        // Split response by boundary markers
+        let parts: Vec<&str> = response_text
+            .split("--batch_")
+            .filter(|part| !part.trim().is_empty() && !part.starts_with('-'))
+            .collect();
+
+        for (i, part) in parts.iter().enumerate() {
+            if i >= thread_ids.len() {
+                break;
+            }
+
+            // Extract JSON from the HTTP response part
+            if let Some(json_start) = part.find('{') {
+                let json_part = &part[json_start..];
+                if let Some(json_end) = json_part.rfind('}') {
+                    let json_str = &json_part[..=json_end];
+
+                    match serde_json::from_str::<GmailThreadResponse>(json_str) {
+                        Ok(thread) => results.push(Ok(thread)),
+                        Err(e) => {
+                            results.push(Err(anyhow!(
+                                "Failed to parse thread {} response: {}",
+                                thread_ids[i],
+                                e
+                            )));
+                        }
+                    }
+                } else {
+                    results.push(Err(anyhow!(
+                        "Invalid JSON response for thread {}",
+                        thread_ids[i]
+                    )));
+                }
+            } else {
+                // Check if this is an error response
+                if part.contains("HTTP/1.1 4") || part.contains("HTTP/1.1 5") {
+                    results.push(Err(anyhow!(
+                        "HTTP error for thread {}: {}",
+                        thread_ids[i],
+                        part
+                    )));
+                } else {
+                    results.push(Err(anyhow!(
+                        "No JSON found in response for thread {}",
+                        thread_ids[i]
+                    )));
+                }
+            }
+        }
+
+        // Ensure we have results for all requested threads
+        while results.len() < thread_ids.len() {
+            let missing_idx = results.len();
+            results.push(Err(anyhow!(
+                "No response received for thread {}",
+                thread_ids[missing_idx]
+            )));
+        }
+
+        Ok(results)
     }
 
     pub async fn list_history(
@@ -374,6 +666,15 @@ pub struct MessagesListResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ThreadsListResponse {
+    pub threads: Option<Vec<ThreadInfo>>,
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+    #[serde(rename = "resultSizeEstimate")]
+    pub result_size_estimate: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MessageInfo {
     pub id: String,
     #[serde(rename = "threadId")]
@@ -381,6 +682,13 @@ pub struct MessageInfo {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ThreadInfo {
+    pub id: String,
+    #[serde(rename = "historyId")]
+    pub history_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct GmailMessage {
     pub id: String,
     #[serde(rename = "threadId")]
@@ -398,7 +706,7 @@ pub struct GmailMessage {
     pub raw: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MessagePart {
     #[serde(rename = "partId")]
     pub part_id: Option<String>,
@@ -410,13 +718,13 @@ pub struct MessagePart {
     pub parts: Option<Vec<MessagePart>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Header {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MessagePartBody {
     #[serde(rename = "attachmentId")]
     pub attachment_id: Option<String>,
@@ -488,4 +796,12 @@ pub struct GmailProfile {
     pub threads_total: Option<u64>,
     #[serde(rename = "historyId")]
     pub history_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GmailThreadResponse {
+    pub id: String,
+    #[serde(rename = "historyId")]
+    pub history_id: Option<String>,
+    pub messages: Vec<GmailMessage>,
 }

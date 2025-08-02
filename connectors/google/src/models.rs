@@ -2,9 +2,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use sqlx::types::time::OffsetDateTime;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
+
+use crate::gmail::GmailMessage;
 
 #[derive(Debug, Clone)]
 pub struct UserFile {
@@ -300,4 +302,202 @@ pub struct TextElement {
 #[derive(Debug, Deserialize)]
 pub struct TextRun {
     pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GmailThread {
+    pub thread_id: String,
+    pub messages: Vec<GmailMessage>,
+    pub participants: HashSet<String>,
+    pub subject: String,
+    pub latest_date: String,
+    pub total_messages: usize,
+}
+
+impl GmailThread {
+    pub fn new(thread_id: String) -> Self {
+        Self {
+            thread_id,
+            messages: Vec::new(),
+            participants: HashSet::new(),
+            subject: String::new(),
+            latest_date: String::new(),
+            total_messages: 0,
+        }
+    }
+
+    pub fn add_message(&mut self, message: GmailMessage) {
+        // Update subject from first message if not set
+        if self.subject.is_empty() {
+            if let Some(subject) = self.extract_header_value(&message, "Subject") {
+                self.subject = subject;
+            }
+        }
+
+        // Extract participants from headers
+        self.extract_participants(&message);
+
+        // Update latest date
+        if let Some(internal_date) = &message.internal_date {
+            if self.latest_date.is_empty() {
+                self.latest_date = internal_date.clone();
+            } else {
+                // Parse both dates as timestamps for proper comparison
+                if let (Ok(current_ts), Ok(latest_ts)) = (
+                    internal_date.parse::<i64>(),
+                    self.latest_date.parse::<i64>(),
+                ) {
+                    if current_ts > latest_ts {
+                        self.latest_date = internal_date.clone();
+                    }
+                }
+            }
+        }
+
+        self.messages.push(message);
+        self.total_messages = self.messages.len();
+    }
+
+    fn extract_participants(&mut self, message: &GmailMessage) {
+        let headers_to_check = ["From", "To", "Cc", "Bcc"];
+
+        for header_name in &headers_to_check {
+            if let Some(header_value) = self.extract_header_value(message, header_name) {
+                // Parse email addresses from header value
+                // Simple parsing - in production might want more sophisticated email parsing
+                for email in header_value.split(',') {
+                    let email = email.trim();
+                    // Extract email from "Name <email@domain.com>" format
+                    if let Some(start) = email.find('<') {
+                        if let Some(end) = email.find('>') {
+                            if start < end {
+                                let extracted_email = email[start + 1..end].trim().to_lowercase();
+                                if !extracted_email.is_empty() {
+                                    self.participants.insert(extracted_email);
+                                }
+                            }
+                        }
+                    } else if email.contains('@') {
+                        // Direct email format
+                        self.participants.insert(email.to_lowercase());
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_header_value(&self, message: &GmailMessage, header_name: &str) -> Option<String> {
+        message
+            .payload
+            .as_ref()?
+            .headers
+            .as_ref()?
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(header_name))
+            .map(|h| h.value.clone())
+    }
+
+    pub fn aggregate_content(
+        &self,
+        gmail_client: &crate::gmail::GmailClient,
+    ) -> Result<String, anyhow::Error> {
+        let mut content_parts = Vec::new();
+
+        // Add subject as the first part
+        if !self.subject.is_empty() {
+            content_parts.push(format!("Subject: {}", self.subject));
+            content_parts.push(String::new()); // Empty line
+        }
+
+        // Add each message content
+        for (i, message) in self.messages.iter().enumerate() {
+            content_parts.push(format!("=== Message {} ===", i + 1));
+
+            // Add basic message info
+            if let Some(from) = self.extract_header_value(message, "From") {
+                content_parts.push(format!("From: {}", from));
+            }
+            if let Some(date) = &message.internal_date {
+                content_parts.push(format!("Date: {}", date));
+            }
+
+            content_parts.push(String::new()); // Empty line
+
+            // Add message content
+            match gmail_client.extract_message_content(message) {
+                Ok(message_content) => {
+                    if !message_content.trim().is_empty() {
+                        content_parts.push(message_content.trim().to_string());
+                    }
+                }
+                Err(e) => {
+                    content_parts.push(format!("Error extracting message content: {}", e));
+                }
+            }
+
+            content_parts.push(String::new()); // Empty line between messages
+        }
+
+        Ok(content_parts.join("\n"))
+    }
+
+    pub fn to_connector_event(
+        &self,
+        sync_run_id: &str,
+        source_id: &str,
+        content_id: &str,
+        _gmail_client: &crate::gmail::GmailClient,
+    ) -> Result<ConnectorEvent, anyhow::Error> {
+        let mut extra = HashMap::new();
+        extra.insert("thread_id".to_string(), serde_json::json!(self.thread_id));
+        extra.insert(
+            "message_count".to_string(),
+            serde_json::json!(self.total_messages),
+        );
+        extra.insert(
+            "participants".to_string(),
+            serde_json::json!(self.participants.iter().collect::<Vec<_>>()),
+        );
+
+        // Parse latest date for metadata
+        let updated_at = if !self.latest_date.is_empty() {
+            self.latest_date
+                .parse::<i64>()
+                .ok()
+                .and_then(|millis| OffsetDateTime::from_unix_timestamp(millis / 1000).ok())
+        } else {
+            None
+        };
+
+        let metadata = DocumentMetadata {
+            title: Some(if self.subject.is_empty() {
+                format!("Gmail Thread {}", self.thread_id)
+            } else {
+                self.subject.clone()
+            }),
+            author: None,           // Could extract from first message's From header
+            created_at: updated_at, // Use latest message date as created date for threads
+            updated_at,
+            mime_type: Some("application/x-gmail-thread".to_string()),
+            size: None, // Could calculate total thread size
+            url: None,  // Could generate Gmail web URL
+            path: Some(format!("/Gmail/{}", self.subject)),
+            extra: Some(extra),
+        };
+
+        let permissions = DocumentPermissions {
+            public: false,
+            users: self.participants.iter().cloned().collect(),
+            groups: vec![],
+        };
+
+        Ok(ConnectorEvent::DocumentCreated {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
+            document_id: self.thread_id.clone(),
+            content_id: content_id.to_string(),
+            metadata,
+            permissions,
+        })
+    }
 }

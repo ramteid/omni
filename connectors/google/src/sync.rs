@@ -11,7 +11,10 @@ use crate::admin::AdminClient;
 use crate::auth::ServiceAccountAuth;
 use crate::cache::LruFolderCache;
 use crate::drive::DriveClient;
-use crate::models::{UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification};
+use crate::gmail::{GmailClient, MessageFormat};
+use crate::models::{
+    GmailThread, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
+};
 use shared::db::repositories::ServiceCredentialsRepo;
 use shared::models::{
     ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
@@ -25,6 +28,7 @@ pub struct SyncManager {
     pool: PgPool,
     redis_client: RedisClient,
     drive_client: DriveClient,
+    gmail_client: GmailClient,
     admin_client: AdminClient,
     event_queue: EventQueue,
     content_storage: ContentStorage,
@@ -43,11 +47,11 @@ impl SyncState {
     }
 
     pub fn get_file_sync_key(&self, source_id: &str, file_id: &str) -> String {
-        format!("google:sync:{}:{}", source_id, file_id)
+        format!("google:drive:{}:{}", source_id, file_id)
     }
 
     pub fn get_test_file_sync_key(&self, source_id: &str, file_id: &str) -> String {
-        format!("google:sync:test:{}:{}", source_id, file_id)
+        format!("google:drive:test:{}:{}", source_id, file_id)
     }
 
     pub async fn get_file_sync_state(
@@ -105,16 +109,16 @@ impl SyncState {
     pub async fn get_all_synced_file_ids(&self, source_id: &str) -> Result<HashSet<String>> {
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let pattern = if cfg!(test) {
-            format!("google:sync:test:{}:*", source_id)
+            format!("google:drive:test:{}:*", source_id)
         } else {
-            format!("google:sync:{}:*", source_id)
+            format!("google:drive:{}:*", source_id)
         };
 
         let keys: Vec<String> = conn.keys(&pattern).await?;
         let prefix = if cfg!(test) {
-            format!("google:sync:test:{}:", source_id)
+            format!("google:drive:test:{}:", source_id)
         } else {
-            format!("google:sync:{}:", source_id)
+            format!("google:drive:{}:", source_id)
         };
         let file_ids: HashSet<String> = keys
             .into_iter()
@@ -122,6 +126,93 @@ impl SyncState {
             .collect();
 
         Ok(file_ids)
+    }
+
+    // Gmail thread sync state methods
+    pub fn get_thread_sync_key(&self, source_id: &str, thread_id: &str) -> String {
+        format!("google:gmail:sync:{}:{}", source_id, thread_id)
+    }
+
+    pub fn get_test_thread_sync_key(&self, source_id: &str, thread_id: &str) -> String {
+        format!("google:gmail:sync:test:{}:{}", source_id, thread_id)
+    }
+
+    pub async fn get_thread_sync_state(
+        &self,
+        source_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<String>> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = if cfg!(test) {
+            self.get_test_thread_sync_key(source_id, thread_id)
+        } else {
+            self.get_thread_sync_key(source_id, thread_id)
+        };
+
+        let result: Option<String> = conn.get(&key).await?;
+        Ok(result)
+    }
+
+    pub async fn set_thread_sync_state(
+        &self,
+        source_id: &str,
+        thread_id: &str,
+        latest_date: &str,
+    ) -> Result<()> {
+        self.set_thread_sync_state_with_expiry(source_id, thread_id, latest_date, 30 * 24 * 60 * 60)
+            .await
+    }
+
+    pub async fn set_thread_sync_state_with_expiry(
+        &self,
+        source_id: &str,
+        thread_id: &str,
+        latest_date: &str,
+        expiry_seconds: u64,
+    ) -> Result<()> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = if cfg!(test) {
+            self.get_test_thread_sync_key(source_id, thread_id)
+        } else {
+            self.get_thread_sync_key(source_id, thread_id)
+        };
+
+        let _: () = conn.set_ex(&key, latest_date, expiry_seconds).await?;
+        Ok(())
+    }
+
+    pub async fn delete_thread_sync_state(&self, source_id: &str, thread_id: &str) -> Result<()> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = if cfg!(test) {
+            self.get_test_thread_sync_key(source_id, thread_id)
+        } else {
+            self.get_thread_sync_key(source_id, thread_id)
+        };
+
+        let _: () = conn.del(&key).await?;
+        Ok(())
+    }
+
+    pub async fn get_all_synced_thread_ids(&self, source_id: &str) -> Result<HashSet<String>> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let pattern = if cfg!(test) {
+            format!("google:gmail:sync:test:{}:*", source_id)
+        } else {
+            format!("google:gmail:sync:{}:*", source_id)
+        };
+
+        let keys: Vec<String> = conn.keys(&pattern).await?;
+        let prefix = if cfg!(test) {
+            format!("google:gmail:sync:test:{}:", source_id)
+        } else {
+            format!("google:gmail:sync:{}:", source_id)
+        };
+        let thread_ids: HashSet<String> = keys
+            .into_iter()
+            .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
+            .collect();
+
+        Ok(thread_ids)
     }
 }
 
@@ -142,6 +233,7 @@ impl SyncManager {
 
         let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone());
+        let gmail_client = GmailClient::with_rate_limiter(rate_limiter.clone());
         let admin_client = AdminClient::with_rate_limiter(rate_limiter);
 
         let content_storage = ContentStorage::new(pool.clone());
@@ -150,6 +242,7 @@ impl SyncManager {
             pool,
             redis_client,
             drive_client,
+            gmail_client,
             admin_client,
             event_queue,
             content_storage,
@@ -267,8 +360,87 @@ impl SyncManager {
         sync_state: &SyncState,
         current_files: Arc<std::sync::Mutex<HashSet<String>>>,
         rate_limiter: Arc<RateLimiter>,
+        processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
     ) -> Result<(usize, usize)> {
-        info!("Processing files for user: {}", user_email);
+        info!("Processing all data for user: {}", user_email);
+
+        let mut total_processed = 0;
+        let mut total_updated = 0;
+
+        // Step 1: Sync Google Drive files
+        info!("Starting Google Drive sync for user: {}", user_email);
+        match self
+            .sync_drive_for_user(
+                user_email,
+                service_auth.clone(),
+                source_id,
+                sync_run_id,
+                sync_state,
+                current_files.clone(),
+                rate_limiter.clone(),
+            )
+            .await
+        {
+            Ok((drive_processed, drive_updated)) => {
+                total_processed += drive_processed;
+                total_updated += drive_updated;
+                info!(
+                    "Google Drive sync completed for user {}: {} processed, {} updated",
+                    user_email, drive_processed, drive_updated
+                );
+            }
+            Err(e) => {
+                error!("Google Drive sync failed for user {}: {}", user_email, e);
+                // Continue with Gmail sync even if Drive fails
+            }
+        }
+
+        // Step 2: Sync Gmail
+        info!("Starting Gmail sync for user: {}", user_email);
+        match self
+            .sync_gmail_for_user(
+                user_email,
+                service_auth.clone(),
+                source_id,
+                sync_run_id,
+                processed_threads.clone(),
+                rate_limiter.clone(),
+            )
+            .await
+        {
+            Ok((gmail_processed, gmail_updated)) => {
+                total_processed += gmail_processed;
+                total_updated += gmail_updated;
+                info!(
+                    "Gmail sync completed for user {}: {} processed, {} updated",
+                    user_email, gmail_processed, gmail_updated
+                );
+            }
+            Err(e) => {
+                error!("Gmail sync failed for user {}: {}", user_email, e);
+                // Continue even if Gmail fails
+            }
+        }
+
+        info!(
+            "Completed sync for user {}: {} total processed, {} total updated",
+            user_email, total_processed, total_updated
+        );
+
+        Ok((total_processed, total_updated))
+    }
+
+    async fn sync_drive_for_user(
+        &self,
+        user_email: &str,
+        service_auth: Arc<ServiceAccountAuth>,
+        source_id: &str,
+        sync_run_id: &str,
+        sync_state: &SyncState,
+        current_files: Arc<std::sync::Mutex<HashSet<String>>>,
+        rate_limiter: Arc<RateLimiter>,
+    ) -> Result<(usize, usize)> {
+        info!("Processing Drive files for user: {}", user_email);
 
         let mut total_processed = 0;
         let mut total_updated = 0;
@@ -555,6 +727,7 @@ impl SyncManager {
         let sync_state = SyncState::new(self.redis_client.clone());
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
         let current_files = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
 
         // Use single global rate limiter (200 req/sec) for ALL Google API calls
         let global_rate_limiter = Arc::new(RateLimiter::new(200, 5));
@@ -584,6 +757,7 @@ impl SyncManager {
                             &sync_state,
                             current_files.clone(),
                             global_rate_limiter.clone(),
+                            processed_threads.clone(),
                         )
                         .await
                     {
@@ -1626,6 +1800,306 @@ impl SyncManager {
         // Reverse to get correct order (root to file)
         path_components.reverse();
         Ok(format!("/{}", path_components.join("/")))
+    }
+
+    async fn sync_gmail_for_user(
+        &self,
+        user_email: &str,
+        service_auth: Arc<ServiceAccountAuth>,
+        source_id: &str,
+        sync_run_id: &str,
+        processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
+        rate_limiter: Arc<RateLimiter>,
+    ) -> Result<(usize, usize)> {
+        info!("Processing Gmail for user: {}", user_email);
+
+        let mut total_processed = 0;
+        let mut total_updated = 0;
+        let mut page_token: Option<String> = None;
+        const BATCH_SIZE: usize = 500;
+
+        // Track threads found for this user
+        let mut user_threads: Vec<String> = Vec::new();
+
+        // Step 1: List all threads for the user
+        loop {
+            debug!(
+                "Listing Gmail threads for user {} with page_token: {:?}",
+                user_email, page_token
+            );
+
+            // Use rate limiter for listing threads
+            let response = rate_limiter
+                .execute_with_retry(|| {
+                    let gmail_client = self.gmail_client.clone();
+                    let service_auth = service_auth.clone();
+                    let user_email = user_email.to_string();
+                    let page_token = page_token.clone();
+
+                    async move {
+                        gmail_client
+                            .list_threads(
+                                &service_auth,
+                                &user_email,
+                                None,
+                                Some(BATCH_SIZE as u32),
+                                page_token.as_deref(),
+                            )
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "Failed to list Gmail threads for user {} (page_token: {:?})",
+                                    user_email, page_token
+                                )
+                            })
+                    }
+                })
+                .await?;
+
+            // Collect thread IDs
+            if let Some(threads) = response.threads {
+                debug!(
+                    "Got {} threads in this page for user {}",
+                    threads.len(),
+                    user_email
+                );
+
+                for thread_info in threads {
+                    user_threads.push(thread_info.id);
+                }
+            }
+
+            // Check if there are more pages
+            page_token = response.next_page_token;
+            if page_token.is_none() {
+                break;
+            }
+        }
+
+        info!(
+            "Found {} Gmail threads for user {}",
+            user_threads.len(),
+            user_email
+        );
+
+        // Step 2: Process threads in batches of 100
+        let sync_state = SyncState::new(self.redis_client.clone());
+        const THREAD_BATCH_SIZE: usize = 50;
+
+        for chunk in user_threads.chunks(THREAD_BATCH_SIZE) {
+            // Filter out already processed threads
+            let mut unprocessed_threads = Vec::new();
+            for thread_id in chunk {
+                let already_processed = {
+                    let processed_guard = processed_threads.lock().unwrap();
+                    processed_guard.contains(thread_id)
+                };
+
+                if already_processed {
+                    debug!(
+                        "Thread {} already processed by another user, skipping",
+                        thread_id
+                    );
+                    continue;
+                }
+
+                unprocessed_threads.push(thread_id.clone());
+            }
+
+            if unprocessed_threads.is_empty() {
+                continue;
+            }
+
+            // Mark threads as processed to prevent other users from processing them
+            {
+                let mut processed_guard = processed_threads.lock().unwrap();
+                for thread_id in &unprocessed_threads {
+                    processed_guard.insert(thread_id.clone());
+                }
+            }
+
+            debug!("Processing batch of {} threads", unprocessed_threads.len());
+
+            // Step 3: Fetch threads in batch
+            let batch_results = match rate_limiter
+                .execute_with_retry(|| {
+                    let gmail_client = self.gmail_client.clone();
+                    let service_auth = service_auth.clone();
+                    let user_email = user_email.to_string();
+                    let thread_ids = unprocessed_threads.clone();
+
+                    async move {
+                        gmail_client
+                            .batch_get_threads(
+                                &service_auth,
+                                &user_email,
+                                &thread_ids,
+                                MessageFormat::Full,
+                            )
+                            .await
+                            .with_context(|| {
+                                format!("Failed to get Gmail threads batch for user {}", user_email)
+                            })
+                    }
+                })
+                .await
+            {
+                Ok(results) => results,
+                Err(e) => {
+                    warn!("Failed to fetch thread batch: {}", e);
+                    continue;
+                }
+            };
+
+            // Process each thread response
+            for (i, thread_result) in batch_results.into_iter().enumerate() {
+                let thread_id = &unprocessed_threads[i];
+                total_processed += 1;
+
+                let thread_response = match thread_result {
+                    Ok(response) => response,
+                    Err(e) => {
+                        warn!("Failed to fetch thread {}: {}", thread_id, e);
+                        continue;
+                    }
+                };
+
+                // Convert API response to our GmailThread model
+                let mut gmail_thread = GmailThread::new(thread_id.clone());
+                for message in thread_response.messages {
+                    gmail_thread.add_message(message);
+                }
+
+                // Check if we've already indexed this thread by comparing timestamps
+                if !gmail_thread.latest_date.is_empty() {
+                    match sync_state
+                        .get_thread_sync_state(source_id, &thread_id)
+                        .await
+                    {
+                        Ok(Some(last_synced_date)) => {
+                            // Parse timestamps for proper comparison
+                            match (
+                                gmail_thread.latest_date.parse::<i64>(),
+                                last_synced_date.parse::<i64>(),
+                            ) {
+                                (Ok(latest_ts), Ok(synced_ts)) => {
+                                    if latest_ts <= synced_ts {
+                                        debug!(
+                                            "Thread {} already synced (latest: {}, last synced: {}), skipping",
+                                            thread_id, gmail_thread.latest_date, last_synced_date
+                                        );
+                                        continue;
+                                    } else {
+                                        debug!(
+                                            "Thread {} has new messages (latest: {}, last synced: {}), processing",
+                                            thread_id, gmail_thread.latest_date, last_synced_date
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    debug!(
+                                        "Failed to parse timestamps for thread {} (latest: {}, last synced: {}), processing to be safe",
+                                        thread_id, gmail_thread.latest_date, last_synced_date
+                                    );
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            debug!("Thread {} not previously synced, processing", thread_id);
+                        }
+                        Err(e) => {
+                            warn!("Failed to get sync state for thread {}: {}", thread_id, e);
+                            // Continue processing if we can't check sync state
+                        }
+                    }
+                }
+
+                // Step 4: Generate content and store
+                if gmail_thread.total_messages > 0 {
+                    match gmail_thread.aggregate_content(&self.gmail_client) {
+                        Ok(content) => {
+                            if !content.trim().is_empty() {
+                                // Store content in LOB storage
+                                match self.content_storage.store_text(content).await {
+                                    Ok(content_id) => {
+                                        // Create connector event
+                                        match gmail_thread.to_connector_event(
+                                            sync_run_id,
+                                            source_id,
+                                            &content_id,
+                                            &self.gmail_client,
+                                        ) {
+                                            Ok(event) => {
+                                                match self
+                                                    .event_queue
+                                                    .enqueue(source_id, &event)
+                                                    .await
+                                                {
+                                                    Ok(_) => {
+                                                        total_updated += 1;
+                                                        info!(
+                                                            "Successfully queued Gmail thread {}",
+                                                            thread_id
+                                                        );
+
+                                                        // Update sync state with thread's latest date
+                                                        if let Err(e) = sync_state
+                                                            .set_thread_sync_state(
+                                                                source_id,
+                                                                &thread_id,
+                                                                &gmail_thread.latest_date,
+                                                            )
+                                                            .await
+                                                        {
+                                                            error!("Failed to update sync state for Gmail thread {}: {}", thread_id, e);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Failed to queue event for Gmail thread {}: {}", thread_id, e);
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to create connector event for Gmail thread {}: {}", thread_id, e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to store content for Gmail thread {}: {}",
+                                            thread_id, e
+                                        );
+                                    }
+                                }
+                            } else {
+                                debug!("Gmail thread {} has empty content, skipping", thread_id);
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to aggregate content for Gmail thread {}: {}",
+                                thread_id, e
+                            );
+                        }
+                    }
+                } else {
+                    debug!("Gmail thread {} has no messages, skipping", thread_id);
+                }
+
+                // Explicitly drop thread data to free memory
+                drop(gmail_thread);
+            }
+
+            // Explicitly drop batch results to free memory
+            drop(unprocessed_threads);
+        }
+
+        info!(
+            "Completed Gmail processing for user {}: {} threads processed, {} updated",
+            user_email, total_processed, total_updated
+        );
+
+        Ok((total_processed, total_updated))
     }
 
     pub async fn startup_sync_check(&self) -> Result<()> {
