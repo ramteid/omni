@@ -197,3 +197,60 @@ impl ServiceAccountAuth {
         }
     }
 }
+
+pub fn is_auth_error(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::UNAUTHORIZED
+}
+
+#[derive(Debug)]
+pub enum ApiResult<T> {
+    Success(T),
+    AuthError,
+    OtherError(anyhow::Error),
+}
+
+pub async fn execute_with_auth_retry<T, F, Fut>(
+    auth: &ServiceAccountAuth,
+    user_email: &str,
+    rate_limiter: &Option<Arc<shared::RateLimiter>>,
+    operation: F,
+) -> Result<T>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<ApiResult<T>>>,
+{
+    let mut token = auth.get_fresh_token(user_email).await?;
+
+    for attempt in 0..2 {
+        let api_result = match rate_limiter {
+            Some(limiter) => {
+                let token_clone = token.clone();
+                limiter
+                    .execute_with_retry(|| operation(token_clone.clone()))
+                    .await?
+            }
+            None => operation(token.clone()).await?,
+        };
+
+        match api_result {
+            ApiResult::Success(response) => return Ok(response),
+            ApiResult::AuthError if attempt == 0 => {
+                warn!(
+                    "Got 401 error for user {}, refreshing token and retrying",
+                    user_email
+                );
+                token = auth.refresh_access_token(user_email).await?;
+                continue;
+            }
+            ApiResult::AuthError => {
+                return Err(anyhow!(
+                    "Authentication failed for user {} after token refresh",
+                    user_email
+                ));
+            }
+            ApiResult::OtherError(e) => return Err(e),
+        }
+    }
+
+    unreachable!()
+}

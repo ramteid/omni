@@ -19,10 +19,16 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and install pdfium binary
-RUN mkdir /tmp/pdfium && cd /tmp/pdfium && \ 
-    wget https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7242/pdfium-linux-x64.tgz && \
-    tar -xzf pdfium-linux-x64.tgz && \
+# Download and install pdfium binary (architecture-aware)
+ARG TARGETPLATFORM
+RUN case "$TARGETPLATFORM" in \
+        "linux/amd64") PDFIUM_ARCH="x64" ;; \
+        "linux/arm64" | "linux/arm64/v8") PDFIUM_ARCH="arm64" ;; \
+        *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
+    esac && \
+    mkdir /tmp/pdfium && cd /tmp/pdfium && \
+    wget https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7242/pdfium-linux-${PDFIUM_ARCH}.tgz && \
+    tar -xzf pdfium-linux-${PDFIUM_ARCH}.tgz && \
     mv lib/libpdfium.so /usr/local/lib/ && \
     ldconfig && \
     rm -rf /tmp/pdfium

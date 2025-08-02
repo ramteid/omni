@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use crate::auth::ServiceAccountAuth;
+use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, ServiceAccountAuth};
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
@@ -17,17 +17,6 @@ const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
 const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
-
-fn is_auth_error(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::UNAUTHORIZED
-}
-
-#[derive(Debug)]
-enum ApiResult<T> {
-    Success(T),
-    AuthError,
-    OtherError(anyhow::Error),
-}
 
 #[derive(Clone)]
 pub struct DriveClient {
@@ -54,52 +43,6 @@ impl DriveClient {
             rate_limiter: None,
             pdfium,
         }
-    }
-
-    async fn execute_with_auth_retry<T, F, Fut>(
-        &self,
-        auth: &ServiceAccountAuth,
-        user_email: &str,
-        operation: F,
-    ) -> Result<T>
-    where
-        F: Fn(String) -> Fut,
-        Fut: std::future::Future<Output = Result<ApiResult<T>>>,
-    {
-        let mut token = auth.get_fresh_token(user_email).await?;
-
-        for attempt in 0..2 {
-            let api_result = match &self.rate_limiter {
-                Some(limiter) => {
-                    let token_clone = token.clone();
-                    limiter
-                        .execute_with_retry(|| operation(token_clone.clone()))
-                        .await?
-                }
-                None => operation(token.clone()).await?,
-            };
-
-            match api_result {
-                ApiResult::Success(response) => return Ok(response),
-                ApiResult::AuthError if attempt == 0 => {
-                    warn!(
-                        "Got 401 error for user {}, refreshing token and retrying",
-                        user_email
-                    );
-                    token = auth.refresh_access_token(user_email).await?;
-                    continue;
-                }
-                ApiResult::AuthError => {
-                    return Err(anyhow!(
-                        "Authentication failed for user {} after token refresh",
-                        user_email
-                    ));
-                }
-                ApiResult::OtherError(e) => return Err(e),
-            }
-        }
-
-        unreachable!()
     }
 
     pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>) -> Self {
@@ -129,7 +72,7 @@ impl DriveClient {
     ) -> Result<FilesListResponse> {
         let page_token = page_token.map(|s| s.to_string());
 
-        self.execute_with_auth_retry(auth, user_email, |token| {
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let page_token = page_token.clone();
             async move {
             let url = format!("{}/files", DRIVE_API_BASE);
@@ -217,7 +160,7 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        self.execute_with_auth_retry(auth, user_email, |token| {
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/documents/{}", DOCS_API_BASE, &file_id);
@@ -276,7 +219,7 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        self.execute_with_auth_retry(auth, user_email, |token| {
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, &file_id);
@@ -339,7 +282,7 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        self.execute_with_auth_retry(auth, user_email, |token| {
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/presentations/{}", SLIDES_API_BASE, &file_id);
@@ -385,7 +328,7 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        self.execute_with_auth_retry(auth, user_email, |token| {
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
@@ -431,7 +374,7 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        self.execute_with_auth_retry(auth, user_email, |token| {
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
@@ -616,7 +559,7 @@ impl DriveClient {
     ) -> Result<GoogleDriveFile> {
         let folder_id = folder_id.to_string();
 
-        self.execute_with_auth_retry(auth, user_email, |token| {
+        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let folder_id = folder_id.clone();
             async move {
                 let url = format!("{}/files/{}", DRIVE_API_BASE, folder_id);

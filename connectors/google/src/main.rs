@@ -11,6 +11,7 @@ mod api;
 mod auth;
 mod cache;
 mod drive;
+mod gmail;
 mod models;
 mod sync;
 
