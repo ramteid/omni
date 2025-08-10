@@ -731,6 +731,16 @@ impl SearchEngine {
         Ok(combined_results)
     }
 
+    /// Generate cache key for AI answers based on query only
+    pub fn generate_ai_cache_key(&self, query: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        query.trim().to_lowercase().hash(&mut hasher);
+        format!("ai_answer:{:x}", hasher.finish())
+    }
+
     /// Build RAG prompt with context chunks and citation instructions
     pub fn build_rag_prompt(&self, query: &str, context: &[SearchResult]) -> String {
         let mut prompt = String::new();
@@ -740,7 +750,7 @@ impl SearchEngine {
             "Please provide a comprehensive answer using the information from the context. ",
         );
         prompt.push_str(
-            "When referencing information, cite it using the format [Source: Document Title]. Return your response in well-formatted markdown. ",
+            "When referencing information, cite it using the format [Source: <Document Title>](<Document URL>). Return your response in markdown format. ",
         );
         prompt.push_str(
             "If the context doesn't contain enough information to answer the question, say so.\n\n",

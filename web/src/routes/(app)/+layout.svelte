@@ -18,13 +18,16 @@
     <header class="bg-card border-border border-b">
         <div class="flex h-16 items-center justify-between px-6">
             <div class="flex items-center space-x-4">
-                <h1 class="text-foreground text-xl font-bold">Clio</h1>
+                <a href="/" class="text-foreground text-xl font-bold">clio</a>
+            </div>
+
+            <div class="flex items-center space-x-4">
                 <nav class="hidden space-x-4 md:flex">
-                    <a href="/" class="text-muted-foreground hover:text-foreground">Search</a>
-                    <a
+                    <!-- <a href="/" class="text-muted-foreground hover:text-foreground">Search</a> -->
+                    <!-- <a
                         href="/settings/integrations"
                         class="text-muted-foreground hover:text-foreground">Settings</a
-                    >
+                    > -->
                     {#if data.user.role === 'admin'}
                         <div class="group relative">
                             <button
@@ -46,7 +49,7 @@
                                 </svg>
                             </button>
                             <div
-                                class="bg-card border-border invisible absolute top-full left-0 z-50 mt-1 w-48 rounded-md border opacity-0 shadow-lg transition-all duration-200 group-hover:visible group-hover:opacity-100"
+                                class="bg-card border-border invisible absolute top-full right-0 z-50 mt-1 w-48 rounded-md border opacity-0 shadow-lg transition-all duration-200 group-hover:visible group-hover:opacity-100"
                             >
                                 <div class="py-1">
                                     <a
@@ -78,9 +81,6 @@
                         </div>
                     {/if}
                 </nav>
-            </div>
-
-            <div class="flex items-center space-x-4">
                 <span class="text-muted-foreground text-sm">
                     {data.user.email}
                     <span class="text-muted-foreground/80 text-xs">({data.user.role})</span>

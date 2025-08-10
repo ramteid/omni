@@ -7,10 +7,86 @@ use axum::{
     http::StatusCode,
     response::Json,
 };
-use futures_util::StreamExt;
+use futures_util::Stream;
+use redis::AsyncCommands;
 use serde_json::{json, Value};
 use sqlx::types::time::OffsetDateTime;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info};
+
+/// A stream wrapper that collects chunks for caching while forwarding them to the client
+struct CachingStream<S> {
+    inner: S,
+    cache_buffer: Arc<Mutex<String>>,
+    cache_key: String,
+    redis_client: redis::Client,
+}
+
+impl<S> CachingStream<S> {
+    fn new(inner: S, cache_key: String, redis_client: redis::Client) -> Self {
+        Self {
+            inner,
+            cache_buffer: Arc::new(Mutex::new(String::new())),
+            cache_key,
+            redis_client,
+        }
+    }
+}
+
+impl<S> Stream for CachingStream<S>
+where
+    S: Stream<Item = anyhow::Result<String>> + Unpin,
+{
+    type Item = Result<Vec<u8>, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                // Collect chunk for caching
+                let cache_buffer = Arc::clone(&self.cache_buffer);
+                let chunk_clone = chunk.clone();
+                tokio::spawn(async move {
+                    let mut buffer = cache_buffer.lock().await;
+                    buffer.push_str(&chunk_clone);
+                });
+
+                // Forward chunk to client
+                Poll::Ready(Some(Ok(chunk.into_bytes())))
+            }
+            Poll::Ready(Some(Err(e))) => {
+                error!("AI stream error: {}", e);
+                Poll::Ready(Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))))
+            }
+            Poll::Ready(None) => {
+                // Stream ended, cache the complete response
+                let cache_buffer = Arc::clone(&self.cache_buffer);
+                let cache_key = self.cache_key.clone();
+                let redis_client = self.redis_client.clone();
+
+                tokio::spawn(async move {
+                    let buffer = cache_buffer.lock().await;
+                    if !buffer.is_empty() {
+                        if let Ok(mut conn) = redis_client.get_multiplexed_async_connection().await
+                        {
+                            let _: Result<(), _> =
+                                conn.set_ex(&cache_key, buffer.as_str(), 600).await;
+                            info!("Cached AI response for key: {}", cache_key);
+                        }
+                    }
+                });
+
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
 
 pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<Value>> {
     sqlx::query("SELECT 1")
@@ -120,6 +196,26 @@ pub async fn ai_answer(
         state.config.clone(),
     );
 
+    // Generate cache key for AI answer
+    let cache_key = search_engine.generate_ai_cache_key(&request.query);
+
+    // Try to get cached AI response first
+    if let Ok(mut conn) = state.redis_client.get_multiplexed_async_connection().await {
+        if let Ok(cached_answer) = conn.get::<_, String>(&cache_key).await {
+            info!("Cache hit for AI answer query: '{}'", request.query);
+            let response = axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "text/plain; charset=utf-8")
+                .header("Cache-Control", "max-age=300") // 5 minutes cache
+                .body(Body::from(cached_answer))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            return Ok(response);
+        }
+    }
+
+    // Cache miss - generate fresh response
+    info!("Cache miss for AI answer query: '{}'", request.query);
+
     // Get RAG context by running hybrid search
     let context = match search_engine.get_rag_context(&request).await {
         Ok(context) => context,
@@ -143,14 +239,8 @@ pub async fn ai_answer(
         }
     };
 
-    // Convert AI stream to bytes stream
-    let byte_stream = ai_stream.map(|chunk| match chunk {
-        Ok(text) => Ok(text.into_bytes()),
-        Err(e) => {
-            error!("AI stream error: {}", e);
-            Err(std::io::Error::new(std::io::ErrorKind::Other, e))
-        }
-    });
+    // Create caching stream that forwards chunks while collecting for cache
+    let caching_stream = CachingStream::new(ai_stream, cache_key, state.redis_client.clone());
 
     // Create response with streaming body using Body::wrap_stream
     let response = axum::response::Response::builder()
@@ -158,7 +248,7 @@ pub async fn ai_answer(
         .header("Content-Type", "text/plain; charset=utf-8")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
-        .body(Body::from_stream(byte_stream))
+        .body(Body::from_stream(caching_stream))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(response)
