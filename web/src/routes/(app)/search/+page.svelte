@@ -3,11 +3,11 @@
     import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js'
     import { Button } from '$lib/components/ui/button/index.js'
     import { Input } from '$lib/components/ui/input/index.js'
-    import { Search, FileText, Calendar, User, Filter } from '@lucide/svelte'
+    import { Search, FileText, Calendar, User, FilterIcon } from '@lucide/svelte'
     import type { PageData } from './$types.js'
     import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
     import AIAnswer from '$lib/components/AIAnswer.svelte'
-    import { getDocumentIconPath, getSourceTypeFromId } from '$lib/utils/icons'
+    import { getDocumentIconPath, getSourceTypeFromId, getSourceIconPath } from '$lib/utils/icons'
     import { marked } from 'marked'
 
     let { data }: { data: PageData } = $props()
@@ -424,51 +424,62 @@
         <!-- Source Facets Sidebar -->
         {#if data.searchResults && sourceFacet}
             <div class="w-80">
-                <Card>
-                    <CardHeader>
-                        <div class="flex items-center justify-between">
-                            <CardTitle class="flex items-center gap-2 text-base">
-                                <Filter class="h-4 w-4" />
-                                Filter by Source
-                            </CardTitle>
-                            {#if selectedFilters.has('source_type') && selectedFilters.get('source_type')?.size > 0}
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onclick={() => clearFacetFilters('source_type')}
-                                    class="text-xs"
-                                >
-                                    Clear
-                                </Button>
-                            {/if}
-                        </div>
-                    </CardHeader>
-                    <CardContent class="space-y-3">
+                <div class="">
+                    <div class="mb-4 flex items-center justify-between">
+                        <h3 class="flex items-center gap-2 text-base font-semibold">
+                            <FilterIcon class="h-4 w-4" />
+                            Filter by Source
+                        </h3>
+                        {#if selectedFilters.has('source_type') && selectedFilters.get('source_type')?.size > 0}
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onclick={() => clearFacetFilters('source_type')}
+                                class="text-xs"
+                            >
+                                Clear
+                            </Button>
+                        {/if}
+                    </div>
+                    <div class="flex flex-col space-y-2">
                         {#each sourceFacet.values as facetValue}
-                            <label
-                                class="flex cursor-pointer items-center justify-between rounded p-2 hover:bg-gray-50"
+                            {@const sourceIcon = getSourceIconPath(facetValue.value)}
+                            {@const isSelected =
+                                selectedFilters.get('source_type')?.has(facetValue.value) || false}
+                            <Button
+                                variant="ghost"
+                                class="flex cursor-pointer justify-between rounded-full"
+                                onclick={() => toggleFilter('source_type', facetValue.value)}
                             >
                                 <div class="flex items-center gap-2">
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedFilters
-                                            .get('source_type')
-                                            ?.has(facetValue.value) || false}
-                                        onchange={() =>
-                                            toggleFilter('source_type', facetValue.value)}
-                                        class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                    />
-                                    <span class="text-sm font-medium text-gray-700">
+                                    {#if sourceIcon}
+                                        <img
+                                            src={sourceIcon}
+                                            alt="{facetValue.value} icon"
+                                            class="h-4 w-4"
+                                        />
+                                    {:else}
+                                        <FileText class="h-4 w-4 text-gray-400" />
+                                    {/if}
+                                    <span
+                                        class="text-sm font-medium {isSelected
+                                            ? 'text-blue-700'
+                                            : 'text-gray-700'}"
+                                    >
                                         {getDisplayValue('source_type', facetValue.value)}
                                     </span>
                                 </div>
-                                <span class="rounded bg-gray-100 px-2 py-1 text-xs text-gray-500">
+                                <span
+                                    class="rounded-full px-2 py-0.5 text-xs {isSelected
+                                        ? 'bg-blue-100 text-blue-700'
+                                        : 'bg-gray-100 text-gray-500'}"
+                                >
                                     {facetValue.count}
                                 </span>
-                            </label>
+                            </Button>
                         {/each}
-                    </CardContent>
-                </Card>
+                    </div>
+                </div>
 
                 {#if getTotalSelectedFilters() > 0}
                     <div class="mt-4">
