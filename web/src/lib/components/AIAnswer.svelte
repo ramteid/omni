@@ -1,6 +1,6 @@
 <script lang="ts">
     import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js'
-    import { Loader2, Bot, ExternalLink } from '@lucide/svelte'
+    import { Loader2, Sparkles, ExternalLink, ChevronDown, ChevronUp } from '@lucide/svelte'
     import type { SearchRequest } from '$lib/types/search.js'
     import { marked } from 'marked'
 
@@ -13,6 +13,9 @@
     let isLoading = $state(true)
     let answer = $state('')
     let error = $state<string | null>(null)
+    let isExpanded = $state(false)
+    let shouldShowExpandButton = $state(false)
+    let contentRef: HTMLDivElement | undefined = $state()
 
     // Start streaming AI answer automatically when component mounts
     $effect(() => {
@@ -64,33 +67,30 @@
         }
     }
 
-    // Parse citations and make them clickable
-    function parseAnswer(text: string): { text: string; citations: string[] } {
-        const citationRegex = /\[Source: ([^\]]+)\]/g
-        const citations: string[] = []
+    // Parse markdown links and extract them as sources
+    function parseAnswer(text: string): {
+        text: string
+        sources: Array<{ title: string; url: string }>
+    } {
+        const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g
+        const sources: Array<{ title: string; url: string }> = []
+        const seenUrls = new Set<string>()
         let match
 
-        while ((match = citationRegex.exec(text)) !== null) {
-            if (!citations.includes(match[1])) {
-                citations.push(match[1])
+        while ((match = linkRegex.exec(text)) !== null) {
+            const [, title, url] = match
+            if (!seenUrls.has(url)) {
+                seenUrls.add(url)
+                sources.push({ title, url })
             }
         }
 
-        return { text, citations }
+        return { text, sources }
     }
 
     async function formatAnswerWithMarkdown(text: string): Promise<string> {
-        // First convert [Source: Title] to simple placeholder
-        const withPlaceholders = text.replace(/\[Source: ([^\]]+)\]/g, 'CITATIONSTART$1CITATIONEND')
-
-        // Parse markdown
-        const htmlContent = await marked.parse(withPlaceholders)
-
-        // Convert placeholders back to clickable citation spans
-        return htmlContent.replace(
-            /CITATIONSTART(.+?)CITATIONEND/g,
-            '<span class="citation" data-source="$1">[Source: $1]</span>',
-        )
+        // Parse markdown to HTML
+        return await marked.parse(text)
     }
 
     // Use runes instead of legacy reactive statements
@@ -107,12 +107,26 @@
             formattedAnswer = ''
         }
     })
+
+    // Check if content exceeds max height after answer is rendered
+    $effect(() => {
+        if (formattedAnswer && contentRef) {
+            // Use a small delay to ensure DOM is updated
+            setTimeout(() => {
+                if (contentRef) {
+                    const scrollHeight = contentRef.scrollHeight
+                    const maxHeight = 300 // 300px max height before showing "show more"
+                    shouldShowExpandButton = scrollHeight > maxHeight
+                }
+            }, 10)
+        }
+    })
 </script>
 
-<Card class="mb-6 border-blue-200 bg-blue-50">
-    <CardHeader class="pb-3">
+<Card class="mb-6 border-0 bg-gradient-to-br from-slate-100 via-blue-100 to-indigo-100 shadow-lg">
+    <CardHeader>
         <CardTitle class="flex items-center gap-2 text-lg">
-            <Bot class="h-5 w-5 text-blue-600" />
+            <Sparkles class="h-6 w-6 text-indigo-600" />
             AI Answer
         </CardTitle>
     </CardHeader>
@@ -127,22 +141,54 @@
                 {error}
             </div>
         {:else if answer}
-            <div class="prose prose-sm max-w-none">
-                <!-- Use innerHTML to render citations as styled spans -->
-                {@html formattedAnswer}
+            <div>
+                <div class="relative">
+                    <div
+                        bind:this={contentRef}
+                        class="prose prose-sm max-w-none overflow-hidden transition-all duration-300"
+                        class:max-h-[300px]={!isExpanded && shouldShowExpandButton}
+                    >
+                        <!-- Use innerHTML to render markdown with links -->
+                        {@html formattedAnswer}
+                    </div>
+
+                    {#if !isExpanded && shouldShowExpandButton}
+                        <div
+                            class="pointer-events-none absolute -right-6 bottom-0 -left-6 h-20 bg-gradient-to-t from-indigo-100 to-transparent"
+                        ></div>
+                    {/if}
+                </div>
+
+                {#if shouldShowExpandButton}
+                    <button
+                        onclick={() => (isExpanded = !isExpanded)}
+                        class="mt-2 flex items-center gap-1 text-sm text-indigo-600 transition-colors hover:text-indigo-700"
+                    >
+                        {#if isExpanded}
+                            <ChevronUp class="h-4 w-4" />
+                            Show less
+                        {:else}
+                            <ChevronDown class="h-4 w-4" />
+                            Show more
+                        {/if}
+                    </button>
+                {/if}
             </div>
 
-            {#if parsedAnswer.citations.length > 0}
-                <div class="mt-4 border-t border-blue-200 pt-3">
+            {#if parsedAnswer.sources.length > 0}
+                <div class="mt-4 border-t border-gray-200/50 pt-3">
                     <h4 class="mb-2 text-sm font-medium text-gray-700">Sources:</h4>
                     <div class="flex flex-wrap gap-2">
-                        {#each parsedAnswer.citations as citation}
-                            <span
-                                class="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-white px-2 py-1 text-xs text-blue-700"
+                        {#each parsedAnswer.sources as source}
+                            <a
+                                href={source.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-xs text-gray-700 transition-all hover:bg-white hover:shadow-sm"
                             >
                                 <ExternalLink class="h-3 w-3" />
-                                {citation}
-                            </span>
+                                {source.title}
+                            </a>
                         {/each}
                     </div>
                 </div>
@@ -152,25 +198,3 @@
         {/if}
     </CardContent>
 </Card>
-
-<style>
-    :global(.citation) {
-        display: inline-flex;
-        align-items: center;
-        padding: 0.125rem 0.25rem;
-        font-size: 0.75rem;
-        line-height: 1rem;
-        background-color: rgb(219 234 254);
-        color: rgb(29 78 216);
-        border-radius: 0.25rem;
-        border: 1px solid rgb(191 219 254);
-        cursor: pointer;
-        transition-property: background-color;
-        transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-        transition-duration: 150ms;
-    }
-
-    :global(.citation:hover) {
-        background-color: rgb(191 219 254);
-    }
-</style>

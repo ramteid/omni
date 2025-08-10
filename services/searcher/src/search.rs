@@ -650,8 +650,7 @@ impl SearchEngine {
         // Clear the list and repopulate with deduplicated searches
         let _: () = conn.del(&key).await?;
         if !deduped_searches.is_empty() {
-            // Add all searches in reverse order (so the most recent is first when using LRANGE)
-            for search in deduped_searches.iter().rev() {
+            for search in deduped_searches.iter() {
                 let _: () = conn.rpush(&key, search).await?;
             }
 
@@ -750,7 +749,7 @@ impl SearchEngine {
             "Please provide a comprehensive answer using the information from the context. ",
         );
         prompt.push_str(
-            "When referencing information, cite it using the format [Source: <Document Title>](<Document URL>). Return your response in markdown format. ",
+            "When referencing information, cite it using the format [<Document Title>](<Document URL>). Return your response in markdown format. ",
         );
         prompt.push_str(
             "If the context doesn't contain enough information to answer the question, say so.\n\n",
@@ -759,10 +758,11 @@ impl SearchEngine {
         prompt.push_str("Context Information:\n");
         for (i, result) in context.iter().enumerate() {
             prompt.push_str(&format!(
-                "Context {}: From \"{}\" ({})\n",
+                "Context {}: \nTitle: \"{}\"\nURL: {}\nMatch Type: {}\n",
                 i + 1,
                 result.document.title,
-                result.match_type
+                result.document.url.as_deref().unwrap_or("<unknown>"),
+                result.match_type,
             ));
 
             match result.match_type.as_str() {
