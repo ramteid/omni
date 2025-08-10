@@ -63,7 +63,7 @@ services:
       AI_WORKERS: ${AI_WORKERS:-1}  # Number of uvicorn workers
     volumes:
       - ../services/ai:/app
-    command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload --workers ${AI_WORKERS:-1}
+    command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --workers ${AI_WORKERS:-1}
 
   google-connector:
     build:

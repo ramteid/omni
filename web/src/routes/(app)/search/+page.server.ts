@@ -26,7 +26,7 @@ export const load = async ({ url, fetch }) => {
                     query: query.trim(),
                     limit: 20,
                     offset: 0,
-                    mode: 'fulltext',
+                    mode: 'hybrid',
                 } as SearchRequest),
             }),
             // Sources request

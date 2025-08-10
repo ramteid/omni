@@ -24,6 +24,7 @@ pub struct SearcherConfig {
     pub typo_tolerance_min_word_length: usize,
     pub hybrid_search_fts_weight: f32,
     pub hybrid_search_semantic_weight: f32,
+    pub semantic_search_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +213,13 @@ impl SearcherConfig {
                     eprintln!("Must be a float between 0.0 and 1.0");
                     process::exit(1);
                 });
+        let semantic_search_timeout_ms = get_optional_env("SEMANTIC_SEARCH_TIMEOUT_MS", "5000")
+            .parse::<u64>()
+            .unwrap_or_else(|_| {
+                eprintln!("ERROR: Invalid value for SEMANTIC_SEARCH_TIMEOUT_MS");
+                eprintln!("Must be a positive integer");
+                process::exit(1);
+            });
 
         Self {
             database,
@@ -223,6 +231,7 @@ impl SearcherConfig {
             typo_tolerance_min_word_length,
             hybrid_search_fts_weight,
             hybrid_search_semantic_weight,
+            semantic_search_timeout_ms,
         }
     }
 }

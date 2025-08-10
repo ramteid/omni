@@ -356,13 +356,32 @@ impl SearchEngine {
 
         // Get results from both FTS and semantic search in parallel
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let (fts_future, semantic_future) = (
-            self.fulltext_search(&repo, request),
+        let fts_future = self.fulltext_search(&repo, request);
+
+        // Apply timeout to semantic search
+        let semantic_future = tokio::time::timeout(
+            std::time::Duration::from_millis(self.config.semantic_search_timeout_ms),
             self.semantic_search(request),
         );
+
         let (fts_results, semantic_results) = tokio::join!(fts_future, semantic_future);
         let (fts_results, corrected_query) = fts_results?;
-        let semantic_results = semantic_results?;
+
+        // Handle semantic search timeout gracefully
+        let semantic_results = match semantic_results {
+            Ok(Ok(results)) => results,
+            Ok(Err(e)) => {
+                info!("Semantic search failed: {}, falling back to FTS only", e);
+                vec![]
+            }
+            Err(_) => {
+                info!(
+                    "Semantic search timed out after {}ms, falling back to FTS only",
+                    self.config.semantic_search_timeout_ms
+                );
+                vec![]
+            }
+        };
         info!("Retrieved {} results from FTS", fts_results.len());
         info!(
             "Retrieved {} results from semantic search",

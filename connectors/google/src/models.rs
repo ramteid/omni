@@ -480,7 +480,10 @@ impl GmailThread {
             updated_at,
             mime_type: Some("application/x-gmail-thread".to_string()),
             size: None, // Could calculate total thread size
-            url: None,  // Could generate Gmail web URL
+            url: Some(format!(
+                "https://mail.google.com/mail/u/0/#inbox/{}",
+                self.thread_id
+            )),
             path: Some(format!("/Gmail/{}", self.subject)),
             extra: Some(extra),
         };

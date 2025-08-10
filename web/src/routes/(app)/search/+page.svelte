@@ -306,14 +306,14 @@
                             )}
                             <div class="flex gap-3">
                                 <!-- Icon -->
-                                <div class="flex-shrink-0 pt-1">
+                                <div class="flex-shrink-0">
                                     {#if srcIcon.useFileText}
                                         <FileText class="h-5 w-5 text-gray-400" />
                                     {:else}
                                         <img
                                             src={srcIcon.iconPath}
                                             alt="Source icon"
-                                            class="h-5 w-5"
+                                            class="h-7 w-7"
                                         />
                                     {/if}
                                 </div>
@@ -328,17 +328,17 @@
                                         class="group block"
                                     >
                                         <h3
-                                            class="text-lg leading-tight text-blue-700 group-hover:underline"
+                                            class="text-xl leading-tight text-blue-700 group-hover:underline"
                                         >
                                             {result.document.title}
                                         </h3>
-                                        <div
-                                            class="mb-1 text-sm text-green-700 group-hover:underline"
-                                        >
-                                            {formatUrlAsBreadcrumbs(
-                                                result.document.url || 'No URL available',
-                                            )}
-                                        </div>
+                                        {#if result.document.url}
+                                            <div class="text-muted-foreground mb-1 text-sm">
+                                                {formatUrlAsBreadcrumbs(
+                                                    result.document.url || 'No URL available',
+                                                )}
+                                            </div>
+                                        {/if}
                                     </a>
 
                                     <!-- Date -->
