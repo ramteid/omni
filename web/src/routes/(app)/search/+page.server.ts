@@ -1,7 +1,7 @@
 import { env } from '$env/dynamic/private'
 import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
 
-export const load = async ({ url, fetch }) => {
+export const load = async ({ url, fetch, locals }) => {
     const query = url.searchParams.get('q')
     const aiAnswerEnabled = env.AI_ANSWER_ENABLED !== 'false' // Default to true if not set
 
@@ -27,6 +27,7 @@ export const load = async ({ url, fetch }) => {
                     limit: 20,
                     offset: 0,
                     mode: 'hybrid',
+                    user_id: locals.user?.id,
                 } as SearchRequest),
             }),
             // Sources request

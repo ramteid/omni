@@ -1,4 +1,7 @@
-use crate::models::{SearchMode, SearchRequest, SearchResponse, SearchResult, SuggestionsResponse};
+use crate::models::{
+    RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
+    SuggestionsResponse,
+};
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
@@ -617,6 +620,68 @@ impl SearchEngine {
             suggestions,
             query: query.to_string(),
         })
+    }
+
+    /// Store search history for a user in Redis
+    pub async fn store_search_history(&self, user_id: &str, query: &str) -> Result<()> {
+        let trimmed_query = query.trim();
+        if trimmed_query.is_empty() {
+            return Ok(());
+        }
+
+        let key = format!("search_history:{}", user_id);
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+
+        // Get all existing searches
+        let existing_searches: Vec<String> = conn.lrange(&key, 0, -1).await.unwrap_or_default();
+
+        // Remove any existing occurrence of this query
+        let mut deduped_searches: Vec<String> = existing_searches
+            .into_iter()
+            .filter(|s| s != trimmed_query)
+            .collect();
+
+        // Add the new query at the beginning
+        deduped_searches.insert(0, trimmed_query.to_string());
+
+        // Keep only the latest 5
+        deduped_searches.truncate(5);
+
+        // Clear the list and repopulate with deduplicated searches
+        let _: () = conn.del(&key).await?;
+        if !deduped_searches.is_empty() {
+            // Add all searches in reverse order (so the most recent is first when using LRANGE)
+            for search in deduped_searches.iter().rev() {
+                let _: () = conn.rpush(&key, search).await?;
+            }
+
+            // Set TTL to 30 days for the search history
+            let _: () = conn.expire(&key, 30 * 24 * 60 * 60).await?;
+        }
+
+        debug!(
+            "Stored search query '{}' for user {}",
+            trimmed_query, user_id
+        );
+
+        Ok(())
+    }
+
+    /// Get recent searches for a user from Redis
+    pub async fn get_recent_searches(&self, user_id: &str) -> Result<RecentSearchesResponse> {
+        let key = format!("search_history:{}", user_id);
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+
+        // Get all searches (up to 5 as we maintain that limit)
+        let searches: Vec<String> = conn.lrange(&key, 0, -1).await.unwrap_or_default();
+
+        debug!(
+            "Retrieved {} recent searches for user {}",
+            searches.len(),
+            user_id
+        );
+
+        Ok(RecentSearchesResponse { searches })
     }
 
     /// Generate RAG context from search request using chunk-based approach

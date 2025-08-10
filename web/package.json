@@ -33,7 +33,7 @@
         "@tailwindcss/vite": "^4.0.0",
         "@types/node": "^22",
         "@types/nodemailer": "^6.4.14",
-        "bits-ui": "^2.7.0",
+        "bits-ui": "^2.9.2",
         "clsx": "^2.1.1",
         "drizzle-kit": "^0.30.2",
         "eslint": "^9.18.0",

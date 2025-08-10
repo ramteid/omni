@@ -30,6 +30,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
                 offset: searchRequest.offset || 0,
                 mode: searchRequest.mode || 'fulltext',
                 user_email: locals.user?.email,
+                user_id: locals.user?.id,
             }),
         })
 

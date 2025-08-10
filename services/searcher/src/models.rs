@@ -9,7 +9,7 @@ pub enum SearchMode {
     Hybrid,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchRequest {
     pub query: String,
     pub sources: Option<Vec<String>>,
@@ -19,6 +19,7 @@ pub struct SearchRequest {
     pub mode: Option<SearchMode>,
     pub include_facets: Option<bool>,
     pub user_email: Option<String>,
+    pub user_id: Option<String>,
 }
 
 impl SearchRequest {
@@ -90,4 +91,14 @@ impl SuggestionsQuery {
 pub struct SuggestionsResponse {
     pub suggestions: Vec<String>,
     pub query: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RecentSearchesRequest {
+    pub user_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecentSearchesResponse {
+    pub searches: Vec<String>,
 }

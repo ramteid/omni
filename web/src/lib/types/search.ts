@@ -42,9 +42,14 @@ export interface SearchRequest {
     limit?: number
     offset?: number
     mode?: 'fulltext' | 'semantic' | 'hybrid'
+    user_id?: string
 }
 
 export interface SuggestionsResponse {
     suggestions: string[]
     query: string
+}
+
+export interface RecentSearchesResponse {
+    searches: string[]
 }

@@ -71,6 +71,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/search", post(handlers::search))
         .route("/search/ai-answer", post(handlers::ai_answer))
         .route("/suggestions", get(handlers::suggestions))
+        .route("/recent-searches", get(handlers::recent_searches))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())

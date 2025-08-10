@@ -1,4 +1,4 @@
-use crate::models::{SearchRequest, SuggestionsQuery};
+use crate::models::{RecentSearchesRequest, SearchRequest, SuggestionsQuery};
 use crate::search::SearchEngine;
 use crate::{AppState, Result as SearcherResult, SearcherError};
 use axum::body::Body;
@@ -47,13 +47,24 @@ pub async fn search(
         state.config,
     );
 
-    let response = match search_engine.search(request).await {
+    let response = match search_engine.search(request.clone()).await {
         Ok(response) => response,
         Err(e) => {
             error!("Search engine error: {}", e);
             return Err(SearcherError::Internal(e));
         }
     };
+
+    // Store search history if user_id is provided
+    if let Some(user_id) = &request.user_id {
+        if let Err(e) = search_engine
+            .store_search_history(user_id, &request.query)
+            .await
+        {
+            // Log the error but don't fail the search request
+            error!("Failed to store search history: {}", e);
+        }
+    }
 
     Ok(Json(serde_json::to_value(response)?))
 }
@@ -71,6 +82,27 @@ pub async fn suggestions(
         state.config,
     );
     let response = search_engine.suggest(&query.q, query.limit()).await?;
+
+    Ok(Json(serde_json::to_value(response)?))
+}
+
+pub async fn recent_searches(
+    State(state): State<AppState>,
+    Query(query): Query<RecentSearchesRequest>,
+) -> SearcherResult<Json<Value>> {
+    info!(
+        "Received recent searches request for user: {}",
+        query.user_id
+    );
+
+    let search_engine = SearchEngine::new(
+        state.db_pool,
+        state.redis_client,
+        state.ai_client,
+        state.config,
+    );
+
+    let response = search_engine.get_recent_searches(&query.user_id).await?;
 
     Ok(Json(serde_json::to_value(response)?))
 }

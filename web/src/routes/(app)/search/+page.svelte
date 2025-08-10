@@ -3,7 +3,7 @@
     import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js'
     import { Button } from '$lib/components/ui/button/index.js'
     import { Input } from '$lib/components/ui/input/index.js'
-    import { Search, FileText, Calendar, User, FilterIcon } from '@lucide/svelte'
+    import { Search, FileText, Calendar, User, FilterIcon, Funnel } from '@lucide/svelte'
     import type { PageData } from './$types.js'
     import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
     import AIAnswer from '$lib/components/AIAnswer.svelte'
@@ -197,7 +197,7 @@
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
             <div
-                class="flex flex-1 items-center rounded-full border border-gray-300 bg-white p-3 shadow-sm"
+                class="flex flex-1 items-center rounded-full border border-gray-300 bg-white p-2 shadow-sm"
             >
                 <div class="w-1"></div>
                 <Input
@@ -426,9 +426,9 @@
             <div class="w-80">
                 <div class="">
                     <div class="mb-4 flex items-center justify-between">
-                        <h3 class="flex items-center gap-2 text-base font-semibold">
-                            <FilterIcon class="h-4 w-4" />
-                            Filter by Source
+                        <h3 class="flex flex-1 items-center gap-2 px-4 text-base font-semibold">
+                            <div class="flex-1">Filter by Source</div>
+                            <Funnel class="h-4 w-4" />
                         </h3>
                         {#if selectedFilters.has('source_type') && selectedFilters.get('source_type')?.size > 0}
                             <Button

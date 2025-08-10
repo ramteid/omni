@@ -1,26 +1,55 @@
 <script lang="ts">
     import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card'
     import { Button } from '$lib/components/ui/button'
+    import * as Popover from '$lib/components/ui/popover'
     import type { PageProps } from './$types'
     import { Input } from '$lib/components/ui/input'
-    import { Search } from '@lucide/svelte'
+    import { Search, Clock, History } from '@lucide/svelte'
     import { goto } from '$app/navigation'
+    import { cn } from '$lib/utils'
 
     let { data }: PageProps = $props()
 
     let searchQuery = $state('')
+    let popoverOpen = $state(false)
+    let popoverContainer: HTMLDivElement | undefined = $state()
+
+    $inspect(popoverOpen).with((t, v) => console.log('popover', t, v))
+    $inspect(popoverContainer).with((t, v) => console.log('popover container', t, v))
+    $inspect(data.recentSearches).with((t, v) => console.log('recent searches', t, v))
 
     function handleSearch() {
         console.log('calling handleSearch', searchQuery)
         if (searchQuery.trim()) {
+            popoverOpen = false
             goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
         }
     }
 
     function handleKeyPress(event: KeyboardEvent) {
+        console.log('handle key press')
         if (event.key === 'Enter') {
             handleSearch()
         }
+    }
+
+    function selectRecentSearch(query: string) {
+        console.log('select recent search')
+        searchQuery = query
+        popoverOpen = false
+        handleSearch()
+    }
+
+    function handleFocus(e: any) {
+        console.log('handle focus')
+        if (data.recentSearches && data.recentSearches.length > 0) {
+            popoverOpen = true
+        }
+    }
+
+    function handleBlur() {
+        console.log('handle blur')
+        popoverOpen = false
     }
 </script>
 
@@ -39,8 +68,13 @@
         </div>
 
         <!-- Search Box -->
-        <div class="w-full max-w-2xl">
-            <div class="flex items-center rounded-full border border-gray-300 bg-white shadow-lg">
+        <div class="w-full max-w-2xl" bind:this={popoverContainer}>
+            <div
+                class={cn(
+                    'flex items-center border border-gray-300 bg-white shadow-lg',
+                    popoverOpen ? 'rounded-t-xl' : 'rounded-full',
+                )}
+            >
                 <div class="pr-3 pl-6">
                     <Search class="h-5 w-5 text-gray-400" />
                 </div>
@@ -48,8 +82,10 @@
                     type="text"
                     bind:value={searchQuery}
                     placeholder="Ask anything..."
-                    class="text-md md:text-md flex-1 rounded-full border-none bg-transparent px-0 py-4 shadow-none focus:border-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                    class="text-md md:text-md flex-1 border-none bg-transparent px-0 shadow-none focus:border-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
                     onkeypress={handleKeyPress}
+                    onfocus={handleFocus}
+                    onblur={handleBlur}
                 />
                 <Button
                     class="m-2 cursor-pointer rounded-full px-6 py-2"
@@ -59,6 +95,44 @@
                     Go
                 </Button>
             </div>
+            <div class="" bind:this={popoverContainer}></div>
+
+            <Popover.Root open={popoverOpen}>
+                {#if data.recentSearches && data.recentSearches.length > 0}
+                    <Popover.Content
+                        class="w-[42rem] max-w-2xl rounded-b-xl p-0"
+                        align="start"
+                        sideOffset={-1}
+                        trapFocus={false}
+                        customAnchor={popoverContainer}
+                        onOpenAutoFocus={(e) => {
+                            e.preventDefault()
+                        }}
+                        onCloseAutoFocus={(e) => {
+                            e.preventDefault()
+                        }}
+                        onFocusOutside={(e) => e.preventDefault()}
+                    >
+                        <div class="w-full border bg-white">
+                            <div class="py-2">
+                                {#each data.recentSearches as recentQuery}
+                                    <button
+                                        class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground w-full px-4 py-2.5 text-left text-sm transition-colors focus:outline-none"
+                                        onclick={() => selectRecentSearch(recentQuery)}
+                                    >
+                                        <div class="flex items-center gap-3">
+                                            <Clock class="text-muted-foreground h-4 w-4" />
+                                            <span class="font-semibold text-violet-500"
+                                                >{recentQuery}</span
+                                            >
+                                        </div>
+                                    </button>
+                                {/each}
+                            </div>
+                        </div>
+                    </Popover.Content>
+                {/if}
+            </Popover.Root>
         </div>
     </div>
 

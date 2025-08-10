@@ -3,7 +3,7 @@ import { db } from '$lib/server/db/index.js'
 import { sources, documents } from '$lib/server/db/schema.js'
 import { eq, sql } from 'drizzle-orm'
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, fetch }) => {
     // Get connected sources count
     const connectedSources = await db.select().from(sources).where(eq(sources.isActive, true))
     const connectedSourcesCount = connectedSources.length
@@ -17,11 +17,26 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     const totalDocumentsIndexed = documentsBySource.length > 0 ? documentsBySource[0].count : 0
 
+    // Fetch recent searches if user is logged in
+    let recentSearches: string[] = []
+    if (locals.user?.id) {
+        try {
+            const recentResponse = await fetch('/api/search/recent')
+            if (recentResponse.ok) {
+                const data = await recentResponse.json()
+                recentSearches = data.searches || []
+            }
+        } catch (error) {
+            console.error('Failed to fetch recent searches:', error)
+        }
+    }
+
     return {
         user: locals.user!,
         stats: {
             connectedSources: connectedSourcesCount,
             indexedDocuments: totalDocumentsIndexed,
         },
+        recentSearches,
     }
 }
