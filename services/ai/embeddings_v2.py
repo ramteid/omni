@@ -262,11 +262,22 @@ def generate_embeddings_sync(
     n_sentences: int = None,
 ) -> list[list[Chunk]]:
     try:
+        # Start timing
+        start_time = time.time()
+        
+        # Calculate total input size and batch size
+        total_chars = sum(len(text) for text in texts)
+        batch_size = len(texts)
+        
         logger.info(f"Starting embedding generation for {len(texts)} texts")
         model, tokenizer = load_model()
         logger.info("Model and tokenizer loaded successfully")
 
         tokens = tokenize(tokenizer, texts)
+        
+        # Log number of input tokens
+        total_tokens = tokens['input_ids'].shape[0] * tokens['input_ids'].shape[1]
+        logger.info(f"Embedding input - batch_size: {batch_size}, total_chars: {total_chars}, total_tokens: {total_tokens} (shape: {tokens['input_ids'].shape})")
 
         if chunking_mode == "none":
             logger.info(f"Skipping chunking for embeddings input {texts}, task {task}.")
@@ -276,7 +287,14 @@ def generate_embeddings_sync(
                 embeddings, p=2, dim=1
             ).tolist()  # Normalize to unit norm
 
-            return [[Chunk((0, len(t)), embeddings[i])] for i, t in enumerate(texts)]
+            result = [[Chunk((0, len(t)), embeddings[i])] for i, t in enumerate(texts)]
+            
+            # Log total processing time for no-chunking case
+            end_time = time.time()
+            total_time = end_time - start_time
+            logger.info(f"Embedding generation complete (no chunking) - total_time: {total_time:.2f}s, total_chunks: {len(result)}, chunks_per_text: [1 per text]")
+            
+            return result
 
         # Generate large chunks (existing logic)
         large_chunk_char_spans, large_chunk_token_spans = chunk_by_sentences(
@@ -325,6 +343,12 @@ def generate_embeddings_sync(
                 ]
                 chunk_idx += num_chunks
             all_chunks.append(chunks)
+
+        # Log total processing time
+        end_time = time.time()
+        total_time = end_time - start_time
+        total_chunks = sum(len(chunks_list) for chunks_list in all_chunks)
+        logger.info(f"Embedding generation complete - total_time: {total_time:.2f}s, total_chunks: {total_chunks}, chunks_per_text: {[len(c) for c in all_chunks]}")
 
         return all_chunks
     except Exception as e:

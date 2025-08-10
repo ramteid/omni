@@ -34,6 +34,95 @@ impl SearchEngine {
         }
     }
 
+    /// Intelligently truncate a highlight to show the most relevant portions
+    /// around the highlighted terms (marked with ** **)
+    fn truncate_highlight(&self, text: &str, max_length: usize) -> String {
+        // If text is already short enough, return as is
+        if text.len() <= max_length {
+            return text.to_string();
+        }
+
+        // Find all highlighted sections using match_indices
+        let starts: Vec<usize> = text.match_indices("**").map(|(i, _)| i).collect();
+
+        if starts.is_empty() {
+            // No highlights found, just truncate from beginning
+            let truncated = safe_str_slice(text, 0, max_length);
+            return format!("{}...", truncated);
+        }
+
+        // Pair up starts to find highlight regions (every odd ** is a start, even is an end)
+        let mut highlights = Vec::new();
+        for i in (0..starts.len()).step_by(2) {
+            if i + 1 < starts.len() {
+                highlights.push((starts[i], starts[i + 1] + 2)); // +2 to include the **
+            }
+        }
+
+        if highlights.is_empty() {
+            return text.to_string();
+        }
+
+        // Calculate context windows around first highlight
+        let context_before = 50; // characters to show before highlight
+        let context_after = 80; // characters to show after highlight
+
+        let (highlight_start, highlight_end) = highlights[0];
+
+        // Find word boundary before highlight
+        let window_start = if highlight_start > context_before {
+            let target = highlight_start.saturating_sub(context_before);
+            // Find next space after target position
+            let search_area = safe_str_slice(text, target, highlight_start);
+            search_area
+                .find(' ')
+                .map(|i| target + i + 1)
+                .unwrap_or(target)
+        } else {
+            0
+        };
+
+        // Find word boundary after highlight
+        let window_end = if highlight_end + context_after < text.len() {
+            let target = (highlight_end + context_after).min(text.len());
+            // Find last space before target position
+            let search_area = safe_str_slice(text, highlight_end, target);
+            search_area
+                .rfind(' ')
+                .map(|i| highlight_end + i)
+                .unwrap_or(target)
+        } else {
+            text.len()
+        };
+
+        // Build the truncated result
+        let mut result = String::new();
+
+        if window_start > 0 {
+            result.push_str("...");
+        }
+
+        result.push_str(safe_str_slice(text, window_start, window_end));
+
+        // If we have more highlights nearby and space, include them
+        if highlights.len() > 1 && result.len() < max_length - 50 {
+            let (second_start, second_end) = highlights[1];
+
+            // Only include if it's close to the first highlight
+            if second_start - highlight_end < 100 && second_start > window_end {
+                result.push_str("...");
+                let second_window_end = (second_end + 30).min(text.len());
+                result.push_str(safe_str_slice(text, second_start, second_window_end));
+            }
+        }
+
+        if window_end < text.len() {
+            result.push_str("...");
+        }
+
+        result
+    }
+
     fn prepare_document_for_response(
         &self,
         mut doc: shared::models::Document,
@@ -171,10 +260,12 @@ impl SearchEngine {
             let prepared_doc = self.prepare_document_for_response(result_with_highlight.document);
 
             // Convert the single highlight string into a Vec<String> for the highlights field
+            // and truncate it to a reasonable length
             let highlights = if result_with_highlight.highlight.trim().is_empty() {
                 vec![]
             } else {
-                vec![result_with_highlight.highlight]
+                // Truncate the highlight to ~200 characters with smart context preservation
+                vec![self.truncate_highlight(&result_with_highlight.highlight, 200)]
             };
 
             results.push(SearchResult {

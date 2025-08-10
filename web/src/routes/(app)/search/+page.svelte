@@ -8,6 +8,7 @@
     import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
     import AIAnswer from '$lib/components/AIAnswer.svelte'
     import { getDocumentIconPath, getSourceTypeFromId } from '$lib/utils/icons'
+    import { marked } from 'marked'
 
     let { data }: { data: PageData } = $props()
 
@@ -180,6 +181,11 @@
             return url
         }
     }
+
+    function renderHighlight(text: string): string {
+        // Parse as inline markdown to avoid wrapping in <p> tags
+        return marked.parseInline(text)
+    }
 </script>
 
 <svelte:head>
@@ -348,9 +354,11 @@
 
                                     <!-- Excerpt/Content -->
                                     {#if result.highlights.length > 0}
-                                        <div class="text-sm leading-relaxed text-gray-600">
+                                        <div
+                                            class="highlight-content text-sm leading-relaxed text-gray-600"
+                                        >
                                             {#each result.highlights.slice(0, 2) as highlight}
-                                                <span>{@html highlight}</span>
+                                                <span>{@html renderHighlight(highlight)}</span>
                                                 {#if highlight !== result.highlights[result.highlights.length - 1]}
                                                     <span> ... </span>
                                                 {/if}
@@ -473,3 +481,10 @@
         {/if}
     </div>
 </div>
+
+<style>
+    :global(.highlight-content strong) {
+        font-weight: 600;
+        color: rgb(17 24 39);
+    }
+</style>

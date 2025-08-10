@@ -16,7 +16,6 @@ from dataclasses import dataclass, field
 import time
 
 from embeddings_v2 import (
-    load_model,
     generate_embeddings_sync,
     DEFAULT_TASK,
 )
@@ -164,7 +163,7 @@ class PromptResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Load model and initialize LLM provider on startup"""
+    """Initialize LLM provider on startup"""
     global llm_provider, _request_queue, _queue_processor_task
 
     # Initialize priority queue
@@ -172,9 +171,6 @@ async def startup_event():
     
     # Start queue processor task
     _queue_processor_task = asyncio.create_task(process_embedding_queue())
-    
-    # Load embedding model
-    await asyncio.get_event_loop().run_in_executor(_executor, load_model)
     
     logger.info(f"Initialized with {max_workers} thread pool workers")
 
@@ -303,7 +299,6 @@ async def generate_embeddings(request: EmbeddingRequest):
     logger.info(
         f"Generating embeddings for {len(request.texts)} texts with priority={request.priority}, chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}, n_sentences={request.n_sentences}"
     )
-    logger.info(f"Input text for generating embeddings: {request.texts}")
 
     # Validate chunking method
     valid_chunking_modes = ["sentence", "fixed", "semantic", "none"]
