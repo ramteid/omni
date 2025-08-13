@@ -258,6 +258,34 @@ impl SyncManager {
         })
     }
 
+    fn get_cutoff_date(&self) -> Result<(String, String)> {
+        let max_age_days = std::env::var("GOOGLE_MAX_AGE_DAYS")
+            .unwrap_or_else(|_| "730".to_string())
+            .parse::<i64>()
+            .unwrap_or(730);
+
+        let cutoff_date = OffsetDateTime::now_utc() - time::Duration::days(max_age_days);
+
+        // Format for Drive API (RFC 3339): "2012-06-04T12:00:00-08:00"
+        // Use UTC timezone for simplicity
+        let drive_format = format!(
+            "{:04}-{:02}-{:02}T00:00:00Z",
+            cutoff_date.year(),
+            cutoff_date.month() as u8,
+            cutoff_date.day()
+        );
+
+        // Format for Gmail API: "YYYY/MM/DD"
+        let gmail_format = format!(
+            "{:04}/{:02}/{:02}",
+            cutoff_date.year(),
+            cutoff_date.month() as u8,
+            cutoff_date.day()
+        );
+
+        Ok((drive_format, gmail_format))
+    }
+
     pub async fn sync_all_sources(&self) -> Result<()> {
         let sources = self.get_active_sources().await?;
 
@@ -380,6 +408,7 @@ impl SyncManager {
         sync_state: &SyncState,
         current_files: Arc<std::sync::Mutex<HashSet<String>>>,
         rate_limiter: Arc<RateLimiter>,
+        created_after: Option<&str>,
     ) -> Result<(usize, usize)> {
         info!("Processing Drive files for user: {}", user_email);
 
@@ -405,7 +434,12 @@ impl SyncManager {
 
                     async move {
                         drive_client
-                            .list_files(&service_auth, &user_email, page_token.as_deref())
+                            .list_files(
+                                &service_auth,
+                                &user_email,
+                                page_token.as_deref(),
+                                created_after,
+                            )
                             .await
                             .with_context(|| {
                                 format!(
@@ -652,6 +686,10 @@ impl SyncManager {
         let user_email = self.get_user_email_from_source(&source.id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
+        // Calculate cutoff date for filtering
+        let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
+        info!("Using Drive cutoff date: {}", drive_cutoff_date);
+
         // Get all users in the organization
         info!("Listing all users in domain: {}", domain);
 
@@ -698,6 +736,7 @@ impl SyncManager {
                             &sync_state,
                             current_files.clone(),
                             global_rate_limiter.clone(),
+                            Some(&drive_cutoff_date),
                         )
                         .await
                     {
@@ -770,6 +809,10 @@ impl SyncManager {
         let user_email = self.get_user_email_from_source(&source.id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
+        // Calculate cutoff date for filtering
+        let (_drive_cutoff_date, gmail_cutoff_date) = self.get_cutoff_date()?;
+        info!("Using Gmail cutoff date: {}", gmail_cutoff_date);
+
         // Get all users in the organization
         info!("Listing all users in domain: {}", domain);
 
@@ -812,6 +855,7 @@ impl SyncManager {
                             sync_run_id,
                             processed_threads.clone(),
                             global_rate_limiter.clone(),
+                            Some(&gmail_cutoff_date),
                         )
                         .await
                     {
@@ -1838,6 +1882,7 @@ impl SyncManager {
         sync_run_id: &str,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
         rate_limiter: Arc<RateLimiter>,
+        created_after: Option<&str>,
     ) -> Result<(usize, usize)> {
         info!("Processing Gmail for user: {}", user_email);
 
@@ -1872,6 +1917,7 @@ impl SyncManager {
                                 None,
                                 Some(BATCH_SIZE as u32),
                                 page_token.as_deref(),
+                                created_after,
                             )
                             .await
                             .with_context(|| {

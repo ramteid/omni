@@ -64,18 +64,28 @@ impl DriveClient {
         auth: &ServiceAccountAuth,
         user_email: &str,
         page_token: Option<&str>,
+        created_after: Option<&str>,
     ) -> Result<FilesListResponse> {
         let page_token = page_token.map(|s| s.to_string());
+        let created_after = created_after.map(|s| s.to_string());
 
         execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let page_token = page_token.clone();
+            let created_after = created_after.clone();
             async move {
             let url = format!("{}/files", DRIVE_API_BASE);
+
+            // Build the query filter
+            let mut query_parts = vec!["trashed=false".to_string()];
+            if let Some(ref date) = created_after {
+                query_parts.push(format!("createdTime > '{}'", date));
+            }
+            let query = query_parts.join(" and ");
 
             let mut params = vec![
                 ("pageSize", "100"),
                 ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role))"),
-                ("q", "trashed=false"),
+                ("q", query.as_str()),
                 ("includeItemsFromAllDrives", "true"),
                 ("supportsAllDrives", "true"),
             ];

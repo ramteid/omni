@@ -55,20 +55,33 @@ impl GmailClient {
         query: Option<&str>,
         max_results: Option<u32>,
         page_token: Option<&str>,
+        created_after: Option<&str>,
     ) -> Result<MessagesListResponse> {
-        let query = query.map(|s| s.to_string());
+        let base_query = query.map(|s| s.to_string());
         let page_token = page_token.map(|s| s.to_string());
+        let created_after = created_after.map(|s| s.to_string());
 
         execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
-            let query = query.clone();
+            let base_query = base_query.clone();
             let page_token = page_token.clone();
+            let created_after = created_after.clone();
             async move {
                 let url = format!("{}/users/{}/messages", GMAIL_API_BASE, user_email);
 
                 let mut params = vec![("maxResults", max_results.unwrap_or(100).to_string())];
 
-                if let Some(ref q) = query {
-                    params.push(("q", q.clone()));
+                // Build the complete query with date filter
+                let mut query_parts = Vec::new();
+                if let Some(ref q) = base_query {
+                    query_parts.push(q.clone());
+                }
+                if let Some(ref date) = created_after {
+                    query_parts.push(format!("after:{}", date));
+                }
+
+                if !query_parts.is_empty() {
+                    let final_query = query_parts.join(" ");
+                    params.push(("q", final_query));
                 }
 
                 if let Some(ref page_token) = page_token {
@@ -120,20 +133,33 @@ impl GmailClient {
         query: Option<&str>,
         max_results: Option<u32>,
         page_token: Option<&str>,
+        created_after: Option<&str>,
     ) -> Result<ThreadsListResponse> {
-        let query = query.map(|s| s.to_string());
+        let base_query = query.map(|s| s.to_string());
         let page_token = page_token.map(|s| s.to_string());
+        let created_after = created_after.map(|s| s.to_string());
 
         execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
-            let query = query.clone();
+            let base_query = base_query.clone();
             let page_token = page_token.clone();
+            let created_after = created_after.clone();
             async move {
                 let url = format!("{}/users/{}/threads", GMAIL_API_BASE, user_email);
 
                 let mut params = vec![("maxResults", max_results.unwrap_or(100).to_string())];
 
-                if let Some(ref q) = query {
-                    params.push(("q", q.clone()));
+                // Build the complete query with date filter
+                let mut query_parts = Vec::new();
+                if let Some(ref q) = base_query {
+                    query_parts.push(q.clone());
+                }
+                if let Some(ref date) = created_after {
+                    query_parts.push(format!("after:{}", date));
+                }
+
+                if !query_parts.is_empty() {
+                    let final_query = query_parts.join(" ");
+                    params.push(("q", final_query));
                 }
 
                 if let Some(ref page_token) = page_token {
