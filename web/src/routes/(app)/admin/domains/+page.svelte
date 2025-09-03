@@ -30,7 +30,7 @@
 </script>
 
 <svelte:head>
-    <title>Domain Management - Clio Admin</title>
+    <title>Domain Management - Omni Admin</title>
 </svelte:head>
 
 <div class="space-y-6">
@@ -48,7 +48,7 @@
                 <CardTitle>Approve New Domain</CardTitle>
                 <CardDescription>
                     Users with emails from approved domains can automatically register and access
-                    Clio
+                    Omni
                 </CardDescription>
             </CardHeader>
             <CardContent>

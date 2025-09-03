@@ -29,7 +29,7 @@
 </script>
 
 <svelte:head>
-    <title>Email Testing - Clio Admin</title>
+    <title>Email Testing - Omni Admin</title>
 </svelte:head>
 
 <div class="space-y-6">
@@ -126,7 +126,7 @@
         <CardHeader>
             <CardTitle>Email Configuration Guide</CardTitle>
             <CardDescription>
-                How to configure email providers for your Clio instance
+                How to configure email providers for your Omni instance
             </CardDescription>
         </CardHeader>
         <CardContent class="space-y-4">
@@ -135,7 +135,7 @@
                 <div class="bg-muted rounded-lg p-3 font-mono text-xs">
                     <div>EMAIL_PROVIDER=resend</div>
                     <div>RESEND_API_KEY=re_abc123...</div>
-                    <div>EMAIL_FROM=Clio &lt;noreply@yourdomain.com&gt;</div>
+                    <div>EMAIL_FROM=Omni &lt;noreply@yourdomain.com&gt;</div>
                 </div>
                 <p class="text-muted-foreground mt-2 text-xs">
                     Easy setup, excellent deliverability, 3,000 emails/month free
@@ -151,7 +151,7 @@
                     <div>EMAIL_USER=admin@yourcompany.com</div>
                     <div>EMAIL_PASSWORD=your_app_password</div>
                     <div>EMAIL_SECURE=true</div>
-                    <div>EMAIL_FROM=Clio &lt;admin@yourcompany.com&gt;</div>
+                    <div>EMAIL_FROM=Omni &lt;admin@yourcompany.com&gt;</div>
                 </div>
                 <p class="text-muted-foreground mt-2 text-xs">
                     Requires 2FA + App Password. Limited to 2,000 emails/day per user

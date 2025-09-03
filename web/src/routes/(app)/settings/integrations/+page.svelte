@@ -95,7 +95,7 @@
             <div class="px-4 py-5 sm:p-6">
                 <h2 class="text-foreground mb-2 text-lg font-medium">Personal Accounts</h2>
                 <p class="text-muted-foreground mb-6 text-sm">
-                    Manage your personal OAuth accounts linked to your Clio account. These accounts
+                    Manage your personal OAuth accounts linked to your Omni account. These accounts
                     are used for authentication and may improve search results based on your access
                     permissions.
                 </p>

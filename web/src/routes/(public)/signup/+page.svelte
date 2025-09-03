@@ -18,13 +18,13 @@
 </script>
 
 <svelte:head>
-    <title>Sign Up - Clio</title>
+    <title>Sign Up - Omni</title>
 </svelte:head>
 
 <Card class="w-full">
     <CardHeader class="text-center">
         <CardTitle class="text-2xl">Create your account</CardTitle>
-        <CardDescription>Get started with Clio Enterprise Search</CardDescription>
+        <CardDescription>Get started with Omni Enterprise Search</CardDescription>
     </CardHeader>
     <CardContent>
         {#if form?.success}

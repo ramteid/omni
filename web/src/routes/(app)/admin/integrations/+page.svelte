@@ -363,14 +363,14 @@
 </script>
 
 <svelte:head>
-    <title>Integrations - Clio Admin</title>
+    <title>Integrations - Omni Admin</title>
 </svelte:head>
 
 <div class="space-y-6">
     <div>
         <h1 class="text-2xl font-bold tracking-tight">Integrations</h1>
         <p class="text-muted-foreground">
-            Connect Clio to your data sources using service accounts and API tokens.
+            Connect Omni to your data sources using service accounts and API tokens.
         </p>
     </div>
 

@@ -99,7 +99,7 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
 
     if (welcome) {
         return {
-            success: 'Welcome to Clio! Your account has been created successfully.',
+            success: 'Welcome to Omni! Your account has been created successfully.',
         }
     }
 

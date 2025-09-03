@@ -149,7 +149,7 @@
 </script>
 
 <svelte:head>
-    <title>Search Results - Clio</title>
+    <title>Search Results - Omni</title>
 </svelte:head>
 
 <div>

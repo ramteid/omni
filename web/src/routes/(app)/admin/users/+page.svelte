@@ -14,7 +14,7 @@
     <div>
         <h1 class="text-2xl font-bold tracking-tight">User Management</h1>
         <p class="text-muted-foreground">
-            Create accounts for users in your org to give them access to Clio.
+            Create accounts for users in your org to give them access to Omni.
         </p>
     </div>
 

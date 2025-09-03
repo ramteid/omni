@@ -19,13 +19,13 @@
 </script>
 
 <svelte:head>
-    <title>Login - Clio</title>
+    <title>Login - Omni</title>
 </svelte:head>
 
 <Card class="w-full">
     <CardHeader class="text-center">
         <CardTitle class="text-2xl">Welcome back</CardTitle>
-        <CardDescription>Sign in to your Clio account</CardDescription>
+        <CardDescription>Sign in to your Omni account</CardDescription>
     </CardHeader>
     <CardContent>
         <form

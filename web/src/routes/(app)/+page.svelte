@@ -56,14 +56,14 @@
 </script>
 
 <svelte:head>
-    <title>Clio - Enterprise Search</title>
+    <title>Omni - Enterprise Search</title>
 </svelte:head>
 
 <div class="container mx-auto px-4">
     <!-- Centered Search Section -->
     <div class="flex min-h-[60vh] flex-col items-center justify-center">
         <div class="mb-8 text-center">
-            <h1 class="text-foreground mb-4 text-4xl font-bold">Welcome to Clio</h1>
+            <h1 class="text-foreground mb-4 text-4xl font-bold">Welcome to Omni</h1>
             <p class="text-muted-foreground text-lg">
                 Your unified enterprise search platform. Search across your org's data.
             </p>
