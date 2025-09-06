@@ -15,7 +15,10 @@ mod gmail;
 mod models;
 mod sync;
 
+use admin::AdminClient;
 use api::{create_router, ApiState};
+use auth::GoogleCredentialsService;
+use shared::RateLimiter;
 use sync::SyncManager;
 
 #[tokio::main]
@@ -38,18 +41,36 @@ async fn main() -> Result<()> {
 
     let db_pool = DatabasePool::from_config(&config.database).await?;
 
+    // Create shared services
+    let credentials_service = Arc::new(GoogleCredentialsService::new(db_pool.pool().clone())?);
+
+    // Create shared AdminClient with rate limiter
+    let api_rate_limit = std::env::var("GOOGLE_API_RATE_LIMIT")
+        .unwrap_or_else(|_| "180".to_string())
+        .parse::<u32>()
+        .unwrap_or(180);
+    let max_retries = std::env::var("GOOGLE_MAX_RETRIES")
+        .unwrap_or_else(|_| "5".to_string())
+        .parse::<u32>()
+        .unwrap_or(5);
+    let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
+    let admin_client = Arc::new(AdminClient::with_rate_limiter(rate_limiter.clone()));
+
     let sync_manager = Arc::new(
         SyncManager::new(
             db_pool.pool().clone(),
             redis_client,
             config.ai_service_url.clone(),
+            Arc::clone(&admin_client),
         )
         .await?,
     );
 
-    // Create API state
+    // Create API state with shared services
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),
+        credentials_service: Arc::clone(&credentials_service),
+        admin_client: Arc::clone(&admin_client),
     };
 
     // Create HTTP server

@@ -1,5 +1,8 @@
 import { Resend } from 'resend'
 import type { EmailProvider, EmailResult } from '../types'
+import { createLogger } from '../../logger.js'
+
+const logger = createLogger('resend-email')
 
 export class ResendEmailProvider implements EmailProvider {
     private resend: Resend
@@ -30,7 +33,7 @@ export class ResendEmailProvider implements EmailProvider {
             })
 
             if (error) {
-                console.error('Resend error:', error)
+                logger.error('Resend error', error, { email })
                 return {
                     success: false,
                     error: error.message || 'Failed to send email',
@@ -42,7 +45,7 @@ export class ResendEmailProvider implements EmailProvider {
                 messageId: data?.id,
             }
         } catch (error) {
-            console.error('Error sending email via Resend:', error)
+            logger.error('Error sending email via Resend', error, { email })
             return {
                 success: false,
                 error: 'Failed to send email',
@@ -57,7 +60,7 @@ export class ResendEmailProvider implements EmailProvider {
             const { error } = await this.resend.domains.list()
             return !error
         } catch (error) {
-            console.error('Resend connection test failed:', error)
+            logger.error('Resend connection test failed', error)
             return false
         }
     }

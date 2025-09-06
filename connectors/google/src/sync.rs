@@ -29,7 +29,7 @@ pub struct SyncManager {
     redis_client: RedisClient,
     drive_client: DriveClient,
     gmail_client: GmailClient,
-    admin_client: AdminClient,
+    admin_client: Arc<AdminClient>,
     event_queue: EventQueue,
     content_storage: ContentStorage,
     service_credentials_repo: ServiceCredentialsRepo,
@@ -222,6 +222,7 @@ impl SyncManager {
         pool: PgPool,
         redis_client: RedisClient,
         ai_service_url: String,
+        admin_client: Arc<AdminClient>,
     ) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
         let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
@@ -239,8 +240,7 @@ impl SyncManager {
         let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
         let ai_client = AIClient::new(ai_service_url);
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone(), ai_client.clone());
-        let gmail_client = GmailClient::with_rate_limiter(rate_limiter.clone());
-        let admin_client = AdminClient::with_rate_limiter(rate_limiter);
+        let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
 
         let content_storage = ContentStorage::new(pool.clone());
 
@@ -362,6 +362,18 @@ impl SyncManager {
             warn!(
                 "Found running sync for source {} (id: {}) just before creating new sync, aborting",
                 source.id, running_sync.id
+            );
+            return Ok(());
+        }
+
+        // Check if this source type should be synced
+        if !matches!(
+            source.source_type,
+            SourceType::GoogleDrive | SourceType::Gmail
+        ) {
+            info!(
+                "Skipping sync for source {} ({}) - source type {:?} is not a Google service",
+                source.name, source.id, source.source_type
             );
             return Ok(());
         }
@@ -703,6 +715,16 @@ impl SyncManager {
             .await?;
         info!("Found {} users in domain {}", all_users.len(), domain);
 
+        // Apply user filtering based on source settings
+        let filtered_users = all_users
+            .into_iter()
+            .filter(|user| source.should_index_user(&user.primary_email))
+            .collect::<Vec<_>>();
+        info!(
+            "After filtering: {} users will be indexed",
+            filtered_users.len()
+        );
+
         let sync_state = SyncState::new(self.redis_client.clone());
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
         let current_files = Arc::new(std::sync::Mutex::new(HashSet::new()));
@@ -714,13 +736,13 @@ impl SyncManager {
 
         info!(
             "Starting sequential user processing for {} users",
-            all_users.len()
+            filtered_users.len()
         );
 
         let mut total_processed = 0;
         let mut total_updated = 0;
 
-        for user in all_users {
+        for user in filtered_users {
             let user_email = user.primary_email.clone();
 
             // Get access token for this user
@@ -826,6 +848,16 @@ impl SyncManager {
             .await?;
         info!("Found {} users in domain {}", all_users.len(), domain);
 
+        // Apply user filtering based on source settings
+        let filtered_users = all_users
+            .into_iter()
+            .filter(|user| source.should_index_user(&user.primary_email))
+            .collect::<Vec<_>>();
+        info!(
+            "After filtering: {} users will be indexed",
+            filtered_users.len()
+        );
+
         let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
 
         // Use single global rate limiter (200 req/sec) for ALL Google API calls
@@ -834,13 +866,13 @@ impl SyncManager {
 
         info!(
             "Starting sequential user processing for {} users (Gmail only)",
-            all_users.len()
+            filtered_users.len()
         );
 
         let mut total_processed = 0;
         let mut total_updated = 0;
 
-        for user in all_users {
+        for user in filtered_users {
             let user_email = user.primary_email.clone();
 
             // Get access token for this user

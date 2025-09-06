@@ -1,5 +1,8 @@
 import { createClient } from 'redis'
 import { getConfig } from './config'
+import { createLogger } from './logger.js'
+
+const logger = createLogger('redis')
 
 const config = getConfig()
 
@@ -12,19 +15,19 @@ export async function getRedisClient() {
         })
 
         redisClient.on('error', (err) => {
-            console.error('Redis connection error:', err)
+            logger.error('Redis connection error', err)
         })
 
         redisClient.on('connect', () => {
-            console.log('Connected to Redis')
+            logger.info('Connected to Redis')
         })
 
         redisClient.on('ready', () => {
-            console.log('Redis client ready')
+            logger.info('Redis client ready')
         })
 
         redisClient.on('end', () => {
-            console.log('Redis connection ended')
+            logger.info('Redis connection ended')
         })
 
         await redisClient.connect()

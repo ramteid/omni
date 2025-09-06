@@ -64,7 +64,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             sourceType,
             config: config || {},
             createdBy: locals.user.id,
-            isActive: true,
+            isActive: false,
             syncStatus: 'pending',
         })
         .returning()

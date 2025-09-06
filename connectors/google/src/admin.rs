@@ -73,6 +73,66 @@ impl AdminClient {
         }
     }
 
+    pub async fn search_users(
+        &self,
+        token: &str,
+        domain: &str,
+        query: Option<&str>,
+        max_results: Option<u32>,
+        page_token: Option<&str>,
+    ) -> Result<UsersListResponse> {
+        let search_users_impl = || async {
+            let url = format!("{}/users", ADMIN_API_BASE);
+
+            let max_results_str = max_results.unwrap_or(50).to_string();
+            let mut params = vec![
+                ("domain", domain),
+                ("maxResults", &max_results_str),
+                ("orderBy", "email"),
+            ];
+
+            let search_query_opt = query.map(|q| q.to_string());
+
+            if let Some(ref search_query) = search_query_opt {
+                params.push(("query", search_query));
+            }
+
+            if let Some(token) = page_token {
+                params.push(("pageToken", token));
+            }
+
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(token)
+                .query(&params)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!("Failed to search users: {}", error_text));
+            }
+
+            debug!("Admin API search response status: {}", response.status());
+            let response_text = response.text().await?;
+            debug!("Admin API search raw response: {}", response_text);
+
+            serde_json::from_str(&response_text).map_err(|e| {
+                anyhow!(
+                    "Failed to parse Admin API search response: {}. Raw response: {}",
+                    e,
+                    response_text
+                )
+            })
+        };
+
+        match &self.rate_limiter {
+            Some(limiter) => limiter.execute_with_retry(search_users_impl).await,
+            None => search_users_impl().await,
+        }
+    }
+
     pub async fn list_all_users(&self, token: &str, domain: &str) -> Result<Vec<User>> {
         let mut all_users = Vec::new();
         let mut page_token: Option<String> = None;

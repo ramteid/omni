@@ -15,11 +15,10 @@
     import { AuthType } from '$lib/types'
     import { onDestroy, onMount } from 'svelte'
     import { toast } from 'svelte-sonner'
+    import { goto } from '$app/navigation'
     import type { PageProps } from './$types'
 
     let { data }: PageProps = $props()
-
-    $inspect(data).with((t, v) => console.log(t, v))
 
     type SyncStatus = {
         status: string
@@ -270,7 +269,13 @@
 
             toast.success(`${selectedIntegration.name} connected successfully!`)
             showSetupDialog = false
-            window.location.reload()
+
+            // Redirect to configure page for Google integration
+            if (selectedIntegration.id === 'google') {
+                await goto('/admin/integrations/google/configure')
+            } else {
+                window.location.reload()
+            }
         } catch (error: any) {
             console.error('Error setting up service account:', error)
             toast.error(error.message || 'Failed to set up service account')
@@ -418,7 +423,28 @@
             <Card>
                 <CardHeader>
                     <CardTitle class="flex items-center justify-between">
-                        {integration.name}
+                        <div class="flex items-center gap-3">
+                            {#if integration.id === 'google'}
+                                <img
+                                    src="/src/lib/images/icons/google.svg"
+                                    alt="Google"
+                                    class="h-6 w-6"
+                                />
+                            {:else if integration.id === 'slack'}
+                                <img
+                                    src="/src/lib/images/icons/slack.svg"
+                                    alt="Slack"
+                                    class="h-6 w-6"
+                                />
+                            {:else if integration.id === 'atlassian'}
+                                <img
+                                    src="/src/lib/images/icons/atlassian.svg"
+                                    alt="Atlassian"
+                                    class="h-6 w-6"
+                                />
+                            {/if}
+                            <span>{integration.name}</span>
+                        </div>
                         {#if connectedSource}
                             <span
                                 class="inline-flex items-center rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400"
@@ -445,121 +471,161 @@
                                 (source) => source.sourceType === 'gmail',
                             )}
                             <div class="space-y-4">
-                                <!-- Google Drive Section -->
-                                {#if driveSource}
-                                    {@const driveSync = getLatestSyncForSource(driveSource.id)}
-                                    <div class="rounded-lg border p-3">
-                                        <div class="mb-2 text-sm font-medium">Google Drive</div>
-                                        <div class="space-y-2 text-xs">
-                                            {#if driveSync}
-                                                <div class="flex items-center gap-2">
-                                                    <span
-                                                        class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(driveSync.status)}`}
-                                                    >
-                                                        {driveSync.status}
-                                                    </span>
-                                                    <span class="text-muted-foreground"
-                                                        >{driveSync.syncType}</span
-                                                    >
-                                                </div>
-                                                {#if driveSync.documentsProcessed > 0}
-                                                    <div class="text-muted-foreground">
-                                                        {driveSync.documentsProcessed} documents processed
-                                                    </div>
-                                                {/if}
-                                            {/if}
-                                            <div class="flex gap-1">
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onclick={() => syncSource(driveSource.id)}
-                                                    disabled={syncingSourceId === driveSource.id}
-                                                    class="h-7 px-2 text-xs"
-                                                >
-                                                    {syncingSourceId === driveSource.id
-                                                        ? 'Syncing...'
-                                                        : 'Sync'}
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                {/if}
-
-                                <!-- Gmail Section -->
-                                {#if gmailSource}
-                                    {@const gmailSync = getLatestSyncForSource(gmailSource.id)}
-                                    <div class="rounded-lg border p-3">
-                                        <div class="mb-2 text-sm font-medium">Gmail</div>
-                                        <div class="space-y-2 text-xs">
-                                            {#if gmailSync}
-                                                <div class="flex items-center gap-2">
-                                                    <span
-                                                        class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(gmailSync.status)}`}
-                                                    >
-                                                        {gmailSync.status}
-                                                    </span>
-                                                    <span class="text-muted-foreground"
-                                                        >{gmailSync.syncType}</span
-                                                    >
-                                                </div>
-                                                {#if gmailSync.documentsProcessed > 0}
-                                                    <div class="text-muted-foreground">
-                                                        {gmailSync.documentsProcessed} documents processed
-                                                    </div>
-                                                {/if}
-                                            {/if}
-                                            <div class="flex gap-1">
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onclick={() => syncSource(gmailSource.id)}
-                                                    disabled={syncingSourceId === gmailSource.id}
-                                                    class="h-7 px-2 text-xs"
-                                                >
-                                                    {syncingSourceId === gmailSource.id
-                                                        ? 'Syncing...'
-                                                        : 'Sync'}
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                {/if}
-
-                                <!-- Disconnect Button for Google -->
-                                <AlertDialog.Root>
-                                    <AlertDialog.Trigger
-                                        class={buttonVariants({ variant: 'outline', size: 'sm' })}
-                                        disabled={disconnectingSourceId}
+                                <!-- Integration Actions -->
+                                <div class="flex gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onclick={() => goto('/admin/integrations/google/configure')}
                                     >
-                                        {disconnectingSourceId
-                                            ? 'Disconnecting...'
-                                            : 'Disconnect All'}
-                                    </AlertDialog.Trigger>
-                                    <AlertDialog.Content>
-                                        <AlertDialog.Header>
-                                            <AlertDialog.Title>Disconnect Google?</AlertDialog.Title
+                                        Configure
+                                    </Button>
+                                    <AlertDialog.Root>
+                                        <AlertDialog.Trigger
+                                            class={buttonVariants({
+                                                variant: 'destructive',
+                                                size: 'sm',
+                                            })}
+                                            disabled={!!disconnectingSourceId}
+                                        >
+                                            {disconnectingSourceId
+                                                ? 'Disconnecting...'
+                                                : 'Disconnect'}
+                                        </AlertDialog.Trigger>
+                                        <AlertDialog.Content>
+                                            <AlertDialog.Header>
+                                                <AlertDialog.Title
+                                                    >Disconnect Google Workspace?</AlertDialog.Title
+                                                >
+                                                <AlertDialog.Description>
+                                                    This will disconnect both Google Drive and Gmail
+                                                    sources and remove access credentials. Existing
+                                                    indexed documents will remain searchable.
+                                                </AlertDialog.Description>
+                                            </AlertDialog.Header>
+                                            <AlertDialog.Footer>
+                                                <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+                                                <AlertDialog.Action
+                                                    onclick={() => {
+                                                        if (driveSource)
+                                                            disconnectSource(driveSource.id)
+                                                        if (gmailSource)
+                                                            disconnectSource(gmailSource.id)
+                                                    }}
+                                                >
+                                                    Disconnect
+                                                </AlertDialog.Action>
+                                            </AlertDialog.Footer>
+                                        </AlertDialog.Content>
+                                    </AlertDialog.Root>
+                                </div>
+
+                                <!-- Connected Apps -->
+                                <div class="space-y-2">
+                                    <div class="text-muted-foreground text-sm font-medium">
+                                        Apps
+                                    </div>
+
+                                    <!-- Google Drive App -->
+                                    {#if driveSource}
+                                        {@const driveSync = getLatestSyncForSource(driveSource.id)}
+                                        <div
+                                            class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5"
+                                        >
+                                            <div class="flex items-center gap-3">
+                                                <img
+                                                    src="/src/lib/images/icons/google-drive.svg"
+                                                    alt="Google Drive"
+                                                    class="h-5 w-5"
+                                                />
+                                                <div class="flex items-center gap-2">
+                                                    <span class="text-sm font-medium"
+                                                        >Google Drive</span
+                                                    >
+                                                    {#if driveSource.isActive}
+                                                        <span
+                                                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400"
+                                                        >
+                                                            Active
+                                                        </span>
+                                                    {:else}
+                                                        <span
+                                                            class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300"
+                                                        >
+                                                            Inactive
+                                                        </span>
+                                                    {/if}
+                                                    {#if driveSync && driveSync.status === 'running'}
+                                                        <span
+                                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(driveSync.status)}`}
+                                                        >
+                                                            Syncing
+                                                        </span>
+                                                    {/if}
+                                                </div>
+                                            </div>
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onclick={() => syncSource(driveSource.id)}
+                                                disabled={syncingSourceId === driveSource.id}
                                             >
-                                            <AlertDialog.Description>
-                                                This will disconnect both Google Drive and Gmail
-                                                sources and remove access credentials. Existing
-                                                indexed documents will remain searchable.
-                                            </AlertDialog.Description>
-                                        </AlertDialog.Header>
-                                        <AlertDialog.Footer>
-                                            <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
-                                            <AlertDialog.Action
-                                                onclick={() => {
-                                                    if (driveSource)
-                                                        disconnectSource(driveSource.id)
-                                                    if (gmailSource)
-                                                        disconnectSource(gmailSource.id)
-                                                }}
+                                                {syncingSourceId === driveSource.id
+                                                    ? 'Syncing...'
+                                                    : 'Sync Now'}
+                                            </Button>
+                                        </div>
+                                    {/if}
+
+                                    <!-- Gmail App -->
+                                    {#if gmailSource}
+                                        {@const gmailSync = getLatestSyncForSource(gmailSource.id)}
+                                        <div
+                                            class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5"
+                                        >
+                                            <div class="flex items-center gap-3">
+                                                <img
+                                                    src="/src/lib/images/icons/gmail.svg"
+                                                    alt="Gmail"
+                                                    class="h-5 w-5"
+                                                />
+                                                <div class="flex items-center gap-2">
+                                                    <span class="text-sm font-medium">Gmail</span>
+                                                    {#if gmailSource.isActive}
+                                                        <span
+                                                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400"
+                                                        >
+                                                            Active
+                                                        </span>
+                                                    {:else}
+                                                        <span
+                                                            class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300"
+                                                        >
+                                                            Inactive
+                                                        </span>
+                                                    {/if}
+                                                    {#if gmailSync && gmailSync.status === 'running'}
+                                                        <span
+                                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(gmailSync.status)}`}
+                                                        >
+                                                            Syncing
+                                                        </span>
+                                                    {/if}
+                                                </div>
+                                            </div>
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onclick={() => syncSource(gmailSource.id)}
+                                                disabled={syncingSourceId === gmailSource.id}
                                             >
-                                                Disconnect
-                                            </AlertDialog.Action>
-                                        </AlertDialog.Footer>
-                                    </AlertDialog.Content>
-                                </AlertDialog.Root>
+                                                {syncingSourceId === gmailSource.id
+                                                    ? 'Syncing...'
+                                                    : 'Sync Now'}
+                                            </Button>
+                                        </div>
+                                    {/if}
+                                </div>
                             </div>
                         {:else}
                             {@const latestSync = getLatestSyncForSource(connectedSource.id)}

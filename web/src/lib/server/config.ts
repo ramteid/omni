@@ -1,4 +1,7 @@
 import { env } from '$env/dynamic/private'
+import { createLogger } from './logger.js'
+
+const logger = createLogger('config')
 
 export interface AppConfig {
     database: {
@@ -36,8 +39,10 @@ export interface AppConfig {
 function getRequiredEnv(key: string): string {
     const value = env[key]
     if (!value) {
-        console.error(`ERROR: Required environment variable '${key}' is not set`)
-        console.error('Please set this variable in your .env file or environment')
+        logger.fatal(`Required environment variable '${key}' is not set`, undefined, {
+            variable: key,
+            message: 'Please set this variable in your .env file or environment',
+        })
         process.exit(1)
     }
     return value
@@ -52,7 +57,7 @@ function validateUrl(url: string, name: string): string {
         new URL(url)
         return url
     } catch {
-        console.error(`ERROR: Invalid URL for ${name}: ${url}`)
+        logger.fatal(`Invalid URL for ${name}`, undefined, { name, url })
         process.exit(1)
     }
 }
@@ -60,7 +65,7 @@ function validateUrl(url: string, name: string): string {
 function validatePositiveNumber(value: string, name: string): number {
     const num = parseInt(value, 10)
     if (isNaN(num) || num <= 0) {
-        console.error(`ERROR: ${name} must be a positive number, got: ${value}`)
+        logger.fatal(`${name} must be a positive number`, undefined, { name, value })
         process.exit(1)
     }
     return num
@@ -70,7 +75,7 @@ function validatePositiveNumber(value: string, name: string): number {
 function loadConfig(): AppConfig {
     // Skip config validation during build time
     if (process.env.NODE_ENV === 'production' && !process.env.REDIS_URL) {
-        console.log('Skipping configuration validation during build...')
+        logger.info('Skipping configuration validation during build')
         return {
             database: { url: 'postgresql://placeholder' },
             redis: { url: 'redis://placeholder' },
@@ -99,7 +104,7 @@ function loadConfig(): AppConfig {
         }
     }
 
-    console.log('Loading and validating application configuration...')
+    logger.info('Loading and validating application configuration')
 
     // Database configuration
     const databaseUrl = getRequiredEnv('DATABASE_URL')
@@ -129,8 +134,9 @@ function loadConfig(): AppConfig {
     // Session configuration
     const sessionSecret = getRequiredEnv('SESSION_SECRET')
     if (sessionSecret === 'your-session-secret-key-change-in-production') {
-        console.error('ERROR: SESSION_SECRET is using the default value')
-        console.error('Please set a secure session secret in production')
+        logger.fatal('SESSION_SECRET is using the default value', undefined, {
+            message: 'Please set a secure session secret in production',
+        })
         process.exit(1)
     }
 
@@ -160,7 +166,7 @@ function loadConfig(): AppConfig {
         validateUrl(googleOAuthRedirectUri, 'GOOGLE_OAUTH_REDIRECT_URI')
     }
 
-    console.log('Configuration validation completed successfully')
+    logger.info('Configuration validation completed successfully')
 
     return {
         database: {

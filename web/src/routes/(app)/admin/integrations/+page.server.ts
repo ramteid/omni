@@ -8,7 +8,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
     // Get all organization-level connected sources
-    const connectedSources = await db.select().from(sources).where(eq(sources.isActive, true))
+    const connectedSources = await db.select().from(sources)
 
     // Get latest 10 sync runs
     const latestSyncRuns = await db

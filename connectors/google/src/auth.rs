@@ -254,3 +254,107 @@ where
 
     unreachable!()
 }
+
+/// Service for managing Google service credentials and authentication
+pub struct GoogleCredentialsService {
+    service_credentials_repo: shared::db::repositories::ServiceCredentialsRepo,
+}
+
+impl GoogleCredentialsService {
+    pub fn new(pool: sqlx::PgPool) -> Result<Self> {
+        let service_credentials_repo = shared::db::repositories::ServiceCredentialsRepo::new(pool)?;
+        Ok(Self {
+            service_credentials_repo,
+        })
+    }
+
+    /// Get service credentials by source ID
+    pub async fn get_credentials_for_source(
+        &self,
+        source_id: &str,
+    ) -> Result<shared::models::ServiceCredentials> {
+        self.service_credentials_repo
+            .get_by_source_id(source_id)
+            .await?
+            .ok_or_else(|| anyhow!("Service credentials not found for source: {}", source_id))
+    }
+
+    /// Create ServiceAccountAuth from service credentials
+    pub fn create_service_auth(
+        &self,
+        creds: &shared::models::ServiceCredentials,
+    ) -> Result<ServiceAccountAuth> {
+        let service_account_json = creds
+            .credentials
+            .get("service_account_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Missing service_account_key in credentials"))?;
+
+        let default_scopes = vec![
+            "https://www.googleapis.com/auth/drive.readonly".to_string(),
+            "https://www.googleapis.com/auth/gmail.readonly".to_string(),
+            "https://www.googleapis.com/auth/admin.directory.user.readonly".to_string(),
+        ];
+
+        let scopes = creds
+            .config
+            .get("scopes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or(default_scopes);
+
+        ServiceAccountAuth::new(service_account_json, scopes)
+    }
+
+    /// Get domain from service credentials
+    pub fn get_domain_from_credentials(
+        &self,
+        creds: &shared::models::ServiceCredentials,
+    ) -> Result<String> {
+        creds
+            .config
+            .get("domain")
+            .and_then(|d| d.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow!("Missing domain in service credentials config"))
+    }
+
+    /// Get principal email from service credentials
+    pub fn get_principal_email_from_credentials(
+        &self,
+        creds: &shared::models::ServiceCredentials,
+    ) -> Result<String> {
+        creds
+            .principal_email
+            .as_ref()
+            .map(String::from)
+            .ok_or_else(|| anyhow!("Missing principal_email in service credentials"))
+    }
+
+    /// Complete authentication setup for a source - returns (auth, domain, principal_email)
+    pub async fn setup_auth_for_source(
+        &self,
+        source_id: &str,
+    ) -> Result<(ServiceAccountAuth, String, String)> {
+        let creds = self.get_credentials_for_source(source_id).await?;
+        let auth = self.create_service_auth(&creds)?;
+        let domain = self.get_domain_from_credentials(&creds)?;
+        let principal_email = self.get_principal_email_from_credentials(&creds)?;
+
+        Ok((auth, domain, principal_email))
+    }
+
+    /// Get access token for a specific user impersonation
+    pub async fn get_access_token_for_source(
+        &self,
+        source_id: &str,
+        impersonate_user: &str,
+    ) -> Result<String> {
+        let (auth, _domain, _principal_email) = self.setup_auth_for_source(source_id).await?;
+        auth.get_access_token(impersonate_user).await
+    }
+}

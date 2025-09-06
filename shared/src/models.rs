@@ -40,6 +40,15 @@ pub struct User {
     pub last_login_at: Option<OffsetDateTime>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[sqlx(type_name = "varchar", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum UserFilterMode {
+    All,
+    Whitelist,
+    Blacklist,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Source {
     pub id: String,
@@ -51,11 +60,54 @@ pub struct Source {
     pub last_sync_at: Option<OffsetDateTime>,
     pub sync_status: Option<String>,
     pub sync_error: Option<String>,
+    pub user_filter_mode: UserFilterMode,
+    pub user_whitelist: Option<JsonValue>,
+    pub user_blacklist: Option<JsonValue>,
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
     pub created_by: String,
+}
+
+impl Source {
+    pub fn get_user_whitelist(&self) -> Vec<String> {
+        self.user_whitelist
+            .as_ref()
+            .and_then(|list| list.as_array())
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn get_user_blacklist(&self) -> Vec<String> {
+        self.user_blacklist
+            .as_ref()
+            .and_then(|list| list.as_array())
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn should_index_user(&self, user_email: &str) -> bool {
+        match self.user_filter_mode {
+            UserFilterMode::All => true,
+            UserFilterMode::Whitelist => {
+                self.get_user_whitelist().contains(&user_email.to_string())
+            }
+            UserFilterMode::Blacklist => {
+                !self.get_user_blacklist().contains(&user_email.to_string())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

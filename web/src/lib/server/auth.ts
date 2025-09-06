@@ -6,8 +6,10 @@ import { db } from '$lib/server/db'
 import * as table from '$lib/server/db/schema'
 import { getRedisClient } from '$lib/server/redis'
 import { getConfig } from '$lib/server/config'
+import { createLogger } from './logger.js'
 
 const config = getConfig()
+const logger = createLogger('auth')
 const DAY_IN_MS = 1000 * 60 * 60 * 24
 const SESSION_DURATION_MS = DAY_IN_MS * config.session.durationDays
 
@@ -120,7 +122,7 @@ export async function createUserSession(userId: string) {
             },
         }
     } catch (error) {
-        console.error('Error creating session:', error)
+        logger.error('Error creating session', error, { userId })
         return {
             success: false,
             error: 'Failed to create session',

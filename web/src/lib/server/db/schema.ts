@@ -21,6 +21,9 @@ export const sources = pgTable('sources', {
     lastSyncAt: timestamp('last_sync_at', { withTimezone: true, mode: 'date' }),
     syncStatus: text('sync_status').default('pending'),
     syncError: text('sync_error'),
+    userFilterMode: text('user_filter_mode').notNull().default('all'),
+    userWhitelist: jsonb('user_whitelist').notNull().default('[]'),
+    userBlacklist: jsonb('user_blacklist').notNull().default('[]'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     createdBy: text('created_by')

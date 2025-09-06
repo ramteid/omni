@@ -15,7 +15,8 @@ impl SourceRepository {
         let sources = sqlx::query_as::<_, Source>(
             r#"
             SELECT id, name, source_type, config, is_active, 
-                   last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
+                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
+                   created_at, updated_at, created_by
             FROM sources
             WHERE source_type = $1
             ORDER BY created_at DESC
@@ -32,7 +33,8 @@ impl SourceRepository {
         let sources = sqlx::query_as::<_, Source>(
             r#"
             SELECT id, name, source_type, config, is_active, 
-                   last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
+                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
+                   created_at, updated_at, created_by
             FROM sources
             WHERE is_active = true
             ORDER BY created_at DESC
@@ -52,6 +54,30 @@ impl SourceRepository {
 
         Ok(())
     }
+
+    pub async fn update_user_filter_settings(
+        &self,
+        id: &str,
+        user_filter_mode: crate::models::UserFilterMode,
+        user_whitelist: serde_json::Value,
+        user_blacklist: serde_json::Value,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE sources 
+            SET user_filter_mode = $2, user_whitelist = $3, user_blacklist = $4, sync_status = 'pending', updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            "#
+        )
+        .bind(id)
+        .bind(user_filter_mode)
+        .bind(user_whitelist)
+        .bind(user_blacklist)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -60,7 +86,8 @@ impl Repository<Source, String> for SourceRepository {
         let source = sqlx::query_as::<_, Source>(
             r#"
             SELECT id, name, source_type, config, is_active, 
-                   last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
+                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
+                   created_at, updated_at, created_by
             FROM sources
             WHERE id = $1
             "#,
@@ -76,7 +103,8 @@ impl Repository<Source, String> for SourceRepository {
         let sources = sqlx::query_as::<_, Source>(
             r#"
             SELECT id, name, source_type, config, is_active, 
-                   last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
+                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
+                   created_at, updated_at, created_by
             FROM sources
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
@@ -96,7 +124,8 @@ impl Repository<Source, String> for SourceRepository {
             INSERT INTO sources (id, name, source_type, config, is_active, created_by)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, name, source_type, config, is_active, 
-                      last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
+                      last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
+                      created_at, updated_at, created_by
             "#,
         )
         .bind(&source.id)
@@ -124,7 +153,8 @@ impl Repository<Source, String> for SourceRepository {
             SET name = $2, source_type = $3, config = $4, is_active = $5
             WHERE id = $1
             RETURNING id, name, source_type, config, is_active, 
-                      last_sync_at, sync_status, sync_error, created_at, updated_at, created_by
+                      last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
+                      created_at, updated_at, created_by
             "#,
         )
         .bind(&id)
