@@ -1,0 +1,16 @@
+# Copy this file to terraform.tfvars and fill in your values
+
+# Required Variables
+workspace_domain      = "your-company.com"           # Your Google Workspace domain
+admin_email          = "admin@your-company.com"      # Google Workspace admin email
+
+# Optional Variables (uncomment and modify if needed)
+# project_name         = "omni-workspace-integration"  # Name for the GCP project
+# project_id           = ""                           # Specific project ID (leave empty to auto-generate)
+# billing_account_name = "My Billing Account"         # Name of billing account to use
+# region              = "us-central1"                 # Default region for resources
+# service_account_name = "omni-service-account"       # Name for the service account
+# tag_key_name        = "omni-integration"            # Organization tag key name
+# tag_value_name      = "allowed"                     # Tag value name
+# include_gmail_scope = true                          # Set to false to exclude Gmail access
+# output_key_file     = true                          # Set to false to not create local key file
