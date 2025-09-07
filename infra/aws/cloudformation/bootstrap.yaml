@@ -10,8 +10,8 @@ Parameters:
     
   OmniAccountId:
     Type: String
-    Description: Omni's AWS Account ID for cross-account access
-    Default: "YOUR-AWS-ACCOUNT-ID-HERE"  # Replace with your actual AWS account ID
+    Description: Omni service provider's AWS Account ID for cross-account access (NOT your account ID)
+    Default: "REPLACE_WITH_OMNI_SERVICE_PROVIDER_ACCOUNT_ID"
   
   CostCenter:
     Type: String
@@ -71,10 +71,6 @@ Resources:
             Condition:
               StringEquals:
                 'sts:ExternalId': !Ref ExternalId
-      ManagedPolicyArns:
-        # These are the minimum permissions needed for ECS/Fargate deployment
-        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
-        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
       Tags:
         - Key: Application
           Value: Omni
@@ -101,60 +97,159 @@ Resources:
                   - !GetAtt OmniDeploymentBucket.Arn
                   - !Sub '${OmniDeploymentBucket.Arn}/*'
               
-              # RDS permissions
+              # RDS permissions - Describe operations (no tag conditions supported)
+              - Effect: Allow
+                Action:
+                  - 'rds:DescribeDBInstances'
+                  - 'rds:DescribeDBSubnetGroups'
+                  - 'rds:ListTagsForResource'
+                Resource:
+                  - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:omni-*'
+                  - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:subgrp:omni-*'
+              
+              # RDS permissions - Create operations (require Application=Omni tag)
               - Effect: Allow
                 Action:
                   - 'rds:CreateDBInstance'
                   - 'rds:CreateDBSubnetGroup'
-                  - 'rds:DescribeDBInstances'
+                  - 'rds:AddTagsToResource'
+                Resource:
+                  - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:omni-*'
+                  - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:subgrp:omni-*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/Application': 'Omni'
+              
+              # RDS permissions - Modify/Delete operations (check existing tags)
+              - Effect: Allow
+                Action:
                   - 'rds:ModifyDBInstance'
                   - 'rds:DeleteDBInstance'
-                  - 'rds:AddTagsToResource'
-                  - 'rds:DescribeDBSubnetGroups'
-                Resource: '*'
+                  - 'rds:RemoveTagsFromResource'
+                Resource:
+                  - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:omni-*'
+                  - !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:subgrp:omni-*'
               
-              # ElastiCache permissions for Redis
+              # ElastiCache permissions - Describe operations (no tag conditions supported)
+              - Effect: Allow
+                Action:
+                  - 'elasticache:DescribeCacheClusters'
+                  - 'elasticache:DescribeCacheSubnetGroups'
+                  - 'elasticache:ListTagsForResource'
+                Resource:
+                  - !Sub 'arn:aws:elasticache:${AWS::Region}:${AWS::AccountId}:cluster:omni-*'
+                  - !Sub 'arn:aws:elasticache:${AWS::Region}:${AWS::AccountId}:subnetgroup:omni-*'
+              
+              # ElastiCache permissions - Create operations (require Application=Omni tag)
               - Effect: Allow
                 Action:
                   - 'elasticache:CreateCacheCluster'
                   - 'elasticache:CreateCacheSubnetGroup'
-                  - 'elasticache:DescribeCacheClusters'
+                  - 'elasticache:AddTagsToResource'
+                Resource:
+                  - !Sub 'arn:aws:elasticache:${AWS::Region}:${AWS::AccountId}:cluster:omni-*'
+                  - !Sub 'arn:aws:elasticache:${AWS::Region}:${AWS::AccountId}:subnetgroup:omni-*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/Application': 'Omni'
+              
+              # ElastiCache permissions - Modify/Delete operations
+              - Effect: Allow
+                Action:
                   - 'elasticache:ModifyCacheCluster'
                   - 'elasticache:DeleteCacheCluster'
-                  - 'elasticache:DescribeCacheSubnetGroups'
+                Resource:
+                  - !Sub 'arn:aws:elasticache:${AWS::Region}:${AWS::AccountId}:cluster:omni-*'
+                  - !Sub 'arn:aws:elasticache:${AWS::Region}:${AWS::AccountId}:subnetgroup:omni-*'
+              
+              # VPC and networking - Only describe AZs (no customer resources exposed)
+              - Effect: Allow
+                Action:
+                  - 'ec2:DescribeAvailabilityZones'
                 Resource: '*'
               
-              # VPC and networking permissions
+              # VPC and networking - Create operations with tagging requirement
               - Effect: Allow
                 Action:
                   - 'ec2:CreateVpc'
                   - 'ec2:CreateSubnet'
                   - 'ec2:CreateSecurityGroup'
                   - 'ec2:CreateInternetGateway'
-                  - 'ec2:CreateRoute'
                   - 'ec2:CreateRouteTable'
-                  - 'ec2:AttachInternetGateway'
-                  - 'ec2:AssociateRouteTable'
-                  - 'ec2:AuthorizeSecurityGroupIngress'
-                  - 'ec2:AuthorizeSecurityGroupEgress'
-                  - 'ec2:Describe*'
-                  - 'ec2:ModifyVpcAttribute'
-                  - 'ec2:ModifySubnetAttribute'
+                  - 'ec2:CreateNatGateway'
+                  - 'ec2:AllocateAddress'
                   - 'ec2:CreateTags'
                 Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/Application': 'Omni'
               
-              # Load balancer permissions
+              # VPC and networking - Operations on resources we created (tagged with Application=Omni)
+              - Effect: Allow
+                Action:
+                  - 'ec2:CreateRoute'
+                  - 'ec2:DeleteRoute'
+                  - 'ec2:AttachInternetGateway'
+                  - 'ec2:DetachInternetGateway'
+                  - 'ec2:AssociateRouteTable'
+                  - 'ec2:DisassociateRouteTable'
+                  - 'ec2:AuthorizeSecurityGroupIngress'
+                  - 'ec2:AuthorizeSecurityGroupEgress'
+                  - 'ec2:RevokeSecurityGroupIngress'
+                  - 'ec2:RevokeSecurityGroupEgress'
+                  - 'ec2:ModifyVpcAttribute'
+                  - 'ec2:ModifySubnetAttribute'
+                  - 'ec2:DeleteVpc'
+                  - 'ec2:DeleteSubnet'
+                  - 'ec2:DeleteSecurityGroup'
+                  - 'ec2:DeleteInternetGateway'
+                  - 'ec2:DeleteRouteTable'
+                  - 'ec2:DeleteNatGateway'
+                  - 'ec2:ReleaseAddress'
+                  - 'ec2:DescribeVpcs'
+                  - 'ec2:DescribeSubnets'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeInternetGateways'
+                  - 'ec2:DescribeRouteTables'
+                  - 'ec2:DescribeNatGateways'
+                  - 'ec2:DescribeAddresses'
+                  - 'ec2:DescribeNetworkInterfaces'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'ec2:ResourceTag/Application': 'Omni'
+              
+              # Load balancer - Create/Modify operations for omni-* resources
               - Effect: Allow
                 Action:
                   - 'elasticloadbalancing:CreateLoadBalancer'
                   - 'elasticloadbalancing:CreateTargetGroup'
                   - 'elasticloadbalancing:CreateListener'
+                  - 'elasticloadbalancing:CreateRule'
+                  - 'elasticloadbalancing:DeleteLoadBalancer'
+                  - 'elasticloadbalancing:DeleteTargetGroup'
+                  - 'elasticloadbalancing:DeleteListener'
+                  - 'elasticloadbalancing:DeleteRule'
                   - 'elasticloadbalancing:RegisterTargets'
-                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:DeregisterTargets'
                   - 'elasticloadbalancing:ModifyLoadBalancerAttributes'
                   - 'elasticloadbalancing:ModifyTargetGroup'
+                  - 'elasticloadbalancing:ModifyTargetGroupAttributes'
+                  - 'elasticloadbalancing:ModifyListener'
+                  - 'elasticloadbalancing:ModifyRule'
                   - 'elasticloadbalancing:AddTags'
-                Resource: '*'
+                  - 'elasticloadbalancing:RemoveTags'
+                  - 'elasticloadbalancing:DescribeLoadBalancers'
+                  - 'elasticloadbalancing:DescribeTargetGroups'
+                  - 'elasticloadbalancing:DescribeListeners'
+                  - 'elasticloadbalancing:DescribeRules'
+                  - 'elasticloadbalancing:DescribeTargetHealth'
+                  - 'elasticloadbalancing:DescribeTags'
+                Resource:
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/omni-*'
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/omni-*/*'
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/omni-*/*'
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener-rule/app/omni-*/*/*'
               
               # IAM permissions for ECS task roles
               - Effect: Allow
@@ -170,14 +265,73 @@ Resources:
                   - !Sub 'arn:aws:iam::${AWS::AccountId}:role/omni-*'
                   - !Sub 'arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole'
               
-              # CloudWatch Logs permissions
+              # CloudWatch Logs permissions - only for Omni log groups
               - Effect: Allow
                 Action:
                   - 'logs:CreateLogGroup'
                   - 'logs:CreateLogStream'
                   - 'logs:PutLogEvents'
                   - 'logs:DescribeLogGroups'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:DeleteLogGroup'
+                  - 'logs:DeleteLogStream'
+                  - 'logs:PutRetentionPolicy'
+                  - 'logs:TagLogGroup'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/omni-*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/omni-*:*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/omni-*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/omni-*:*'
+              
+              # Lambda permissions for migrator function
+              - Effect: Allow
+                Action:
+                  - 'lambda:CreateFunction'
+                  - 'lambda:UpdateFunctionCode'
+                  - 'lambda:UpdateFunctionConfiguration'
+                  - 'lambda:DeleteFunction'
+                  - 'lambda:GetFunction'
+                  - 'lambda:InvokeFunction'
+                  - 'lambda:TagResource'
+                  - 'lambda:AddPermission'
+                  - 'lambda:RemovePermission'
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:omni-*'
+              
+              # ECS permissions for Fargate deployments
+              - Effect: Allow
+                Action:
+                  - 'ecs:CreateCluster'
+                  - 'ecs:DeleteCluster'
+                  - 'ecs:DescribeClusters'
+                  - 'ecs:TagResource'
+                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/omni-*'
+              
+              - Effect: Allow
+                Action:
+                  - 'ecs:RegisterTaskDefinition'
+                  - 'ecs:DeregisterTaskDefinition'
+                  - 'ecs:DescribeTaskDefinition'
+                  - 'ecs:ListTaskDefinitions'
                 Resource: '*'
+              
+              - Effect: Allow
+                Action:
+                  - 'ecs:CreateService'
+                  - 'ecs:UpdateService'
+                  - 'ecs:DeleteService'
+                  - 'ecs:DescribeServices'
+                  - 'ecs:TagResource'
+                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/omni-*/omni-*'
+              
+              - Effect: Allow
+                Action:
+                  - 'ecs:RunTask'
+                  - 'ecs:StopTask'
+                  - 'ecs:DescribeTasks'
+                  - 'ecs:ListTasks'
+                Resource:
+                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/omni-*/*'
+                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/omni-*:*'
               
               # Secrets Manager permissions
               - Effect: Allow
@@ -208,49 +362,43 @@ Resources:
                   - 'cloudformation:DescribeStackEvents'
                   - 'cloudformation:GetTemplate'
                 Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/omni-*/*'
-
-  # ECS Task Execution Role (needed by Fargate)
-  ECSTaskExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: omni-ecsTaskExecutionRole
-      AssumeRolePolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: 'sts:AssumeRole'
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-      Policies:
-        - PolicyName: OmniTaskExecutionPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
+              
+              # Service Discovery (Cloud Map) permissions for inter-service communication
               - Effect: Allow
                 Action:
-                  - 'secretsmanager:GetSecretValue'
-                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:omni/*'
-      Tags:
-        - Key: Application
-          Value: Omni
-        - Key: CostCenter
-          Value: !Ref CostCenter
-        - Key: Environment
-          Value: !Ref Environment
-        - Key: ManagedBy
-          Value: OmniPlatform
-        - Key: Component
-          Value: ECSTaskExecutionRole
+                  - 'servicediscovery:CreatePrivateDnsNamespace'
+                  - 'servicediscovery:CreateService'
+                  - 'servicediscovery:GetNamespace'
+                  - 'servicediscovery:GetService'
+                  - 'servicediscovery:ListServices'
+                  - 'servicediscovery:ListNamespaces'
+                  - 'servicediscovery:RegisterInstance'
+                  - 'servicediscovery:DeregisterInstance'
+                  - 'servicediscovery:UpdateService'
+                  - 'servicediscovery:DeleteService'
+                Resource: '*'
+              
+              # AWS Bedrock permissions for AI functionality
+              - Effect: Allow
+                Action:
+                  - 'bedrock:InvokeModel'
+                  - 'bedrock:InvokeModelWithResponseStream'
+                  - 'bedrock:GetFoundationModel'
+                  - 'bedrock:ListFoundationModels'
+                Resource: '*'
 
 Outputs:
   DeploymentRoleArn:
     Description: ARN of the role Omni will use for deployment
     Value: !GetAtt OmniDeploymentRole.Arn
+    Export:
+      Name: !Sub omni-bootstrap-${AWS::StackName}-role-arn
     
   DeploymentBucket:
     Description: S3 bucket for deployment artifacts
     Value: !Ref OmniDeploymentBucket
+    Export:
+      Name: !Sub omni-bootstrap-${AWS::StackName}-bucket
     
   AccountId:
     Description: Your AWS Account ID (share this with Omni support)

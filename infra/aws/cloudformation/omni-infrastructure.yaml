@@ -36,6 +36,20 @@ Parameters:
     Type: String
     Default: "your-github-org"
     Description: GitHub organization name for container images
+    
+  JinaApiKey:
+    Type: String
+    NoEcho: true
+    Description: JINA AI API key for embedding generation
+    Default: ""
+    
+  DeploymentBucket:
+    Type: String
+    Description: S3 bucket from bootstrap stack for deployment artifacts (optional)
+    Default: ""
+
+Conditions:
+  HasJinaApiKey: !Not [!Equals [!Ref JinaApiKey, ""]]
 
 Resources:
   # VPC and Networking
@@ -58,6 +72,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-igw
+        - Key: Application
+          Value: Omni
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -76,6 +92,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-public-1
+        - Key: Application
+          Value: Omni
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -87,6 +105,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-public-2
+        - Key: Application
+          Value: Omni
 
   # Private Subnets
   PrivateSubnet1:
@@ -98,6 +118,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-private-1
+        - Key: Application
+          Value: Omni
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -108,6 +130,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-private-2
+        - Key: Application
+          Value: Omni
 
   # NAT Gateway
   NATGateway:
@@ -115,12 +139,22 @@ Resources:
     Properties:
       AllocationId: !GetAtt NATGatewayEIP.AllocationId
       SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-nat
+        - Key: Application
+          Value: Omni
 
   NATGatewayEIP:
     Type: AWS::EC2::EIP
     DependsOn: AttachGateway
     Properties:
       Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-eip
+        - Key: Application
+          Value: Omni
 
   # Route Tables
   PublicRouteTable:
@@ -130,6 +164,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-public-rt
+        - Key: Application
+          Value: Omni
 
   DefaultPublicRoute:
     Type: AWS::EC2::Route
@@ -158,6 +194,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-private-rt
+        - Key: Application
+          Value: Omni
 
   DefaultPrivateRoute:
     Type: AWS::EC2::Route
@@ -194,6 +232,11 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-alb-sg
+        - Key: Application
+          Value: Omni
 
   ECSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -207,14 +250,19 @@ Resources:
           FromPort: 3000
           ToPort: 3000
           SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-ecs-sg
+        - Key: Application
+          Value: Omni
   # Inter-service communication rule (separate resource to avoid circular dependency)
   ECSInterServiceRule:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref ECSSecurityGroup
       IpProtocol: tcp
-      FromPort: 8001
-      ToPort: 8003
+      FromPort: 3001
+      ToPort: 3003
       SourceSecurityGroupId: !Ref ECSSecurityGroup
 
   DatabaseSecurityGroup:
@@ -228,6 +276,11 @@ Resources:
           FromPort: 5432
           ToPort: 5432
           SourceSecurityGroupId: !Ref ECSSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-db-sg
+        - Key: Application
+          Value: Omni
 
   RedisSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -240,6 +293,11 @@ Resources:
           FromPort: 6379
           ToPort: 6379
           SourceSecurityGroupId: !Ref ECSSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-redis-sg
+        - Key: Application
+          Value: Omni
 
   # RDS Subnet Group
   DBSubnetGroup:
@@ -253,6 +311,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-db-subnet-group
+        - Key: Application
+          Value: Omni
 
   # RDS PostgreSQL Instance
   PostgreSQLDB:
@@ -262,6 +322,7 @@ Resources:
       DBInstanceClass: !Ref DBInstanceClass
       Engine: postgres
       EngineVersion: '17.2'
+      DBName: omni
       MasterUsername: omni
       MasterUserPassword: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
       AllocatedStorage: 20
@@ -275,6 +336,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-postgres
+        - Key: Application
+          Value: Omni
     DependsOn: DBPassword
 
   # ElastiCache Subnet Group
@@ -286,6 +349,11 @@ Resources:
       SubnetIds:
         - !Ref PrivateSubnet1
         - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-redis-subnet-group
+        - Key: Application
+          Value: Omni
 
   # ElastiCache Redis
   RedisCluster:
@@ -301,6 +369,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-redis
+        - Key: Application
+          Value: Omni
 
   # Database Password Secret
   DBPassword:
@@ -314,6 +384,15 @@ Resources:
         PasswordLength: 32
         ExcludeCharacters: '"@/\'
 
+  # JINA API Key Secret (optional)
+  JinaApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasJinaApiKey
+    Properties:
+      Name: !Sub omni/${CustomerName}/jina-api-key
+      Description: JINA AI API key for embedding generation
+      SecretString: !Ref JinaApiKey
+
   # Application Load Balancer
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -326,6 +405,11 @@ Resources:
         - !Ref PublicSubnet2
       SecurityGroups:
         - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-alb
+        - Key: Application
+          Value: Omni
 
   # Target Group
   ALBTargetGroup:
@@ -341,6 +425,11 @@ Resources:
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 5
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-tg
+        - Key: Application
+          Value: Omni
 
   # ALB Listener
   ALBListener:
@@ -363,6 +452,11 @@ Resources:
       DefaultCapacityProviderStrategy:
         - CapacityProvider: FARGATE
           Weight: 1
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-cluster
+        - Key: Application
+          Value: Omni
 
   # CloudWatch Log Group
   LogGroup:
@@ -370,6 +464,11 @@ Resources:
     Properties:
       LogGroupName: !Sub /ecs/omni-${CustomerName}
       RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: !Sub /ecs/omni-${CustomerName}
+        - Key: Application
+          Value: Omni
 
   # ECS Task Execution Role
   ECSTaskExecutionRole:
@@ -392,7 +491,14 @@ Resources:
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
-                Resource: !Ref DBPassword
+                Resource: 
+                  - !Ref DBPassword
+                  - !If [HasJinaApiKey, !Ref JinaApiKeySecret, !Ref "AWS::NoValue"]
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-execution-role
+        - Key: Application
+          Value: Omni
 
   # ECS Task Role
   ECSTaskRole:
@@ -418,6 +524,11 @@ Resources:
                   - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/us.anthropic.claude-sonnet-4-20250514-v1:0
                   - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0
                   - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-task-role
+        - Key: Application
+          Value: Omni
 
   # Service Discovery Namespace
   ServiceDiscoveryNamespace:
@@ -426,6 +537,172 @@ Resources:
       Name: !Sub omni-${CustomerName}.local
       Vpc: !Ref VPC
       Description: Private DNS namespace for Omni services
+
+  # Migrator Task Definition
+  MigratorTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub omni-${CustomerName}-migrator
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: "256"
+      Memory: "512"
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: omni-migrator
+          Image: !Sub ghcr.io/${GitHubOrg}/omni-migrator:latest
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: migrator
+          Environment:
+            - Name: DATABASE_URL
+              Value: !Sub 
+                - postgresql://omni:${Password}@${Endpoint}:5432/omni
+                - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
+                  Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
+          Essential: true
+
+  # Lambda function to run migrations
+  MigratorLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub omni-${CustomerName}-migrator-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RunECSTask
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RunTask
+                  - ecs:DescribeTasks
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt ECSTaskExecutionRole.Arn
+                  - !GetAtt ECSTaskRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-migrator-lambda-role
+        - Key: Application
+          Value: Omni
+
+  MigratorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub omni-${CustomerName}-migrator
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt MigratorLambdaRole.Arn
+      Timeout: 600
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-migrator
+        - Key: Application
+          Value: Omni
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import time
+          import cfnresponse
+
+          def handler(event, context):
+              print(f"Event: {json.dumps(event)}")
+              
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              
+              try:
+                  ecs = boto3.client('ecs')
+                  
+                  # Get parameters from CloudFormation
+                  cluster = event['ResourceProperties']['Cluster']
+                  task_definition = event['ResourceProperties']['TaskDefinition']
+                  subnets = event['ResourceProperties']['Subnets'].split(',')
+                  security_groups = event['ResourceProperties']['SecurityGroups'].split(',')
+                  
+                  # Run the migration task
+                  response = ecs.run_task(
+                      cluster=cluster,
+                      taskDefinition=task_definition,
+                      launchType='FARGATE',
+                      networkConfiguration={
+                          'awsvpcConfiguration': {
+                              'subnets': subnets,
+                              'securityGroups': security_groups,
+                              'assignPublicIp': 'DISABLED'
+                          }
+                      }
+                  )
+                  
+                  if not response['tasks']:
+                      raise Exception("Failed to start migration task")
+                  
+                  task_arn = response['tasks'][0]['taskArn']
+                  print(f"Started migration task: {task_arn}")
+                  
+                  # Wait for task completion
+                  waiter = ecs.get_waiter('tasks_stopped')
+                  waiter.wait(
+                      cluster=cluster,
+                      tasks=[task_arn],
+                      WaiterConfig={
+                          'Delay': 10,
+                          'MaxAttempts': 60  # 10 minutes max wait
+                      }
+                  )
+                  
+                  # Check task exit status
+                  task_status = ecs.describe_tasks(
+                      cluster=cluster,
+                      tasks=[task_arn]
+                  )
+                  
+                  task = task_status['tasks'][0]
+                  
+                  # Check container exit code
+                  for container in task['containers']:
+                      if container.get('exitCode', 0) != 0:
+                          raise Exception(f"Migration failed with exit code: {container.get('exitCode')}")
+                  
+                  print("Migration completed successfully")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, str(e))
+
+  # Custom Resource to trigger migrations
+  RunMigrations:
+    Type: Custom::RunMigrations
+    Properties:
+      ServiceToken: !GetAtt MigratorLambda.Arn
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref MigratorTaskDefinition
+      Subnets: !Join [',', [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+      SecurityGroups: !Ref ECSSecurityGroup
+    DependsOn:
+      - PostgreSQLDB
+      - ECSCluster
+      - MigratorTaskDefinition
 
   # Web Service Task Definition
   WebTaskDefinition:
@@ -453,17 +730,17 @@ Resources:
           Environment:
             - Name: DATABASE_URL
               Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/postgres
+                - postgresql://omni:${Password}@${Endpoint}:5432/omni
                 - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
                   Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
             - Name: REDIS_URL
-              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:${RedisCluster.PrimaryEndpoint.Port}
+              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:6379
             - Name: SEARCHER_URL
-              Value: !Sub http://searcher.omni-${CustomerName}.local:8001
+              Value: !Sub http://searcher.omni-${CustomerName}.local:3001
             - Name: INDEXER_URL  
-              Value: !Sub http://indexer.omni-${CustomerName}.local:8002
+              Value: !Sub http://indexer.omni-${CustomerName}.local:3002
             - Name: AI_SERVICE_URL
-              Value: !Sub http://ai.omni-${CustomerName}.local:8003
+              Value: !Sub http://ai.omni-${CustomerName}.local:3003
             - Name: DB_MAX_CONNECTIONS
               Value: "5"
             - Name: DB_ACQUIRE_TIMEOUT_SECONDS
@@ -485,7 +762,7 @@ Resources:
         - Name: omni-searcher
           Image: !Sub ghcr.io/${GitHubOrg}/omni-searcher:latest
           PortMappings:
-            - ContainerPort: 8001
+            - ContainerPort: 3001
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -495,15 +772,15 @@ Resources:
           Environment:
             - Name: DATABASE_URL
               Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/postgres
+                - postgresql://omni:${Password}@${Endpoint}:5432/omni
                 - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
                   Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
             - Name: REDIS_URL
-              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:${RedisCluster.PrimaryEndpoint.Port}
+              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:6379
             - Name: PORT
-              Value: "8001"
+              Value: "3001"
             - Name: AI_SERVICE_URL
-              Value: !Sub http://ai.omni-${CustomerName}.local:8003
+              Value: !Sub http://ai.omni-${CustomerName}.local:3003
             - Name: DB_MAX_CONNECTIONS
               Value: "5"
             - Name: DB_ACQUIRE_TIMEOUT_SECONDS
@@ -526,7 +803,7 @@ Resources:
         - Name: omni-indexer
           Image: !Sub ghcr.io/${GitHubOrg}/omni-indexer:latest
           PortMappings:
-            - ContainerPort: 8002
+            - ContainerPort: 3002
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -536,15 +813,15 @@ Resources:
           Environment:
             - Name: DATABASE_URL
               Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/postgres
+                - postgresql://omni:${Password}@${Endpoint}:5432/omni
                 - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
                   Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
             - Name: REDIS_URL
-              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:${RedisCluster.PrimaryEndpoint.Port}
+              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:6379
             - Name: PORT
-              Value: "8002"
+              Value: "3002"
             - Name: AI_SERVICE_URL
-              Value: !Sub http://ai.omni-${CustomerName}.local:8003
+              Value: !Sub http://ai.omni-${CustomerName}.local:3003
             - Name: DB_MAX_CONNECTIONS
               Value: "5"
             - Name: DB_ACQUIRE_TIMEOUT_SECONDS
@@ -567,7 +844,7 @@ Resources:
         - Name: omni-ai
           Image: !Sub ghcr.io/${GitHubOrg}/omni-ai:latest
           PortMappings:
-            - ContainerPort: 8003
+            - ContainerPort: 3003
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -577,13 +854,13 @@ Resources:
           Environment:
             - Name: DATABASE_URL
               Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/postgres
+                - postgresql://omni:${Password}@${Endpoint}:5432/omni
                 - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
                   Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
             - Name: REDIS_URL
-              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:${RedisCluster.PrimaryEndpoint.Port}
+              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:6379
             - Name: PORT
-              Value: "8003"
+              Value: "3003"
             - Name: MODEL_PATH
               Value: "/models"
             - Name: EMBEDDING_MODEL
@@ -593,7 +870,10 @@ Resources:
             - Name: EMBEDDING_PROVIDER
               Value: "jina"
             - Name: JINA_API_KEY
-              Value: "your-jina-api-key"
+              Value: !If 
+                - HasJinaApiKey
+                - !Sub '{{resolve:secretsmanager:omni/${CustomerName}/jina-api-key:SecretString}}'
+                - "CONFIGURE_JINA_API_KEY"
             - Name: LLM_PROVIDER
               Value: "bedrock"
             - Name: BEDROCK_MODEL_ID
@@ -672,7 +952,9 @@ Resources:
           TargetGroupArn: !Ref ALBTargetGroup
       ServiceRegistries:
         - RegistryArn: !GetAtt WebServiceDiscovery.Arn
-    DependsOn: ALBListener
+    DependsOn:
+      - ALBListener
+      - RunMigrations
 
   SearcherService:
     Type: AWS::ECS::Service
@@ -692,6 +974,7 @@ Resources:
           AssignPublicIp: DISABLED
       ServiceRegistries:
         - RegistryArn: !GetAtt SearcherServiceDiscovery.Arn
+    DependsOn: RunMigrations
 
   IndexerService:
     Type: AWS::ECS::Service
@@ -711,6 +994,7 @@ Resources:
           AssignPublicIp: DISABLED
       ServiceRegistries:
         - RegistryArn: !GetAtt IndexerServiceDiscovery.Arn
+    DependsOn: RunMigrations
 
   AIService:
     Type: AWS::ECS::Service
@@ -730,6 +1014,7 @@ Resources:
           AssignPublicIp: DISABLED
       ServiceRegistries:
         - RegistryArn: !GetAtt AIServiceDiscovery.Arn
+    DependsOn: RunMigrations
 
 Outputs:
   OmniURL:
