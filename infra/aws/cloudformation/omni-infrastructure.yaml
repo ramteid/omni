@@ -262,7 +262,7 @@ Resources:
       GroupId: !Ref ECSSecurityGroup
       IpProtocol: tcp
       FromPort: 3001
-      ToPort: 3003
+      ToPort: 3004
       SourceSecurityGroupId: !Ref ECSSecurityGroup
 
   DatabaseSecurityGroup:
@@ -393,6 +393,45 @@ Resources:
       Description: JINA AI API key for embedding generation
       SecretString: !Ref JinaApiKey
 
+  # Encryption Key Secret
+  EncryptionKey:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub omni/${CustomerName}/encryption-key
+      Description: Encryption key for sensitive data
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: key
+        PasswordLength: 64
+        ExcludeCharacters: '"@/\'
+        RequireEachIncludedType: true
+
+  # Encryption Salt Secret
+  EncryptionSalt:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub omni/${CustomerName}/encryption-salt
+      Description: Encryption salt for sensitive data
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: salt
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+        RequireEachIncludedType: true
+
+  # Session Secret
+  SessionSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub omni/${CustomerName}/session-secret
+      Description: Session secret for web application
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: secret
+        PasswordLength: 64
+        ExcludeCharacters: '"@/\'
+        RequireEachIncludedType: true
+
   # Application Load Balancer
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -494,6 +533,9 @@ Resources:
                 Resource: 
                   - !Ref DBPassword
                   - !If [HasJinaApiKey, !Ref JinaApiKeySecret, !Ref "AWS::NoValue"]
+                  - !Ref EncryptionKey
+                  - !Ref EncryptionSalt
+                  - !Ref SessionSecret
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-execution-role
@@ -552,7 +594,7 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: omni-migrator
-          Image: !Sub ghcr.io/${GitHubOrg}/omni-migrator:latest
+          Image: !Sub ghcr.io/${GitHubOrg}/omni/omni-migrator:latest
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -718,7 +760,7 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: omni-web
-          Image: !Sub ghcr.io/${GitHubOrg}/omni-web:latest
+          Image: !Sub ghcr.io/${GitHubOrg}/omni/omni-web:latest
           PortMappings:
             - ContainerPort: 3000
           LogConfiguration:
@@ -734,7 +776,7 @@ Resources:
                 - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
                   Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
             - Name: REDIS_URL
-              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:6379
+              Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: SEARCHER_URL
               Value: !Sub http://searcher.omni-${CustomerName}.local:3001
             - Name: INDEXER_URL  
@@ -742,9 +784,33 @@ Resources:
             - Name: AI_SERVICE_URL
               Value: !Sub http://ai.omni-${CustomerName}.local:3003
             - Name: DB_MAX_CONNECTIONS
-              Value: "5"
+              Value: "10"
             - Name: DB_ACQUIRE_TIMEOUT_SECONDS
+              Value: "3"
+            - Name: GOOGLE_CONNECTOR_URL
+              Value: !Sub http://google-connector.omni-${CustomerName}.local:3004
+            - Name: SESSION_SECRET
+              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/session-secret:SecretString:secret}}'
+            - Name: SESSION_COOKIE_NAME
+              Value: "omni_session"
+            - Name: SESSION_DURATION_DAYS
               Value: "30"
+            - Name: APP_URL
+              Value: !Sub http://${ApplicationLoadBalancer.DNSName}
+            - Name: GOOGLE_CLIENT_ID
+              Value: "CONFIGURE_GOOGLE_CLIENT_ID"
+            - Name: GOOGLE_CLIENT_SECRET
+              Value: "CONFIGURE_GOOGLE_CLIENT_SECRET"
+            - Name: GOOGLE_REDIRECT_URI
+              Value: !Sub http://${ApplicationLoadBalancer.DNSName}/auth/google/callback
+            - Name: EMAIL_PROVIDER
+              Value: "resend"
+            - Name: RESEND_API_KEY
+              Value: "CONFIGURE_RESEND_API_KEY"
+            - Name: EMAIL_FROM
+              Value: "Omni <noreply@getomni.co>"
+            - Name: AI_ANSWER_ENABLED
+              Value: "true"
           Essential: true
   # Searcher Service Task Definition
   SearcherTaskDefinition:
@@ -760,7 +826,7 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: omni-searcher
-          Image: !Sub ghcr.io/${GitHubOrg}/omni-searcher:latest
+          Image: !Sub ghcr.io/${GitHubOrg}/omni/omni-searcher:latest
           PortMappings:
             - ContainerPort: 3001
           LogConfiguration:
@@ -776,15 +842,23 @@ Resources:
                 - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
                   Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
             - Name: REDIS_URL
-              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:6379
+              Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: PORT
               Value: "3001"
             - Name: AI_SERVICE_URL
               Value: !Sub http://ai.omni-${CustomerName}.local:3003
             - Name: DB_MAX_CONNECTIONS
-              Value: "5"
+              Value: "10"
             - Name: DB_ACQUIRE_TIMEOUT_SECONDS
-              Value: "30"
+              Value: "3"
+            - Name: RUST_LOG
+              Value: "debug"
+            - Name: TYPO_TOLERANCE_ENABLED
+              Value: "true"
+            - Name: TYPO_TOLERANCE_MAX_DISTANCE
+              Value: "2"
+            - Name: TYPO_TOLERANCE_MIN_WORD_LENGTH
+              Value: "4"
           Essential: true
 
   # Indexer Service Task Definition
@@ -801,7 +875,7 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: omni-indexer
-          Image: !Sub ghcr.io/${GitHubOrg}/omni-indexer:latest
+          Image: !Sub ghcr.io/${GitHubOrg}/omni/omni-indexer:latest
           PortMappings:
             - ContainerPort: 3002
           LogConfiguration:
@@ -817,15 +891,21 @@ Resources:
                 - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
                   Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
             - Name: REDIS_URL
-              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:6379
+              Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: PORT
               Value: "3002"
             - Name: AI_SERVICE_URL
               Value: !Sub http://ai.omni-${CustomerName}.local:3003
             - Name: DB_MAX_CONNECTIONS
-              Value: "5"
+              Value: "10"
             - Name: DB_ACQUIRE_TIMEOUT_SECONDS
-              Value: "30"
+              Value: "3"
+            - Name: RUST_LOG
+              Value: "debug"
+            - Name: ENCRYPTION_KEY
+              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/encryption-key:SecretString:key}}'
+            - Name: ENCRYPTION_SALT
+              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/encryption-salt:SecretString:salt}}'
           Essential: true
 
   # AI Service Task Definition  
@@ -842,7 +922,7 @@ Resources:
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
       ContainerDefinitions:
         - Name: omni-ai
-          Image: !Sub ghcr.io/${GitHubOrg}/omni-ai:latest
+          Image: !Sub ghcr.io/${GitHubOrg}/omni/omni-ai:latest
           PortMappings:
             - ContainerPort: 3003
           LogConfiguration:
@@ -858,7 +938,7 @@ Resources:
                 - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
                   Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
             - Name: REDIS_URL
-              Value: !Sub redis://${RedisCluster.PrimaryEndpoint.Address}:6379
+              Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: PORT
               Value: "3003"
             - Name: MODEL_PATH
@@ -878,6 +958,78 @@ Resources:
               Value: "bedrock"
             - Name: BEDROCK_MODEL_ID
               Value: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+            - Name: DB_MAX_CONNECTIONS
+              Value: "10"
+            - Name: DB_ACQUIRE_TIMEOUT_SECONDS
+              Value: "3"
+            - Name: RUST_LOG
+              Value: "debug"
+            - Name: ANTHROPIC_MAX_TOKENS
+              Value: "4096"
+            - Name: AI_WORKERS
+              Value: "1"
+          Essential: true
+
+  # Google Connector Service Task Definition
+  GoogleConnectorTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub omni-${CustomerName}-google-connector
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref ECSTaskCpu
+      Memory: !Ref ECSTaskMemory
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub omni-${CustomerName}-google-connector
+        - Key: Application
+          Value: Omni
+      ContainerDefinitions:
+        - Name: omni-google-connector
+          Image: !Sub ghcr.io/${GitHubOrg}/omni/omni-google-connector:latest
+          PortMappings:
+            - ContainerPort: 3004
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: google-connector
+          Environment:
+            - Name: DATABASE_URL
+              Value: !Sub 
+                - postgresql://omni:${Password}@${Endpoint}:5432/omni
+                - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
+                  Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: REDIS_URL
+              Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
+            - Name: PORT
+              Value: "3004"
+            - Name: AI_SERVICE_URL
+              Value: !Sub http://ai.omni-${CustomerName}.local:3003
+            - Name: RUST_LOG
+              Value: "debug"
+            - Name: GOOGLE_CLIENT_ID
+              Value: "CONFIGURE_GOOGLE_CLIENT_ID"
+            - Name: GOOGLE_CLIENT_SECRET
+              Value: "CONFIGURE_GOOGLE_CLIENT_SECRET"
+            - Name: GOOGLE_REDIRECT_URI
+              Value: !Sub http://${ApplicationLoadBalancer.DNSName}/auth/google/callback
+            - Name: GOOGLE_SYNC_INTERVAL_SECONDS
+              Value: "3600"
+            - Name: GOOGLE_MAX_AGE_DAYS
+              Value: "730"
+            - Name: GOOGLE_WEBHOOK_URL
+              Value: "CONFIGURE_GOOGLE_WEBHOOK_URL"
+            - Name: WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS
+              Value: "3600"
+            - Name: ENCRYPTION_KEY
+              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/encryption-key:SecretString:key}}'
+            - Name: ENCRYPTION_SALT
+              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/encryption-salt:SecretString:salt}}'
           Essential: true
 
   # Service Discovery Services
@@ -921,6 +1073,18 @@ Resources:
     Type: AWS::ServiceDiscovery::Service
     Properties:
       Name: ai
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 300
+        NamespaceId: !Ref ServiceDiscoveryNamespace
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  GoogleConnectorServiceDiscovery:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: google-connector
       DnsConfig:
         DnsRecords:
           - Type: A
@@ -1016,6 +1180,26 @@ Resources:
         - RegistryArn: !GetAtt AIServiceDiscovery.Arn
     DependsOn: RunMigrations
 
+  GoogleConnectorService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub omni-${CustomerName}-google-connector
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref GoogleConnectorTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+          AssignPublicIp: DISABLED
+      ServiceRegistries:
+        - RegistryArn: !GetAtt GoogleConnectorServiceDiscovery.Arn
+    DependsOn: RunMigrations
+
 Outputs:
   OmniURL:
     Description: URL to access Omni application
@@ -1027,7 +1211,7 @@ Outputs:
     
   RedisEndpoint:
     Description: Redis cluster endpoint
-    Value: !GetAtt RedisCluster.PrimaryEndpoint.Address
+    Value: !GetAtt RedisCluster.RedisEndpoint.Address
     
   LoadBalancerDNS:
     Description: Application Load Balancer DNS name

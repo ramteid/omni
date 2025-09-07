@@ -339,6 +339,8 @@ Resources:
                   - 'secretsmanager:CreateSecret'
                   - 'secretsmanager:GetSecretValue'
                   - 'secretsmanager:UpdateSecret'
+                  - 'secretsmanager:DeleteSecret'
+                  - 'secretsmanager:DescribeSecret'
                   - 'secretsmanager:TagResource'
                 Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:omni/*'
               
@@ -363,19 +365,37 @@ Resources:
                   - 'cloudformation:GetTemplate'
                 Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/omni-*/*'
               
-              # Service Discovery (Cloud Map) permissions for inter-service communication
+              # Service Discovery - Namespace operations (require namespace resource)
               - Effect: Allow
                 Action:
                   - 'servicediscovery:CreatePrivateDnsNamespace'
-                  - 'servicediscovery:CreateService'
+                  - 'servicediscovery:DeleteNamespace'
                   - 'servicediscovery:GetNamespace'
+                  - 'servicediscovery:UpdatePrivateDnsNamespace'
+                Resource: !Sub 'arn:aws:servicediscovery:${AWS::Region}:${AWS::AccountId}:namespace/*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/Application': 'Omni'
+              
+              # Service Discovery - Service operations (require service resource)
+              - Effect: Allow
+                Action:
+                  - 'servicediscovery:CreateService'
+                  - 'servicediscovery:DeleteService'
                   - 'servicediscovery:GetService'
-                  - 'servicediscovery:ListServices'
-                  - 'servicediscovery:ListNamespaces'
                   - 'servicediscovery:RegisterInstance'
                   - 'servicediscovery:DeregisterInstance'
                   - 'servicediscovery:UpdateService'
-                  - 'servicediscovery:DeleteService'
+                Resource: !Sub 'arn:aws:servicediscovery:${AWS::Region}:${AWS::AccountId}:service/*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/Application': 'Omni'
+              
+              # Service Discovery - List operations (don't require specific resources)
+              - Effect: Allow
+                Action:
+                  - 'servicediscovery:ListNamespaces'
+                  - 'servicediscovery:ListServices'
                 Resource: '*'
               
               # AWS Bedrock permissions for AI functionality
