@@ -1,7 +1,7 @@
 <div align="center">
 
-<img height="100" src="https://github.com/user-attachments/assets/db27a7ed-375b-4715-b43e-e80f52b4a305#gh-light-mode-only" alt="Omni">
-<img height="100" src="https://github.com/user-attachments/assets/1c2e1f84-a6b1-4877-9ba2-3b030f0b2d8e#gh-dark-mode-only" alt="Omni">
+<!-- <img height="100" src="https://github.com/user-attachments/assets/db27a7ed-375b-4715-b43e-e80f52b4a305#gh-light-mode-only" alt="Omni">
+<img height="100" src="https://github.com/user-attachments/assets/1c2e1f84-a6b1-4877-9ba2-3b030f0b2d8e#gh-dark-mode-only" alt="Omni"> -->
 
 **The Open-Source Enterprise AI Search Platform**
 
@@ -57,7 +57,8 @@ Omni is a search platform that unifies your organization's knowledge across mult
 
 Omni uses a simple microservices architecture built for scalability and maintainability:
 
-![omni-arch-6](https://github.com/user-attachments/assets/28d3fdaa-8ec6-4536-97fc-c1ac9d2ffe78)
+![omni-arch-6](https://github.com/user-attachments/assets/d2875224-69f7-4f84-9f50-611909e7bd28)
+
 
 ### Core Components
 
