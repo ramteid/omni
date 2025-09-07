@@ -73,10 +73,13 @@ async def main():
     # Test configuration
     test_vllm = os.getenv("TEST_VLLM", "false").lower() == "true"
     test_anthropic = os.getenv("TEST_ANTHROPIC", "false").lower() == "true"
+    test_bedrock = os.getenv("TEST_BEDROCK", "false").lower() == "true"
 
     vllm_url = os.getenv("VLLM_URL", "http://localhost:8000")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+    bedrock_model_id = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+    aws_region = os.getenv("AWS_REGION", "")
 
     results = []
 
@@ -108,6 +111,19 @@ async def main():
                 print(f"❌ Failed to create Anthropic provider: {e}")
                 results.append(("Anthropic", False))
 
+    # Test Bedrock provider
+    if test_bedrock:
+        try:
+            region_name = aws_region if aws_region else None
+            bedrock_provider = create_llm_provider(
+                "bedrock", model_id=bedrock_model_id, region_name=region_name
+            )
+            result = await test_provider_streaming(bedrock_provider, "Bedrock")
+            results.append(("Bedrock", result))
+        except Exception as e:
+            print(f"❌ Failed to create Bedrock provider: {e}")
+            results.append(("Bedrock", False))
+
     # Print summary
     print("\n" + "=" * 50)
     print("TEST SUMMARY")
@@ -119,7 +135,7 @@ async def main():
 
     if not results:
         print(
-            "No tests were run. Set TEST_VLLM=true or TEST_ANTHROPIC=true to run tests."
+            "No tests were run. Set TEST_VLLM=true, TEST_ANTHROPIC=true, or TEST_BEDROCK=true to run tests."
         )
         print("\nExample usage:")
         print("  # Test vLLM provider")
@@ -130,9 +146,13 @@ async def main():
         print(
             "  TEST_ANTHROPIC=true ANTHROPIC_API_KEY=your-key python test_providers.py"
         )
-        print("\n  # Test both providers")
+        print("\n  # Test Bedrock provider")
         print(
-            "  TEST_VLLM=true TEST_ANTHROPIC=true VLLM_URL=http://localhost:8000 ANTHROPIC_API_KEY=your-key python test_providers.py"
+            "  TEST_BEDROCK=true python test_providers.py"
+        )
+        print("\n  # Test all providers")
+        print(
+            "  TEST_VLLM=true TEST_ANTHROPIC=true TEST_BEDROCK=true VLLM_URL=http://localhost:8000 ANTHROPIC_API_KEY=your-key python test_providers.py"
         )
 
     return all(result for _, result in results) if results else False

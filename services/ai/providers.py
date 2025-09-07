@@ -12,6 +12,8 @@ import logging
 import httpx
 from anthropic import AsyncAnthropic
 from anthropic.types import ContentBlockDeltaEvent, ContentBlockStartEvent
+import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +245,125 @@ class AnthropicProvider(LLMProvider):
             return False
 
 
+class BedrockProvider(LLMProvider):
+    """Provider for AWS Bedrock Claude models."""
+
+    def __init__(self, model_id: str = "us.anthropic.claude-sonnet-4-20250514-v1:0", region_name: Optional[str] = None):
+        self.model_id = model_id
+        self.region_name = region_name
+        self.client = boto3.client('bedrock-runtime', region_name=region_name)
+
+    async def stream_response(
+        self,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+    ) -> AsyncIterator[str]:
+        """Stream response from AWS Bedrock Claude models."""
+        try:
+            # Prepare the request body for Claude models
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": max_tokens or 4096,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature or 0.7,
+                "top_p": top_p or 0.9,
+            }
+
+            # Invoke with streaming response
+            response = self.client.invoke_model_with_response_stream(
+                modelId=self.model_id,
+                body=json.dumps(body),
+                contentType="application/json",
+                accept="application/json",
+            )
+
+            # Process streaming response
+            for event in response.get('body'):
+                chunk = json.loads(event['chunk']['bytes'].decode())
+                
+                if chunk['type'] == 'content_block_delta':
+                    text = chunk['delta'].get('text', '')
+                    if text:
+                        yield text
+                elif chunk['type'] == 'message_delta':
+                    if 'stop_reason' in chunk['delta']:
+                        break
+
+        except ClientError as e:
+            logger.error(f"AWS Bedrock client error: {str(e)}")
+            yield f"Error: AWS Bedrock client error ({e.response['Error']['Code']})"
+        except Exception as e:
+            logger.error(f"Failed to stream from AWS Bedrock: {str(e)}")
+            yield f"Error: {str(e)}"
+
+    async def generate_response(
+        self,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+    ) -> str:
+        """Generate non-streaming response from AWS Bedrock Claude models."""
+        try:
+            # Prepare the request body for Claude models
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": max_tokens or 4096,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature or 0.7,
+                "top_p": top_p or 0.9,
+            }
+
+            # Invoke the model
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps(body),
+                contentType="application/json",
+                accept="application/json",
+            )
+
+            # Parse response
+            response_body = json.loads(response['body'].read())
+            content = ""
+            for block in response_body.get('content', []):
+                if block.get('type') == 'text':
+                    content += block.get('text', '')
+
+            if not content:
+                raise Exception("Empty response from AWS Bedrock service")
+
+            return content
+
+        except ClientError as e:
+            logger.error(f"AWS Bedrock client error: {str(e)}")
+            raise Exception(f"AWS Bedrock service error: {e.response['Error']['Code']}")
+        except Exception as e:
+            logger.error(f"Failed to generate response from AWS Bedrock: {str(e)}")
+            raise Exception(f"Failed to generate response: {str(e)}")
+
+    async def health_check(self) -> bool:
+        """Check if AWS Bedrock service is accessible."""
+        try:
+            # Try a minimal request to check service accessibility
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps(body),
+                contentType="application/json",
+                accept="application/json",
+            )
+            return True
+        except Exception:
+            return False
+
+
 def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
     """Factory function to create LLM provider based on type."""
     if provider_type.lower() == "vllm":
@@ -257,6 +378,11 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
             raise ValueError("api_key is required for Anthropic provider")
         model = kwargs.get("model", "claude-3-5-sonnet-20241022")
         return AnthropicProvider(api_key, model)
+
+    elif provider_type.lower() == "bedrock":
+        model_id = kwargs.get("model_id", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        region_name = kwargs.get("region_name")
+        return BedrockProvider(model_id, region_name)
 
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")

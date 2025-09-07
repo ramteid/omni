@@ -1,0 +1,22 @@
+[
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "production"
+  },
+  {
+    "ParameterKey": "DBInstanceClass", 
+    "ParameterValue": "db.t3.micro"
+  },
+  {
+    "ParameterKey": "RedisNodeType",
+    "ParameterValue": "cache.t3.micro"
+  },
+  {
+    "ParameterKey": "ECSTaskCpu",
+    "ParameterValue": "512"
+  },
+  {
+    "ParameterKey": "ECSTaskMemory",
+    "ParameterValue": "1024"
+  }
+]

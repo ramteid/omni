@@ -103,6 +103,10 @@ ANTHROPIC_API_KEY = get_optional_env("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = get_optional_env("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 ANTHROPIC_MAX_TOKENS = int(get_optional_env("ANTHROPIC_MAX_TOKENS", "4096"))
 
+# AWS Bedrock configuration
+BEDROCK_MODEL_ID = get_optional_env("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -210,6 +214,16 @@ async def startup_event():
                 "anthropic", api_key=ANTHROPIC_API_KEY, model=ANTHROPIC_MODEL
             )
             logger.info(f"Initialized Anthropic provider with model: {ANTHROPIC_MODEL}")
+        elif LLM_PROVIDER == "bedrock":
+            region_name = AWS_REGION if AWS_REGION else None
+            llm_provider = create_llm_provider(
+                "bedrock", model_id=BEDROCK_MODEL_ID, region_name=region_name
+            )
+            logger.info(f"Initialized AWS Bedrock provider with model: {BEDROCK_MODEL_ID}")
+            if region_name:
+                logger.info(f"Using AWS region: {region_name}")
+            else:
+                logger.info("Using auto-detected AWS region from ECS environment")
         else:
             raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER}")
     except Exception as e:
@@ -494,5 +508,8 @@ if __name__ == "__main__":
     elif LLM_PROVIDER == "anthropic":
         logger.info(f"Anthropic Model: {ANTHROPIC_MODEL}")
         logger.info(f"Anthropic Max Tokens: {ANTHROPIC_MAX_TOKENS}")
+    elif LLM_PROVIDER == "bedrock":
+        logger.info(f"Bedrock Model ID: {BEDROCK_MODEL_ID}")
+        logger.info(f"AWS Region: {AWS_REGION if AWS_REGION else 'Auto-detected'}")
 
     uvicorn.run(app, host="0.0.0.0", port=PORT)
