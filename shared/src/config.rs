@@ -1,5 +1,6 @@
 use std::env;
 use std::process;
+use urlencoding::encode;
 
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
@@ -125,8 +126,22 @@ fn validate_url(url: &str, var_name: &str) -> String {
 
 impl DatabaseConfig {
     pub fn from_env() -> Self {
-        let database_url = get_required_env("DATABASE_URL");
-        let database_url = validate_url(&database_url, "DATABASE_URL");
+        let database_host = get_required_env("DATABASE_HOST");
+        let database_username = get_required_env("DATABASE_USERNAME");
+        let database_name = get_required_env("DATABASE_NAME");
+        let database_password = get_required_env("DATABASE_PASSWORD");
+        let database_port = get_optional_env("DATABASE_PORT", "5432");
+
+        let port = parse_port(&database_port, "DATABASE_PORT");
+
+        let database_url = format!(
+            "postgresql://{}:{}@{}:{}/{}",
+            encode(&database_username),
+            encode(&database_password),
+            database_host,
+            port,
+            database_name
+        );
 
         let max_connections_str = get_optional_env("DB_MAX_CONNECTIONS", "10");
         let max_connections = max_connections_str.parse::<u32>().unwrap_or_else(|_| {

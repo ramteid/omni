@@ -47,9 +47,35 @@ Parameters:
     Type: String
     Description: S3 bucket from bootstrap stack for deployment artifacts (optional)
     Default: ""
+    
+  SkipFinalSnapshot:
+    Type: String
+    Description: Skip final DB snapshot on deletion (true for dev, false for production)
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    
+  SSLCertificateArn:
+    Type: String
+    Description: |
+      (Optional) ARN of ACM certificate for HTTPS. 
+      Leave empty for HTTP-only. 
+      To get a certificate: AWS Console -> Certificate Manager -> Request Certificate
+    Default: ""
+    
+  DatabaseName:
+    Type: String
+    Default: "omni"
+    Description: PostgreSQL database name
+    
+  DatabaseUsername:
+    Type: String
+    Default: "omni"
+    Description: PostgreSQL master username
 
 Conditions:
   HasJinaApiKey: !Not [!Equals [!Ref JinaApiKey, ""]]
+  ShouldSkipFinalSnapshot: !Equals [!Ref SkipFinalSnapshot, "true"]
+  HasSSLCertificate: !Not [!Equals [!Ref SSLCertificateArn, ""]]
 
 Resources:
   # VPC and Networking
@@ -317,13 +343,17 @@ Resources:
   # RDS PostgreSQL Instance
   PostgreSQLDB:
     Type: AWS::RDS::DBInstance
+    DeletionPolicy: !If
+      - ShouldSkipFinalSnapshot
+      - Delete
+      - Snapshot
     Properties:
       DBInstanceIdentifier: !Sub omni-${CustomerName}-postgres
       DBInstanceClass: !Ref DBInstanceClass
       Engine: postgres
       EngineVersion: '17.2'
-      DBName: omni
-      MasterUsername: omni
+      DBName: !Ref DatabaseName
+      MasterUsername: !Ref DatabaseUsername
       MasterUserPassword: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
       AllocatedStorage: 20
       StorageType: gp3
@@ -333,6 +363,7 @@ Resources:
       BackupRetentionPeriod: 7
       MultiAZ: false
       StorageEncrypted: true
+      DeletionProtection: false
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-postgres
@@ -379,7 +410,7 @@ Resources:
       Name: !Sub omni/${CustomerName}/database
       Description: Database password for Omni
       GenerateSecretString:
-        SecretStringTemplate: '{"username": "omni"}'
+        SecretStringTemplate: !Sub '{"username": "${DatabaseUsername}"}'
         GenerateStringKey: password
         PasswordLength: 32
         ExcludeCharacters: '"@/\'
@@ -470,20 +501,157 @@ Resources:
         - Key: Application
           Value: Omni
 
-  # ALB Listener
+  # ALB Listener (HTTP)
   ALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: !If
+            - HasSSLCertificate
+            - redirect
+            - forward
+          RedirectConfig: !If
+            - HasSSLCertificate
+            - Protocol: HTTPS
+              Port: '443'
+              StatusCode: HTTP_301
+            - !Ref AWS::NoValue
+          TargetGroupArn: !If
+            - HasSSLCertificate
+            - !Ref AWS::NoValue
+            - !Ref ALBTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      
+  # ALB Listener (HTTPS) - Only created if SSL certificate is provided
+  ALBListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasSSLCertificate
     Properties:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref ALBTargetGroup
       LoadBalancerArn: !Ref ApplicationLoadBalancer
-      Port: 80
-      Protocol: HTTP
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref SSLCertificateArn
+
+  # Lambda execution role for ECS service-linked role creation
+  ECSServiceLinkedRoleLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CreateServiceLinkedRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:GetRole
+                Resource: 
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/AWSServiceRoleForECS'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.amazonaws.com/*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'iam:AWSServiceName': 'ecs.amazonaws.com'
+
+  # Lambda function to create ECS service-linked role if it doesn't exist
+  ECSServiceLinkedRoleFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub omni-${CustomerName}-create-ecs-slr
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt ECSServiceLinkedRoleLambdaRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import botocore.exceptions
+          import cfnresponse
+          import traceback
+          
+          def handler(event, context):
+              print(f'Event: {json.dumps(event)}')
+              print(f'Context: {vars(context)}')
+              
+              try:
+                  if event['RequestType'] == 'Delete':
+                      # Don't delete service-linked roles on stack deletion
+                      print('Delete event - skipping service-linked role deletion')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  
+                  iam = boto3.client('iam')
+                  
+                  # Try to create the service-linked role directly
+                  # If it already exists, AWS will return a specific error we can handle
+                  try:
+                      print('Attempting to create ECS service-linked role')
+                      response = iam.create_service_linked_role(AWSServiceName='ecs.amazonaws.com')
+                      print('ECS service-linked role created successfully')
+                      print(f'Created role ARN: {response.get("Role", {}).get("Arn", "Unknown")}')
+                  except iam.exceptions.InvalidInputException as e:
+                      error_msg = str(e).lower()
+                      if 'already exists' in error_msg or 'has been taken' in error_msg:
+                          print('Service-linked role already exists - this is expected and OK')
+                      else:
+                          print(f'Unexpected InvalidInputException: {str(e)}')
+                          raise
+                  except botocore.exceptions.ClientError as e:
+                      if e.response['Error']['Code'] == 'InvalidInput':
+                          error_msg = str(e).lower()
+                          if 'has been taken' in error_msg or 'already exists' in error_msg:
+                              print('Service-linked role already exists - this is expected and OK')
+                          else:
+                              raise
+                      else:
+                          raise
+                  except Exception as create_error:
+                      print(f'Error creating service-linked role: {str(create_error)}')
+                      print(f'Create error type: {type(create_error).__name__}')
+                      # Check if it's an "already exists" type error with different exception type
+                      if 'already exists' in str(create_error).lower():
+                          print('Service-linked role already exists (different exception type) - this is OK')
+                      else:
+                          raise
+                  
+                  print('Lambda function completed successfully')
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  
+              except Exception as e:
+                  print(f'Lambda function failed with error: {str(e)}')
+                  print(f'Error type: {type(e).__name__}')
+                  print(f'Traceback: {traceback.format_exc()}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, str(e))
+
+  # Custom resource to invoke the Lambda function
+  ECSServiceLinkedRole:
+    Type: Custom::ECSServiceLinkedRole
+    Properties:
+      ServiceToken: !GetAtt ECSServiceLinkedRoleFunction.Arn
 
   # ECS Cluster
   ECSCluster:
     Type: AWS::ECS::Cluster
+    DependsOn: ECSServiceLinkedRole
     Properties:
       ClusterName: !Sub omni-${CustomerName}-cluster
       CapacityProviders:
@@ -602,11 +770,17 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: migrator
           Environment:
-            - Name: DATABASE_URL
-              Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/omni
-                - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
-                  Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_HOST
+              Value: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_PORT
+              Value: !GetAtt PostgreSQLDB.Endpoint.Port
+            - Name: DATABASE_NAME
+              Value: !Ref DatabaseName
+            - Name: DATABASE_USER
+              Value: !Ref DatabaseUsername
+          Secrets:
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPassword}:password::'
           Essential: true
 
   # Lambda function to run migrations
@@ -770,11 +944,14 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: web
           Environment:
-            - Name: DATABASE_URL
-              Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/omni
-                - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
-                  Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_HOST
+              Value: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_PORT
+              Value: !GetAtt PostgreSQLDB.Endpoint.Port
+            - Name: DATABASE_NAME
+              Value: !Ref DatabaseName
+            - Name: DATABASE_USER
+              Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: SEARCHER_URL
@@ -789,8 +966,6 @@ Resources:
               Value: "3"
             - Name: GOOGLE_CONNECTOR_URL
               Value: !Sub http://google-connector.omni-${CustomerName}.local:3004
-            - Name: SESSION_SECRET
-              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/session-secret:SecretString:secret}}'
             - Name: SESSION_COOKIE_NAME
               Value: "omni_session"
             - Name: SESSION_DURATION_DAYS
@@ -811,6 +986,11 @@ Resources:
               Value: "Omni <noreply@getomni.co>"
             - Name: AI_ANSWER_ENABLED
               Value: "true"
+          Secrets:
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPassword}:password::'
+            - Name: SESSION_SECRET
+              ValueFrom: !Sub '${SessionSecret}:secret::'
           Essential: true
   # Searcher Service Task Definition
   SearcherTaskDefinition:
@@ -836,11 +1016,14 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: searcher
           Environment:
-            - Name: DATABASE_URL
-              Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/omni
-                - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
-                  Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_HOST
+              Value: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_PORT
+              Value: !GetAtt PostgreSQLDB.Endpoint.Port
+            - Name: DATABASE_NAME
+              Value: !Ref DatabaseName
+            - Name: DATABASE_USER
+              Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: PORT
@@ -859,6 +1042,9 @@ Resources:
               Value: "2"
             - Name: TYPO_TOLERANCE_MIN_WORD_LENGTH
               Value: "4"
+          Secrets:
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPassword}:password::'
           Essential: true
 
   # Indexer Service Task Definition
@@ -885,11 +1071,14 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: indexer
           Environment:
-            - Name: DATABASE_URL
-              Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/omni
-                - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
-                  Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_HOST
+              Value: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_PORT
+              Value: !GetAtt PostgreSQLDB.Endpoint.Port
+            - Name: DATABASE_NAME
+              Value: !Ref DatabaseName
+            - Name: DATABASE_USER
+              Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: PORT
@@ -902,10 +1091,13 @@ Resources:
               Value: "3"
             - Name: RUST_LOG
               Value: "debug"
+          Secrets:
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPassword}:password::'
             - Name: ENCRYPTION_KEY
-              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/encryption-key:SecretString:key}}'
+              ValueFrom: !Sub '${EncryptionKey}:key::'
             - Name: ENCRYPTION_SALT
-              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/encryption-salt:SecretString:salt}}'
+              ValueFrom: !Sub '${EncryptionSalt}:salt::'
           Essential: true
 
   # AI Service Task Definition  
@@ -932,11 +1124,14 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ai
           Environment:
-            - Name: DATABASE_URL
-              Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/omni
-                - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
-                  Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_HOST
+              Value: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_PORT
+              Value: !GetAtt PostgreSQLDB.Endpoint.Port
+            - Name: DATABASE_NAME
+              Value: !Ref DatabaseName
+            - Name: DATABASE_USER
+              Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: PORT
@@ -949,11 +1144,6 @@ Resources:
               Value: "1024"
             - Name: EMBEDDING_PROVIDER
               Value: "jina"
-            - Name: JINA_API_KEY
-              Value: !If 
-                - HasJinaApiKey
-                - !Sub '{{resolve:secretsmanager:omni/${CustomerName}/jina-api-key:SecretString}}'
-                - "CONFIGURE_JINA_API_KEY"
             - Name: LLM_PROVIDER
               Value: "bedrock"
             - Name: BEDROCK_MODEL_ID
@@ -968,6 +1158,14 @@ Resources:
               Value: "4096"
             - Name: AI_WORKERS
               Value: "1"
+          Secrets:
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPassword}:password::'
+            - Name: JINA_API_KEY
+              ValueFrom: !If 
+                - HasJinaApiKey
+                - !Ref JinaApiKeySecret
+                - !Ref AWS::NoValue
           Essential: true
 
   # Google Connector Service Task Definition
@@ -999,11 +1197,14 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: google-connector
           Environment:
-            - Name: DATABASE_URL
-              Value: !Sub 
-                - postgresql://omni:${Password}@${Endpoint}:5432/omni
-                - Password: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/database:SecretString:password}}'
-                  Endpoint: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_HOST
+              Value: !GetAtt PostgreSQLDB.Endpoint.Address
+            - Name: DATABASE_PORT
+              Value: !GetAtt PostgreSQLDB.Endpoint.Port
+            - Name: DATABASE_NAME
+              Value: !Ref DatabaseName
+            - Name: DATABASE_USER
+              Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
             - Name: PORT
@@ -1026,10 +1227,13 @@ Resources:
               Value: "CONFIGURE_GOOGLE_WEBHOOK_URL"
             - Name: WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS
               Value: "3600"
+          Secrets:
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPassword}:password::'
             - Name: ENCRYPTION_KEY
-              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/encryption-key:SecretString:key}}'
+              ValueFrom: !Sub '${EncryptionKey}:key::'
             - Name: ENCRYPTION_SALT
-              Value: !Sub '{{resolve:secretsmanager:omni/${CustomerName}/encryption-salt:SecretString:salt}}'
+              ValueFrom: !Sub '${EncryptionSalt}:salt::'
           Essential: true
 
   # Service Discovery Services

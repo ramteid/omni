@@ -3,7 +3,7 @@ import { syncRuns, sources, documents } from '$lib/server/db/schema.js'
 import { sql, eq, desc } from 'drizzle-orm'
 import type { RequestHandler } from './$types.js'
 import postgres from 'postgres'
-import { env } from '$env/dynamic/private'
+import { constructDatabaseUrl } from '$lib/server/config.js'
 
 export const GET: RequestHandler = async ({ url }) => {
     const stream = new ReadableStream({
@@ -109,7 +109,7 @@ export const GET: RequestHandler = async ({ url }) => {
 
             const setupNotifications = async () => {
                 try {
-                    listenSql = postgres(env.DATABASE_URL)
+                    listenSql = postgres(constructDatabaseUrl())
 
                     // Listen for sync_runs updates
                     await listenSql.listen('sync_run_update', async () => {

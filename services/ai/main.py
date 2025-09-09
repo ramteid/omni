@@ -14,6 +14,7 @@ import multiprocessing
 from enum import IntEnum
 from dataclasses import dataclass, field
 import time
+from urllib.parse import quote_plus
 
 from providers import create_llm_provider, LLMProvider
 from pdf_extractor import PDFExtractionRequest, PDFExtractionResponse, extract_text_from_pdf
@@ -62,6 +63,19 @@ def validate_embedding_dimensions(dims_str: str) -> int:
         sys.exit(1)
 
 
+def construct_database_url() -> str:
+    """Construct database URL from individual components"""
+    database_host = get_required_env("DATABASE_HOST")
+    database_username = get_required_env("DATABASE_USERNAME") 
+    database_name = get_required_env("DATABASE_NAME")
+    database_password = get_required_env("DATABASE_PASSWORD")
+    database_port = get_optional_env("DATABASE_PORT", "5432")
+    
+    port = validate_port(database_port)
+    
+    return f"postgresql://{quote_plus(database_username)}:{quote_plus(database_password)}@{database_host}:{port}/{database_name}"
+
+
 # Load and validate configuration
 PORT = validate_port(get_required_env("PORT"))
 MODEL_PATH = get_required_env("MODEL_PATH")
@@ -70,7 +84,7 @@ EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
     get_required_env("EMBEDDING_DIMENSIONS")
 )
 REDIS_URL = get_required_env("REDIS_URL")
-DATABASE_URL = get_required_env("DATABASE_URL")
+DATABASE_URL = construct_database_url()
 
 # Embedding Provider configuration
 EMBEDDING_PROVIDER = get_optional_env("EMBEDDING_PROVIDER", "local").lower()

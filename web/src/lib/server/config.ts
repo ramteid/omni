@@ -71,6 +71,18 @@ function validatePositiveNumber(value: string, name: string): number {
     return num
 }
 
+export function constructDatabaseUrl(): string {
+    const databaseHost = getRequiredEnv('DATABASE_HOST')
+    const databaseUsername = getRequiredEnv('DATABASE_USERNAME')
+    const databaseName = getRequiredEnv('DATABASE_NAME')
+    const databasePassword = getRequiredEnv('DATABASE_PASSWORD')
+    const databasePort = getOptionalEnv('DATABASE_PORT', '5432')
+
+    const port = validatePositiveNumber(databasePort, 'DATABASE_PORT')
+
+    return `postgresql://${encodeURIComponent(databaseUsername)}:${encodeURIComponent(databasePassword)}@${databaseHost}:${port}/${databaseName}`
+}
+
 // Load and validate configuration
 function loadConfig(): AppConfig {
     // Skip config validation during build time
@@ -107,7 +119,7 @@ function loadConfig(): AppConfig {
     logger.info('Loading and validating application configuration')
 
     // Database configuration
-    const databaseUrl = getRequiredEnv('DATABASE_URL')
+    const databaseUrl = constructDatabaseUrl()
     validateUrl(databaseUrl, 'DATABASE_URL')
 
     // Redis configuration
