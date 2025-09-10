@@ -314,50 +314,27 @@ Resources:
                       - 'ecs.amazonaws.com'
                       - 'elasticache.amazonaws.com'
               
-              # CloudWatch Logs permissions - only for Omni log groups
+              # CloudWatch Logs permissions
               - Effect: Allow
                 Action:
-                  - 'logs:CreateLogGroup'
-                  - 'logs:CreateLogStream'
-                  - 'logs:PutLogEvents'
-                  - 'logs:DescribeLogGroups'
-                  - 'logs:DescribeLogStreams'
-                  - 'logs:DeleteLogGroup'
-                  - 'logs:DeleteLogStream'
-                  - 'logs:PutRetentionPolicy'
-                  - 'logs:TagLogGroup'
-                  - 'logs:UntagLogGroup'
+                  - 'logs:*'
                 Resource:
                   - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/omni-*'
                   - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/omni-*:*'
                   - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/omni-*'
                   - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/omni-*:*'
               
-              # Lambda permissions for migrator function
+              # Lambda permissions
               - Effect: Allow
                 Action:
-                  - 'lambda:CreateFunction'
-                  - 'lambda:UpdateFunctionCode'
-                  - 'lambda:UpdateFunctionConfiguration'
-                  - 'lambda:DeleteFunction'
-                  - 'lambda:GetFunction'
-                  - 'lambda:InvokeFunction'
-                  - 'lambda:TagResource'
-                  - 'lambda:UntagResource'
-                  - 'lambda:ListTags'
-                  - 'lambda:AddPermission'
-                  - 'lambda:RemovePermission'
+                  - 'lambda:*'
                 Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:omni-*'
               
-              # ECS permissions for Fargate deployments
+              # ECS cluster permissions
               - Effect: Allow
                 Action:
                   - 'ecs:CreateCluster'
                   - 'ecs:DeleteCluster'
-                  - 'ecs:DescribeClusters'
-                  - 'ecs:TagResource'
-                  - 'ecs:UntagResource'
-                  - 'ecs:ListTagsForResource'
                 Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/omni-*'
               
               - Effect: Allow
@@ -368,50 +345,29 @@ Resources:
                   - 'ecs:ListTaskDefinitions'
                 Resource: '*'
               
-              - Effect: Allow
-                Action:
-                  - 'ecs:TagResource'
-                  - 'ecs:UntagResource'
-                  - 'ecs:ListTagsForResource'
-                Resource: 
-                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/omni-*:*'
-                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/omni-*'
               
               - Effect: Allow
                 Action:
                   - 'ecs:CreateService'
                   - 'ecs:UpdateService'
                   - 'ecs:DeleteService'
-                  - 'ecs:DescribeServices'
+                  - 'ecs:RunTask'
+                  - 'ecs:StopTask'
                   - 'ecs:TagResource'
                   - 'ecs:UntagResource'
                   - 'ecs:ListTagsForResource'
-                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/omni-*/omni-*'
-              
-              - Effect: Allow
-                Action:
-                  - 'ecs:RunTask'
-                  - 'ecs:StopTask'
-                  - 'ecs:DescribeTasks'
-                  - 'ecs:ListTasks'
-                Resource:
+                Resource: 
+                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/omni-*'
+                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/omni-*/omni-*'
                   - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/omni-*/*'
                   - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/omni-*:*'
               
-              # Secrets Manager permissions - Resource-specific operations
+              # Secrets Manager permissions
               - Effect: Allow
                 Action:
-                  - 'secretsmanager:CreateSecret'
-                  - 'secretsmanager:GetSecretValue'
-                  - 'secretsmanager:UpdateSecret'
-                  - 'secretsmanager:DeleteSecret'
-                  - 'secretsmanager:DescribeSecret'
-                  - 'secretsmanager:TagResource'
-                  - 'secretsmanager:UntagResource'
-                  - 'secretsmanager:ListSecrets'
+                  - 'secretsmanager:*'
                 Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:omni/*'
               
-              # Secrets Manager permissions - Global operations
               - Effect: Allow
                 Action:
                   - 'secretsmanager:GetRandomPassword'
@@ -426,15 +382,6 @@ Resources:
                 Resource: 
                   - !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
               
-              # Tagging permissions for all resources
-              - Effect: Allow
-                Action:
-                  - 'tag:TagResources'
-                  - 'tag:UntagResources'
-                  - 'tag:GetResources'
-                  - 'tag:GetTagKeys'
-                  - 'tag:GetTagValues'
-                Resource: '*'
               
               # CloudFormation permissions for stack management
               - Effect: Allow
@@ -505,6 +452,32 @@ Resources:
                   - 'bedrock:InvokeModelWithResponseStream'
                   - 'bedrock:GetFoundationModel'
                   - 'bedrock:ListFoundationModels'
+                Resource: '*'
+              
+              # Monitoring and debugging permissions
+              - Effect: Allow
+                Action:
+                  - 'ecs:ExecuteCommand'
+                  - 'ecs:Describe*'
+                  - 'ecs:List*'
+                  - 'rds:Describe*'
+                  - 'rds:DownloadDBLogFile'
+                  - 'elasticache:Describe*'
+                  - 'logs:Get*'
+                  - 'logs:FilterLogEvents'
+                  - 'logs:StartQuery'
+                  - 'logs:StopQuery'
+                  - 'ssm:StartSession'
+                  - 'ssm:TerminateSession'
+                  - 'ssm:ResumeSession'
+                  - 'ssm:DescribeSessions'
+                  - 'ssm:GetConnectionStatus'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'cloudwatch:Get*'
+                  - 'cloudwatch:List*'
+                  - 'cloudwatch:Describe*'
+                  - 'servicediscovery:DiscoverInstances'
+                  - 'servicediscovery:GetInstancesHealthStatus'
                 Resource: '*'
 
 Outputs:
