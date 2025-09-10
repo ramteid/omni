@@ -7,7 +7,9 @@ x-dev-db-config: &dev-db-config
   POSTGRES_PASSWORD: omni_dev_password
 
 x-dev-database-url: &dev-database-url
-  DATABASE_URL: postgresql://omni_dev:omni_dev_password@postgres:5432/omni_dev
+  DATABASE_USERNAME: omni_dev
+  DATABASE_PASSWORD: omni_dev_password
+  DATABASE_NAME: omni_dev
 
 services:
   # Infrastructure only for development

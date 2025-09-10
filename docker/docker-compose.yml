@@ -5,15 +5,15 @@ services:
     shm_size: 4gb
     container_name: omni-postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+      POSTGRES_USER: ${DATABASE_USERNAME}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - omni-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USERNAME} -d ${DATABASE_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,7 +40,11 @@ services:
     image: omni-migrator
     container_name: omni-migrator
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
     networks:
       - omni-network
     depends_on:
@@ -56,7 +60,11 @@ services:
     image: omni-searcher
     container_name: omni-searcher
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
       - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
@@ -84,7 +92,11 @@ services:
     image: omni-indexer
     container_name: omni-indexer
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
       - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
@@ -111,7 +123,11 @@ services:
     image: ghcr.io/omnihq/omni-ai:latest
     container_name: omni-ai
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
       - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
@@ -190,7 +206,11 @@ services:
     image: omni-google-connector
     container_name: omni-google-connector
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${GOOGLE_CONNECTOR_PORT}
@@ -222,7 +242,11 @@ services:
     image: omni-slack-connector
     container_name: omni-slack-connector
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
       - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
@@ -247,7 +271,11 @@ services:
     image: omni-atlassian-connector
     container_name: omni-atlassian-connector
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
       - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
@@ -274,7 +302,11 @@ services:
     image: omni-web
     container_name: omni-web
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
       - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
