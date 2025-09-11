@@ -479,6 +479,26 @@ Resources:
                   - 'servicediscovery:DiscoverInstances'
                   - 'servicediscovery:GetInstancesHealthStatus'
                 Resource: '*'
+              
+              # ECS Exec permissions for task roles - Allow deployment role to update task roles
+              - Effect: Allow
+                Action:
+                  - 'iam:PutRolePolicy'
+                  - 'iam:CreatePolicy'
+                  - 'iam:AttachRolePolicy'
+                  - 'iam:UpdateRole'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/omni-*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/omni-*'
+              
+              # SSM permissions for ECS Exec functionality
+              - Effect: Allow
+                Action:
+                  - 'ssmmessages:CreateControlChannel'
+                  - 'ssmmessages:CreateDataChannel'
+                  - 'ssmmessages:OpenControlChannel'
+                  - 'ssmmessages:OpenDataChannel'
+                Resource: '*'
 
 Outputs:
   DeploymentRoleArn:

@@ -726,6 +726,23 @@ Resources:
                   - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/us.anthropic.claude-sonnet-4-20250514-v1:0
                   - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0
                   - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0
+        - PolicyName: ECSExecAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: '*'
       Tags:
         - Key: Name
           Value: !Sub omni-${CustomerName}-task-role
@@ -962,6 +979,8 @@ Resources:
               Value: "omni_session"
             - Name: SESSION_DURATION_DAYS
               Value: "30"
+            - Name: ORIGIN
+              Value: !Sub http://${ApplicationLoadBalancer.DNSName}
             - Name: APP_URL
               Value: !Sub http://${ApplicationLoadBalancer.DNSName}
             - Name: GOOGLE_CLIENT_ID
@@ -1295,6 +1314,7 @@ Resources:
       TaskDefinition: !Ref WebTaskDefinition
       LaunchType: FARGATE
       DesiredCount: 1
+      EnableExecuteCommand: true
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
@@ -1321,6 +1341,7 @@ Resources:
       TaskDefinition: !Ref SearcherTaskDefinition
       LaunchType: FARGATE
       DesiredCount: 1
+      EnableExecuteCommand: true
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
@@ -1341,6 +1362,7 @@ Resources:
       TaskDefinition: !Ref IndexerTaskDefinition
       LaunchType: FARGATE
       DesiredCount: 1
+      EnableExecuteCommand: true
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
@@ -1361,6 +1383,7 @@ Resources:
       TaskDefinition: !Ref AITaskDefinition
       LaunchType: FARGATE
       DesiredCount: 1
+      EnableExecuteCommand: true
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
@@ -1381,6 +1404,7 @@ Resources:
       TaskDefinition: !Ref GoogleConnectorTaskDefinition
       LaunchType: FARGATE
       DesiredCount: 1
+      EnableExecuteCommand: true
       NetworkConfiguration:
         AwsvpcConfiguration:
           SecurityGroups:
