@@ -16,5 +16,4 @@ RUN mkdir /migrations
 COPY services/migrations/*.sql ./migrations
 
 # Construct DATABASE_URL from environment variables and run migrations
-# URL-encode the password to handle special characters
-CMD ["bash", "-c", "ENCODED_PASSWORD=$(printf '%s' \"$DATABASE_PASSWORD\" | jq -sRr @uri) && export DATABASE_URL=\"postgresql://${DATABASE_USERNAME}:${ENCODED_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}\" && sqlx migrate run"]
+CMD ["bash", "-c", "ENCODED_PASSWORD=$(printf '%s' \"$DATABASE_PASSWORD\" | jq -sRr @uri) && SSL_PARAM=$([ \"$DATABASE_SSL\" = \"true\" ] && echo \"?sslmode=require\" || echo \"\") && export DATABASE_URL=\"postgresql://${DATABASE_USERNAME}:${ENCODED_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}${SSL_PARAM}\" && sqlx migrate run"]

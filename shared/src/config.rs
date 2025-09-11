@@ -1,12 +1,13 @@
 use std::env;
 use std::process;
-use urlencoding::encode;
+use url::Url;
 
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
     pub database_url: String,
     pub max_connections: u32,
     pub acquire_timeout_seconds: u64,
+    pub require_ssl: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -134,14 +135,29 @@ impl DatabaseConfig {
 
         let port = parse_port(&database_port, "DATABASE_PORT");
 
-        let database_url = format!(
+        // Check if SSL should be required
+        let require_ssl = get_optional_env("DATABASE_SSL", "false")
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        // Construct base URL
+        let base_url = format!(
             "postgresql://{}:{}@{}:{}/{}",
-            encode(&database_username),
-            encode(&database_password),
-            database_host,
-            port,
-            database_name
+            database_username, database_password, database_host, port, database_name
         );
+
+        // Parse URL and add SSL parameter if required
+        let mut url = Url::parse(&base_url).unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to parse database URL: {}", e);
+            eprintln!("URL: {}", base_url);
+            process::exit(1);
+        });
+
+        if require_ssl {
+            url.query_pairs_mut().append_pair("sslmode", "require");
+        }
+
+        let database_url = url.to_string();
 
         let max_connections_str = get_optional_env("DB_MAX_CONNECTIONS", "10");
         let max_connections = max_connections_str.parse::<u32>().unwrap_or_else(|_| {
@@ -167,6 +183,7 @@ impl DatabaseConfig {
             database_url,
             max_connections,
             acquire_timeout_seconds,
+            require_ssl,
         }
     }
 }

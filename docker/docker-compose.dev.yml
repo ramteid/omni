@@ -4,11 +4,11 @@
 x-dev-db-config: &dev-db-config
   POSTGRES_DB: omni_dev
   POSTGRES_USER: omni_dev
-  POSTGRES_PASSWORD: omni_dev_password
+  POSTGRES_PASSWORD: P@ss#word$2025!&more
 
 x-dev-database-url: &dev-database-url
   DATABASE_USERNAME: omni_dev
-  DATABASE_PASSWORD: omni_dev_password
+  DATABASE_PASSWORD: P@ss#word$2025!&more
   DATABASE_NAME: omni_dev
 
 services:

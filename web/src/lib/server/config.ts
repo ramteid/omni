@@ -77,10 +77,19 @@ export function constructDatabaseUrl(): string {
     const databaseName = getRequiredEnv('DATABASE_NAME')
     const databasePassword = getRequiredEnv('DATABASE_PASSWORD')
     const databasePort = getOptionalEnv('DATABASE_PORT', '5432')
+    const requireSsl = getOptionalEnv('DATABASE_SSL', 'false') === 'true'
 
     const port = validatePositiveNumber(databasePort, 'DATABASE_PORT')
 
-    return `postgresql://${encodeURIComponent(databaseUsername)}:${encodeURIComponent(databasePassword)}@${databaseHost}:${port}/${databaseName}`
+    const url = new URL(`postgresql://${databaseHost}:${port}/${databaseName}`)
+    url.username = databaseUsername
+    url.password = databasePassword
+
+    if (requireSsl) {
+        url.searchParams.set('sslmode', 'require')
+    }
+
+    return url.toString()
 }
 
 // Load and validate configuration
