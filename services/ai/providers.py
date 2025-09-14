@@ -248,10 +248,20 @@ class AnthropicProvider(LLMProvider):
 class BedrockProvider(LLMProvider):
     """Provider for AWS Bedrock Claude models."""
 
+    MODEL_FAMILIES = ["anthropic", "amazon"]
+
     def __init__(self, model_id: str = "us.anthropic.claude-sonnet-4-20250514-v1:0", region_name: Optional[str] = None):
         self.model_id = model_id
+        self.model_family = self._determine_model_family(model_id)
         self.region_name = region_name
         self.client = boto3.client('bedrock-runtime', region_name=region_name)
+
+    def _determine_model_family(self, model_id: str) -> str:
+        """Determine the model family from the model ID."""
+        for family in self.MODEL_FAMILIES:
+            if family in model_id.lower():
+                return family
+        raise ValueError(f"Unknown model family for model ID: {model_id}")
 
     async def stream_response(
         self,
@@ -260,36 +270,54 @@ class BedrockProvider(LLMProvider):
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
     ) -> AsyncIterator[str]:
-        """Stream response from AWS Bedrock Claude models."""
+        """Stream response from AWS Bedrock models."""
         try:
-            # Prepare the request body for Claude models
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": max_tokens or 4096,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": temperature or 0.7,
-                "top_p": top_p or 0.9,
-            }
+            if self.model_family == "anthropic":
+                # Prepare the request body for Claude models
+                body = {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": max_tokens or 4096,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": temperature or 0.7,
+                    "top_p": top_p or 0.9,
+                }
 
-            # Invoke with streaming response
-            response = self.client.invoke_model_with_response_stream(
-                modelId=self.model_id,
-                body=json.dumps(body),
-                contentType="application/json",
-                accept="application/json",
-            )
+                # Invoke with streaming response
+                response = self.client.invoke_model_with_response_stream(
+                    modelId=self.model_id,
+                    body=json.dumps(body),
+                    contentType="application/json",
+                    accept="application/json",
+                )
 
-            # Process streaming response
-            for event in response.get('body'):
-                chunk = json.loads(event['chunk']['bytes'].decode())
-                
-                if chunk['type'] == 'content_block_delta':
-                    text = chunk['delta'].get('text', '')
-                    if text:
+                # Process streaming response
+                for event in response.get('body'):
+                    chunk = json.loads(event['chunk']['bytes'].decode())
+                    
+                    if chunk['type'] == 'content_block_delta':
+                        text = chunk['delta'].get('text', '')
+                        if text:
+                            yield text
+                    elif chunk['type'] == 'message_delta':
+                        if 'stop_reason' in chunk['delta']:
+                            break
+            elif self.model_family == "amazon":
+                response = self.client.converse_stream(
+                    modelId=self.model_id,
+                    messages=[{"role": "user", "content": prompt}],
+                    inferenceConfig={
+                        "maxTokens": max_tokens or 4096,
+                        "temperature": temperature or 0.7,
+                        "topP": top_p or 0.9,
+                    }
+                )
+
+                for chunk in response["stream"]:
+                    if "contentBlockDelta" in chunk:
+                        text = chunk["contentBlockDelta"]["delta"]["text"]
                         yield text
-                elif chunk['type'] == 'message_delta':
-                    if 'stop_reason' in chunk['delta']:
-                        break
+            else:
+                raise ValueError(f"Unsupported model family: {self.model_family}")
 
         except ClientError as e:
             logger.error(f"AWS Bedrock client error: {str(e)}")
