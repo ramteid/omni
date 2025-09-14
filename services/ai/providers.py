@@ -304,7 +304,7 @@ class BedrockProvider(LLMProvider):
             elif self.model_family == "amazon":
                 response = self.client.converse_stream(
                     modelId=self.model_id,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": [{"text": prompt}]}],
                     inferenceConfig={
                         "maxTokens": max_tokens or 4096,
                         "temperature": temperature or 0.7,
