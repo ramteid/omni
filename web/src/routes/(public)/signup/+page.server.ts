@@ -1,18 +1,24 @@
 import { fail, redirect } from '@sveltejs/kit'
 import { hash } from '@node-rs/argon2'
-import { eq, count } from 'drizzle-orm'
-import { db } from '$lib/server/db/index.js'
-import { user } from '$lib/server/db/schema.js'
 import { ulid } from 'ulid'
 import { generateSessionToken, createSession, setSessionTokenCookie } from '$lib/server/auth.js'
 import { DomainService } from '$lib/server/domains.js'
+import { userRepository } from '$lib/server/db/users'
+import { SystemFlags } from '$lib/server/system-flags'
 import type { Actions, PageServerLoad } from './$types.js'
 
 export const load: PageServerLoad = async ({ locals }) => {
     if (locals.user) {
         throw redirect(302, '/')
     }
-    return {}
+
+    // Check if this is first-time setup
+    const isInitialized = await SystemFlags.isInitialized()
+    const isFirstUser = !isInitialized
+
+    return {
+        isFirstUser,
+    }
 }
 
 export const actions: Actions = {
@@ -67,12 +73,8 @@ export const actions: Actions = {
 
         try {
             // Check if email already exists
-            const [existingEmail] = await db
-                .select()
-                .from(user)
-                .where(eq(user.email, email.toLowerCase()))
-
-            if (existingEmail) {
+            const emailExists = await userRepository.emailExists(email)
+            if (emailExists) {
                 return fail(400, {
                     error: 'An account with this email already exists.',
                     email,
@@ -80,8 +82,8 @@ export const actions: Actions = {
             }
 
             // Check if this is the first user
-            const [userCount] = await db.select({ count: count() }).from(user)
-            const isFirstUser = userCount.count === 0
+            const isInitialized = await SystemFlags.isInitialized()
+            const isFirstUser = !isInitialized
 
             // Hash password
             const passwordHash = await hash(password, {
@@ -96,7 +98,7 @@ export const actions: Actions = {
 
             // Create user
             const newUserId = ulid()
-            await db.insert(user).values({
+            await userRepository.create({
                 id: newUserId,
                 email: email.toLowerCase(),
                 passwordHash,
@@ -107,9 +109,10 @@ export const actions: Actions = {
                 createdAt: new Date(),
             })
 
-            // If this is the first user (admin), auto-approve their domain
+            // If this is the first user (admin), auto-approve their domain and mark system as initialized
             if (isFirstUser && domain) {
                 await DomainService.autoApproveDomainForAdmin(newUserId)
+                await SystemFlags.markAsInitialized()
             }
 
             // Create session and log the user in
@@ -124,7 +127,13 @@ export const actions: Actions = {
             })
         }
 
-        // Redirect to home page after successful signup and login
-        throw redirect(302, '/')
+        // Redirect based on whether this was the first user
+        if (isFirstUser) {
+            // Redirect first admin to integrations page to set up data sources
+            throw redirect(302, '/settings/integrations')
+        } else {
+            // Redirect regular users to home page
+            throw redirect(302, '/')
+        }
     },
 }

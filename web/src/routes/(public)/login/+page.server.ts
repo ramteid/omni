@@ -7,9 +7,8 @@ import {
 } from '$lib/server/auth.js'
 import { sha256 } from '@oslojs/crypto/sha2'
 import { encodeHexLowerCase } from '@oslojs/encoding'
-import { eq } from 'drizzle-orm'
-import { db } from '$lib/server/db/index.js'
-import { user } from '$lib/server/db/schema.js'
+import { userRepository } from '$lib/server/db/users'
+import { SystemFlags } from '$lib/server/system-flags'
 import { verify } from '@node-rs/argon2'
 import type { Actions, PageServerLoad } from './$types.js'
 
@@ -44,6 +43,13 @@ function checkRateLimit(ip: string): boolean {
 export const load: PageServerLoad = async ({ cookies, locals, url }) => {
     if (locals.user) {
         throw redirect(302, '/')
+    }
+
+    // Check if this is a first-time setup (system not initialized)
+    const isInitialized = await SystemFlags.isInitialized()
+    if (!isInitialized) {
+        // System not initialized, redirect to signup for initial admin creation
+        throw redirect(302, '/signup')
     }
 
     // Handle OAuth error messages from URL parameters
@@ -157,10 +163,7 @@ export const actions: Actions = {
         }
 
         try {
-            const [foundUser] = await db
-                .select()
-                .from(user)
-                .where(eq(user.email, email.toLowerCase()))
+            const foundUser = await userRepository.findByEmail(email)
 
             if (!foundUser) {
                 return fail(400, {
