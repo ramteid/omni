@@ -37,8 +37,7 @@
                     await update()
                 }
             }}
-            class="space-y-4"
-        >
+            class="space-y-4">
             {#if data?.success}
                 <div class="rounded-md bg-green-50 p-4 dark:bg-green-900/50">
                     <div class="text-sm text-green-800 dark:text-green-200">
@@ -64,8 +63,7 @@
                     placeholder="Enter your email"
                     value={form?.email ?? ''}
                     required
-                    disabled={loading}
-                />
+                    disabled={loading} />
             </div>
 
             <div class="space-y-2">
@@ -76,8 +74,7 @@
                     type="password"
                     placeholder="Enter your password"
                     required
-                    disabled={loading}
-                />
+                    disabled={loading} />
             </div>
 
             <Button type="submit" class="w-full" disabled={loading}>

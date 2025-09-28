@@ -42,8 +42,7 @@
                 <div class="mt-3">
                     <a
                         href="/login"
-                        class="text-sm font-medium text-green-600 hover:text-green-500 dark:text-green-400"
-                    >
+                        class="text-sm font-medium text-green-600 hover:text-green-500 dark:text-green-400">
                         Sign in now →
                     </a>
                 </div>
@@ -58,8 +57,7 @@
                         await update()
                     }
                 }}
-                class="space-y-4"
-            >
+                class="space-y-4">
                 {#if form?.error}
                     <div class="bg-destructive/10 rounded-md p-4">
                         <div class="text-destructive text-sm">
@@ -77,8 +75,7 @@
                         placeholder="Enter your email"
                         value={form?.email ?? ''}
                         required
-                        disabled={loading}
-                    />
+                        disabled={loading} />
                 </div>
 
                 <div class="space-y-2">
@@ -89,8 +86,7 @@
                         type="password"
                         placeholder="Create a password"
                         required
-                        disabled={loading}
-                    />
+                        disabled={loading} />
                     <p class="text-muted-foreground text-xs">At least 8 characters</p>
                 </div>
 
@@ -102,8 +98,7 @@
                         type="password"
                         placeholder="Confirm your password"
                         required
-                        disabled={loading}
-                    />
+                        disabled={loading} />
                 </div>
 
                 <Button type="submit" class="w-full cursor-pointer" disabled={loading}>

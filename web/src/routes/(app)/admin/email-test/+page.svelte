@@ -81,8 +81,7 @@
                         loading = false
                         await update()
                     }
-                }}
-            >
+                }}>
                 <div class="space-y-2">
                     <Label for="email">Test Email Address</Label>
                     <Input
@@ -92,8 +91,7 @@
                         placeholder="admin@yourcompany.com"
                         bind:value={testEmail}
                         disabled={loading}
-                        required
-                    />
+                        required />
                     <p class="text-muted-foreground text-xs">
                         A test magic link will be sent to this address (the link won't work, but you
                         can verify email formatting)

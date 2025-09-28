@@ -1,14 +1,15 @@
 <script lang="ts">
     import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js'
-    import { Loader2, Sparkles, ExternalLink, ChevronDown, ChevronUp } from '@lucide/svelte'
-    import type { SearchRequest } from '$lib/types/search.js'
+    import { Loader2, Sparkles, Search, ChevronDown, ChevronUp } from '@lucide/svelte'
     import { marked } from 'marked'
 
     interface Props {
-        searchRequest: SearchRequest
+        query: string
+        sources?: string[]
+        contentTypes?: string[]
     }
 
-    let { searchRequest }: Props = $props()
+    let { query, sources, contentTypes }: Props = $props()
 
     let isLoading = $state(true)
     let answer = $state('')
@@ -16,26 +17,32 @@
     let isExpanded = $state(false)
     let shouldShowExpandButton = $state(false)
     let contentRef: HTMLDivElement | undefined = $state()
+    let searchProgress = $state('')
 
-    // Start streaming AI answer automatically when component mounts
+    // Start streaming AI-first answer automatically when component mounts
     $effect(() => {
-        if (searchRequest.query.trim()) {
-            streamAIAnswer()
+        if (query.trim()) {
+            streamAIFirstAnswer()
         }
     })
 
-    async function streamAIAnswer() {
+    async function streamAIFirstAnswer() {
         isLoading = true
         answer = ''
         error = null
+        searchProgress = ''
 
         try {
-            const response = await fetch('/api/search/ai-answer', {
+            const response = await fetch('/api/ask', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(searchRequest),
+                body: JSON.stringify({
+                    query: query.trim(),
+                    sources,
+                    content_types: contentTypes,
+                }),
             })
 
             if (!response.ok) {
@@ -48,6 +55,7 @@
             }
 
             const decoder = new TextDecoder()
+            let buffer = ''
 
             while (true) {
                 const { done, value } = await reader.read()
@@ -57,50 +65,46 @@
                 }
 
                 const chunk = decoder.decode(value, { stream: true })
-                answer += chunk
+                buffer += chunk
+
+                // Look for search progress indicators in the stream
+                if (chunk.includes('Searching for:')) {
+                    const searchMatch = chunk.match(/Searching for: ([^\n]+)/)
+                    if (searchMatch) {
+                        searchProgress = `🔍 ${searchMatch[1]}`
+                    }
+                } else if (chunk.includes('Found ') && chunk.includes(' documents')) {
+                    const foundMatch = chunk.match(/Found (\d+) documents/)
+                    if (foundMatch) {
+                        searchProgress = `📄 Found ${foundMatch[1]} documents`
+                    }
+                }
+
+                answer = buffer
                 isLoading = false
             }
+
+            // Clear search progress when done
+            searchProgress = ''
         } catch (err) {
-            console.error('Error streaming AI answer:', err)
+            console.error('Error streaming AI-first answer:', err)
             error = 'Failed to generate AI answer. Please try again.'
             isLoading = false
+            searchProgress = ''
         }
     }
 
-    // Parse markdown links and extract them as sources
-    function parseAnswer(text: string): {
-        text: string
-        sources: Array<{ title: string; url: string }>
-    } {
-        const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g
-        const sources: Array<{ title: string; url: string }> = []
-        const seenUrls = new Set<string>()
-        let match
-
-        while ((match = linkRegex.exec(text)) !== null) {
-            const [, title, url] = match
-            if (!seenUrls.has(url)) {
-                seenUrls.add(url)
-                sources.push({ title, url })
-            }
-        }
-
-        return { text, sources }
-    }
-
+    // Format answer with markdown
     async function formatAnswerWithMarkdown(text: string): Promise<string> {
-        // Parse markdown to HTML
         return await marked.parse(text)
     }
 
-    // Use runes instead of legacy reactive statements
-    let parsedAnswer = $derived(parseAnswer(answer))
     let formattedAnswer = $state('')
 
     // Update formatted answer when answer changes
     $effect(() => {
-        if (parsedAnswer.text) {
-            formatAnswerWithMarkdown(parsedAnswer.text).then((html) => {
+        if (answer) {
+            formatAnswerWithMarkdown(answer).then((html) => {
                 formattedAnswer = html
             })
         } else {
@@ -115,7 +119,7 @@
             setTimeout(() => {
                 if (contentRef) {
                     const scrollHeight = contentRef.scrollHeight
-                    const maxHeight = 300 // 300px max height before showing "show more"
+                    const maxHeight = 400 // Larger max height for AI-first mode
                     shouldShowExpandButton = scrollHeight > maxHeight
                 }
             }, 10)
@@ -123,18 +127,18 @@
     })
 </script>
 
-<Card class="mb-12 border-0 bg-gradient-to-br from-fuchsia-100 via-cyan-100 to-teal-100 shadow-lg">
+<Card class="mb-8 border-0 bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 shadow-lg">
     <CardHeader>
-        <CardTitle class="flex items-center gap-2 text-lg">
-            <Sparkles class="h-6 w-6 text-cyan-600" />
-            AI Answer
+        <CardTitle class="flex items-center gap-2 text-xl">
+            <Sparkles class="h-6 w-6 text-indigo-600" />
+            AI Assistant
         </CardTitle>
     </CardHeader>
-    <CardContent>
+    <CardContent class="space-y-4">
         {#if isLoading}
             <div class="flex items-center gap-2 text-gray-600">
                 <Loader2 class="h-4 w-4 animate-spin" />
-                Generating answer...
+                Thinking about your question...
             </div>
         {:else if error}
             <div class="text-red-600">
@@ -145,15 +149,15 @@
                 <div class="relative">
                     <div
                         bind:this={contentRef}
-                        class="prose prose-sm max-w-none overflow-hidden transition-all duration-300"
-                        class:max-h-[300px]={!isExpanded && shouldShowExpandButton}>
-                        <!-- Use innerHTML to render markdown with links -->
+                        class="prose prose-sm prose-blue max-w-none overflow-hidden transition-all duration-300"
+                        class:max-h-[400px]={!isExpanded && shouldShowExpandButton}>
+                        <!-- Use innerHTML to render markdown -->
                         {@html formattedAnswer}
                     </div>
 
                     {#if !isExpanded && shouldShowExpandButton}
                         <div
-                            class="pointer-events-none absolute -right-6 bottom-0 -left-6 h-20 bg-gradient-to-t from-teal-100 to-transparent">
+                            class="pointer-events-none absolute -right-6 bottom-0 -left-6 h-20 bg-gradient-to-t from-purple-50 to-transparent">
                         </div>
                     {/if}
                 </div>
@@ -161,7 +165,7 @@
                 {#if shouldShowExpandButton}
                     <button
                         onclick={() => (isExpanded = !isExpanded)}
-                        class="mt-4 flex items-center gap-1 text-sm text-cyan-600 transition-colors hover:text-cyan-700">
+                        class="mt-4 flex items-center gap-1 text-sm text-indigo-600 transition-colors hover:text-indigo-700">
                         {#if isExpanded}
                             <ChevronUp class="h-4 w-4" />
                             Show less
@@ -172,26 +176,17 @@
                     </button>
                 {/if}
             </div>
-
-            {#if parsedAnswer.sources.length > 0}
-                <div class="mt-4 border-t border-gray-200/50 pt-3">
-                    <h4 class="mb-2 text-sm font-medium text-gray-700">Sources:</h4>
-                    <div class="flex flex-wrap gap-2">
-                        {#each parsedAnswer.sources as source}
-                            <a
-                                href={source.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-xs text-gray-700 transition-all hover:bg-white hover:shadow-sm">
-                                <ExternalLink class="h-3 w-3" />
-                                {source.title}
-                            </a>
-                        {/each}
-                    </div>
-                </div>
-            {/if}
         {:else}
             <div class="text-gray-500">No answer generated.</div>
+        {/if}
+
+        <!-- Search Progress Indicator -->
+        {#if searchProgress}
+            <div
+                class="flex items-center gap-2 rounded-lg bg-indigo-100 p-3 text-sm text-indigo-700">
+                <Search class="h-4 w-4 animate-pulse" />
+                {searchProgress}
+            </div>
         {/if}
     </CardContent>
 </Card>

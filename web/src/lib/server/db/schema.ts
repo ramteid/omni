@@ -1,4 +1,5 @@
 import { pgTable, text, timestamp, boolean, jsonb, bigint, integer } from 'drizzle-orm/pg-core'
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
 
 export const user = pgTable('users', {
     id: text('id').primaryKey(),
@@ -129,6 +130,26 @@ export const magicLinks = pgTable('magic_links', {
     userId: text('user_id').references(() => user.id),
 })
 
+export const chats = pgTable('chats', {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+        .notNull()
+        .references(() => user.id, { onDelete: 'cascade' }),
+    title: text('title'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
+export const chatMessages = pgTable('chat_messages', {
+    id: text('id').primaryKey(),
+    chatId: text('chat_id')
+        .notNull()
+        .references(() => chats.id, { onDelete: 'cascade' }),
+    messageSeqNum: integer('message_seq_num').notNull(),
+    message: jsonb('message').$type<MessageParam>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
@@ -138,3 +159,5 @@ export type ConnectorEventsQueue = typeof connectorEventsQueue.$inferSelect
 export type SyncRun = typeof syncRuns.$inferSelect
 export type ApprovedDomain = typeof approvedDomains.$inferSelect
 export type MagicLink = typeof magicLinks.$inferSelect
+export type Chat = typeof chats.$inferSelect
+export type ChatMessage = typeof chatMessages.$inferSelect

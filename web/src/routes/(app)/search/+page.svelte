@@ -157,16 +157,14 @@
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
             <div
-                class="flex flex-1 items-center rounded-full border border-gray-300 bg-white p-2 shadow-sm"
-            >
+                class="flex flex-1 items-center rounded-full border border-gray-300 bg-white p-2 shadow-sm">
                 <div class="w-1"></div>
                 <Input
                     type="text"
                     bind:value={inputQuery}
                     placeholder="Search across your organization..."
                     class="flex-1 border-none bg-transparent shadow-none focus:ring-0 focus-visible:ring-0"
-                    onkeypress={handleKeyPress}
-                />
+                    onkeypress={handleKeyPress} />
                 <Button size="icon" variant="link" onclick={handleSearch} disabled={isLoading}>
                     <Search class="h-6 w-6" />
                 </Button>
@@ -181,8 +179,7 @@
                     <span class="ml-2"
                         >• {getTotalSelectedFilters()} filter{getTotalSelectedFilters() > 1
                             ? 's'
-                            : ''} applied</span
-                    >
+                            : ''} applied</span>
                 {/if}
             </div>
         {/if}
@@ -203,8 +200,7 @@
                                     variant="ghost"
                                     size="sm"
                                     onclick={() => clearFacetFilters(facet.name)}
-                                    class="h-6 px-2 text-xs"
-                                >
+                                    class="h-6 px-2 text-xs">
                                     Clear
                                 </Button>
                             {/if}
@@ -212,8 +208,7 @@
                         <div class="max-h-32 space-y-2 overflow-y-auto">
                             {#each facet.values.slice(0, 5) as facetValue}
                                 <label
-                                    class="flex cursor-pointer items-center justify-between rounded p-1 text-xs hover:bg-gray-50"
-                                >
+                                    class="flex cursor-pointer items-center justify-between rounded p-1 text-xs hover:bg-gray-50">
                                     <div class="flex items-center gap-2">
                                         <input
                                             type="checkbox"
@@ -221,15 +216,13 @@
                                                 selectedSourceTypes.has(facetValue.value)}
                                             onchange={() =>
                                                 toggleFilter(facet.name, facetValue.value)}
-                                            class="h-3 w-3 rounded border-gray-300 text-blue-600"
-                                        />
+                                            class="h-3 w-3 rounded border-gray-300 text-blue-600" />
                                         <span class="truncate text-gray-700">
                                             {getDisplayValue(facet.name, facetValue.value)}
                                         </span>
                                     </div>
                                     <span
-                                        class="ml-2 rounded bg-gray-100 px-1 py-0.5 text-xs text-gray-500"
-                                    >
+                                        class="ml-2 rounded bg-gray-100 px-1 py-0.5 text-xs text-gray-500">
                                         {facetValue.count}
                                     </span>
                                 </label>
@@ -254,8 +247,7 @@
                 limit: 20,
                 offset: 0,
                 mode: 'hybrid',
-            }}
-        />
+            }} />
     {/if}
 
     <div class="flex gap-6 px-6">
@@ -278,8 +270,7 @@
                                         <img
                                             src={srcIcon.iconPath}
                                             alt="Source icon"
-                                            class="h-7 w-7"
-                                        />
+                                            class="h-7 w-7" />
                                     {/if}
                                 </div>
 
@@ -290,11 +281,9 @@
                                         href={result.document.url || '#'}
                                         target="_blank"
                                         rel="noopener noreferrer"
-                                        class="group block"
-                                    >
+                                        class="group block">
                                         <h3
-                                            class="text-xl leading-tight text-blue-700 group-hover:underline"
-                                        >
+                                            class="text-xl leading-tight text-blue-700 group-hover:underline">
                                             {result.document.title}
                                         </h3>
                                         {#if result.document.url}
@@ -314,8 +303,7 @@
                                     <!-- Excerpt/Content -->
                                     {#if result.highlights.length > 0}
                                         <div
-                                            class="highlight-content text-sm leading-relaxed text-gray-600"
-                                        >
+                                            class="highlight-content text-sm leading-relaxed text-gray-600">
                                             {#each result.highlights.slice(0, 2) as highlight}
                                                 <span>{@html renderHighlight(highlight)}</span>
                                                 {#if highlight !== result.highlights[result.highlights.length - 1]}
@@ -365,8 +353,8 @@
             {:else if $page.url.searchParams.get('q')}
                 <div class="py-12 text-center">
                     <div
-                        class="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600"
-                    ></div>
+                        class="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600">
+                    </div>
                     <p class="text-gray-600">Searching...</p>
                 </div>
             {:else}
@@ -394,8 +382,7 @@
                                 variant="ghost"
                                 size="sm"
                                 onclick={() => clearFacetFilters('source_type')}
-                                class="text-xs"
-                            >
+                                class="text-xs">
                                 Clear
                             </Button>
                         {/if}
@@ -409,31 +396,27 @@
                                 class="flex cursor-pointer justify-between rounded-full {isSelected
                                     ? 'bg-blue-50 hover:bg-blue-100'
                                     : 'hover:bg-gray-50'}"
-                                onclick={() => toggleFilter('source_type', facetValue.value)}
-                            >
+                                onclick={() => toggleFilter('source_type', facetValue.value)}>
                                 <div class="flex items-center gap-2">
                                     {#if sourceIcon}
                                         <img
                                             src={sourceIcon}
                                             alt="{facetValue.value} icon"
-                                            class="h-4 w-4"
-                                        />
+                                            class="h-4 w-4" />
                                     {:else}
                                         <FileText class="h-4 w-4 text-gray-400" />
                                     {/if}
                                     <span
                                         class="text-sm font-medium {isSelected
                                             ? 'text-blue-700'
-                                            : 'text-gray-700'}"
-                                    >
+                                            : 'text-gray-700'}">
                                         {getDisplayValue('source_type', facetValue.value)}
                                     </span>
                                 </div>
                                 <span
                                     class="rounded-full px-2 py-0.5 text-xs {isSelected
                                         ? 'bg-blue-100 text-blue-700'
-                                        : 'bg-gray-100 text-gray-500'}"
-                                >
+                                        : 'bg-gray-100 text-gray-500'}">
                                     {facetValue.count}
                                 </span>
                             </Button>

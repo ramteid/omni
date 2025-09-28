@@ -437,14 +437,12 @@
                         </div>
                         {#if connectedSource}
                             <span
-                                class="inline-flex items-center rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400"
-                            >
+                                class="inline-flex items-center rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
                                 Connected
                             </span>
                         {:else}
                             <span
-                                class="inline-flex items-center rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300"
-                            >
+                                class="inline-flex items-center rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300">
                                 Not Connected
                             </span>
                         {/if}
@@ -466,8 +464,8 @@
                                     <Button
                                         variant="outline"
                                         size="sm"
-                                        onclick={() => goto('/admin/integrations/google/configure')}
-                                    >
+                                        onclick={() =>
+                                            goto('/admin/integrations/google/configure')}>
                                         Configure
                                     </Button>
                                     <AlertDialog.Root>
@@ -476,8 +474,7 @@
                                                 variant: 'destructive',
                                                 size: 'sm',
                                             })}
-                                            disabled={!!disconnectingSourceId}
-                                        >
+                                            disabled={!!disconnectingSourceId}>
                                             {disconnectingSourceId
                                                 ? 'Disconnecting...'
                                                 : 'Disconnect'}
@@ -485,8 +482,7 @@
                                         <AlertDialog.Content>
                                             <AlertDialog.Header>
                                                 <AlertDialog.Title
-                                                    >Disconnect Google Workspace?</AlertDialog.Title
-                                                >
+                                                    >Disconnect Google Workspace?</AlertDialog.Title>
                                                 <AlertDialog.Description>
                                                     This will disconnect both Google Drive and Gmail
                                                     sources and remove access credentials. Existing
@@ -501,8 +497,7 @@
                                                             disconnectSource(driveSource.id)
                                                         if (gmailSource)
                                                             disconnectSource(gmailSource.id)
-                                                    }}
-                                                >
+                                                    }}>
                                                     Disconnect
                                                 </AlertDialog.Action>
                                             </AlertDialog.Footer>
@@ -520,35 +515,29 @@
                                     {#if driveSource}
                                         {@const driveSync = getLatestSyncForSource(driveSource.id)}
                                         <div
-                                            class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5"
-                                        >
+                                            class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5">
                                             <div class="flex items-center gap-3">
                                                 <img
                                                     src={googleDriveLogo}
                                                     alt="Google Drive"
-                                                    class="h-5 w-5"
-                                                />
+                                                    class="h-5 w-5" />
                                                 <div class="flex items-center gap-2">
                                                     <span class="text-sm font-medium"
-                                                        >Google Drive</span
-                                                    >
+                                                        >Google Drive</span>
                                                     {#if driveSource.isActive}
                                                         <span
-                                                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400"
-                                                        >
+                                                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
                                                             Active
                                                         </span>
                                                     {:else}
                                                         <span
-                                                            class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300"
-                                                        >
+                                                            class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300">
                                                             Inactive
                                                         </span>
                                                     {/if}
                                                     {#if driveSync && driveSync.status === 'running'}
                                                         <span
-                                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(driveSync.status)}`}
-                                                        >
+                                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(driveSync.status)}`}>
                                                             Syncing
                                                         </span>
                                                     {/if}
@@ -558,8 +547,7 @@
                                                 variant="ghost"
                                                 size="sm"
                                                 onclick={() => syncSource(driveSource.id)}
-                                                disabled={syncingSourceId === driveSource.id}
-                                            >
+                                                disabled={syncingSourceId === driveSource.id}>
                                                 {syncingSourceId === driveSource.id
                                                     ? 'Syncing...'
                                                     : 'Sync Now'}
@@ -571,29 +559,25 @@
                                     {#if gmailSource}
                                         {@const gmailSync = getLatestSyncForSource(gmailSource.id)}
                                         <div
-                                            class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5"
-                                        >
+                                            class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5">
                                             <div class="flex items-center gap-3">
                                                 <img src={gmailLogo} alt="Gmail" class="h-5 w-5" />
                                                 <div class="flex items-center gap-2">
                                                     <span class="text-sm font-medium">Gmail</span>
                                                     {#if gmailSource.isActive}
                                                         <span
-                                                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400"
-                                                        >
+                                                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
                                                             Active
                                                         </span>
                                                     {:else}
                                                         <span
-                                                            class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300"
-                                                        >
+                                                            class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300">
                                                             Inactive
                                                         </span>
                                                     {/if}
                                                     {#if gmailSync && gmailSync.status === 'running'}
                                                         <span
-                                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(gmailSync.status)}`}
-                                                        >
+                                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(gmailSync.status)}`}>
                                                             Syncing
                                                         </span>
                                                     {/if}
@@ -603,8 +587,7 @@
                                                 variant="ghost"
                                                 size="sm"
                                                 onclick={() => syncSource(gmailSource.id)}
-                                                disabled={syncingSourceId === gmailSource.id}
-                                            >
+                                                disabled={syncingSourceId === gmailSource.id}>
                                                 {syncingSourceId === gmailSource.id
                                                     ? 'Syncing...'
                                                     : 'Sync Now'}
@@ -629,13 +612,11 @@
                                         <div class="space-y-1 text-xs">
                                             <div class="flex items-center gap-2">
                                                 <span
-                                                    class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(latestSync.status)}`}
-                                                >
+                                                    class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(latestSync.status)}`}>
                                                     {latestSync.status}
                                                 </span>
                                                 <span class="text-muted-foreground"
-                                                    >{latestSync.syncType}</span
-                                                >
+                                                    >{latestSync.syncType}</span>
                                             </div>
                                             {#if latestSync.documentsProcessed > 0}
                                                 <div class="text-muted-foreground">
@@ -659,8 +640,7 @@
                                         variant="outline"
                                         size="sm"
                                         onclick={() => syncSource(connectedSource.id)}
-                                        disabled={syncingSourceId === connectedSource.id}
-                                    >
+                                        disabled={syncingSourceId === connectedSource.id}>
                                         {syncingSourceId === connectedSource.id
                                             ? 'Syncing...'
                                             : 'Sync Now'}
@@ -671,8 +651,7 @@
                                                 variant: 'outline',
                                                 size: 'sm',
                                             })}
-                                            disabled={disconnectingSourceId === connectedSource.id}
-                                        >
+                                            disabled={disconnectingSourceId === connectedSource.id}>
                                             {disconnectingSourceId === connectedSource.id
                                                 ? 'Disconnecting...'
                                                 : 'Disconnect'}
@@ -680,8 +659,7 @@
                                         <AlertDialog.Content>
                                             <AlertDialog.Header>
                                                 <AlertDialog.Title
-                                                    >Disconnect {integration.name}?</AlertDialog.Title
-                                                >
+                                                    >Disconnect {integration.name}?</AlertDialog.Title>
                                                 <AlertDialog.Description>
                                                     This will stop syncing data from {integration.name}
                                                     and remove access credentials. Existing indexed documents
@@ -692,8 +670,7 @@
                                                 <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
                                                 <AlertDialog.Action
                                                     onclick={() =>
-                                                        disconnectSource(connectedSource.id)}
-                                                >
+                                                        disconnectSource(connectedSource.id)}>
                                                     Disconnect
                                                 </AlertDialog.Action>
                                             </AlertDialog.Footer>
@@ -726,16 +703,13 @@
                             <div class="flex-1">
                                 <div class="mb-1 flex items-center gap-2">
                                     <span class="text-sm font-medium"
-                                        >{sync.sourceName || 'Unknown Source'}</span
-                                    >
+                                        >{sync.sourceName || 'Unknown Source'}</span>
                                     <span
-                                        class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(sync.status)}`}
-                                    >
+                                        class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(sync.status)}`}>
                                         {sync.status}
                                     </span>
                                     <span class="text-muted-foreground text-xs"
-                                        >{sync.syncType}</span
-                                    >
+                                        >{sync.syncType}</span>
                                 </div>
                                 <div class="text-muted-foreground text-xs">
                                     Started: {new Date(sync.startedAt).toLocaleString()}
@@ -777,8 +751,7 @@
                         bind:value={serviceAccountJson}
                         placeholder="Paste your Google service account JSON key here..."
                         rows={10}
-                        class="max-h-64 overflow-y-auto font-mono text-sm break-all whitespace-pre-wrap"
-                    />
+                        class="max-h-64 overflow-y-auto font-mono text-sm break-all whitespace-pre-wrap" />
                     <p class="text-muted-foreground text-sm">
                         Download this from the Google Cloud Console under "Service Accounts" >
                         "Keys".
@@ -792,8 +765,7 @@
                         bind:value={principalEmail}
                         placeholder="admin@yourdomain.com"
                         type="email"
-                        required
-                    />
+                        required />
                     <p class="text-muted-foreground text-sm">
                         The admin user email that the service account will impersonate to access
                         Google Workspace APIs.
@@ -807,8 +779,7 @@
                         bind:value={domain}
                         placeholder="yourdomain.com"
                         type="text"
-                        required
-                    />
+                        required />
                     <p class="text-muted-foreground text-sm">
                         Your Google Workspace domain (e.g., company.com). The service account will
                         impersonate all users in this domain.
@@ -822,8 +793,7 @@
                         bind:value={principalEmail}
                         placeholder="your.email@company.com"
                         type="email"
-                        required
-                    />
+                        required />
                 </div>
 
                 <div class="space-y-2">
@@ -833,14 +803,12 @@
                         bind:value={apiToken}
                         placeholder="Your Atlassian API token"
                         type="password"
-                        required
-                    />
+                        required />
                     <p class="text-muted-foreground text-sm">
                         Create an API token at <a
                             href="https://id.atlassian.com/manage-profile/security/api-tokens"
                             target="_blank"
-                            class="text-blue-600 hover:underline">id.atlassian.com</a
-                        >
+                            class="text-blue-600 hover:underline">id.atlassian.com</a>
                     </p>
                 </div>
             {:else if selectedIntegration?.id === 'slack'}
@@ -851,8 +819,7 @@
                         bind:value={apiToken}
                         placeholder="xoxb-your-slack-bot-token"
                         type="password"
-                        required
-                    />
+                        required />
                     <p class="text-muted-foreground text-sm">
                         Get this from your Slack app settings under "OAuth & Permissions".
                     </p>

@@ -65,8 +65,7 @@
                             }
                             await update()
                         }
-                    }}
-                >
+                    }}>
                     <div class="space-y-2">
                         <Label for="domain">Domain</Label>
                         <Input
@@ -76,8 +75,7 @@
                             placeholder="company.com"
                             bind:value={domain}
                             disabled={loading}
-                            required
-                        />
+                            required />
                         {#if form?.error && form?.domain}
                             <p class="text-destructive text-sm">{form.error}</p>
                         {/if}
@@ -128,8 +126,7 @@
                                         return async ({ update }) => {
                                             await update()
                                         }
-                                    }}
-                                >
+                                    }}>
                                     <input type="hidden" name="domain" value={domainItem.domain} />
                                     <Button variant="outline" size="sm" type="submit">
                                         Revoke

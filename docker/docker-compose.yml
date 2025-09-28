@@ -120,7 +120,7 @@ services:
     build:
       context: ../services/ai
       dockerfile: Dockerfile
-    image: ghcr.io/omnihq/omni-ai:latest
+    image: omni-ai
     container_name: omni-ai
     environment:
       - DATABASE_HOST=${DATABASE_HOST}
@@ -145,6 +145,7 @@ services:
       - AI_WORKERS=${AI_WORKERS:-1}  # Number of uvicorn workers
       - JINA_API_KEY=${JINA_API_KEY}
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      - SEARCHER_URL=${SEARCHER_URL}
     networks:
       - omni-network
     volumes:
@@ -330,6 +331,7 @@ services:
       - EMAIL_PASSWORD=${EMAIL_PASSWORD}
       - EMAIL_SECURE=${EMAIL_SECURE}
       - AI_ANSWER_ENABLED=${AI_ANSWER_ENABLED}
+      - AI_FIRST_SEARCH_ENABLED=${AI_FIRST_SEARCH_ENABLED}
     networks:
       - omni-network
     depends_on:

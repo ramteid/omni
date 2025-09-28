@@ -1,96 +1,22 @@
-import os
 import sys
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Tuple, Literal
-import logging
 import asyncio
-import httpx
-import json
 from concurrent.futures import ThreadPoolExecutor
-import base64
 import multiprocessing
 from enum import IntEnum
 from dataclasses import dataclass, field
 import time
-from urllib.parse import quote_plus
 
-from providers import create_llm_provider, LLMProvider
+from providers import create_llm_provider
+from tools import SearcherTool
 from pdf_extractor import PDFExtractionRequest, PDFExtractionResponse, extract_text_from_pdf
-
-
-def get_required_env(key: str) -> str:
-    """Get required environment variable with validation"""
-    value = os.getenv(key)
-    if not value:
-        print(
-            f"ERROR: Required environment variable '{key}' is not set", file=sys.stderr
-        )
-        print(
-            "Please set this variable in your .env file or environment", file=sys.stderr
-        )
-        sys.exit(1)
-    return value
-
-
-def get_optional_env(key: str, default: str) -> str:
-    """Get optional environment variable with default"""
-    return os.getenv(key, default)
-
-
-def validate_port(port_str: str) -> int:
-    """Validate port number"""
-    try:
-        port = int(port_str)
-        if port < 1 or port > 65535:
-            raise ValueError("Port must be between 1 and 65535")
-        return port
-    except ValueError as e:
-        print(f"ERROR: Invalid port number '{port_str}': {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def validate_embedding_dimensions(dims_str: str) -> int:
-    """Validate embedding dimensions"""
-    try:
-        dims = int(dims_str)
-        if dims < 1:
-            raise ValueError("Embedding dimensions must be positive")
-        return dims
-    except ValueError as e:
-        print(f"ERROR: Invalid embedding dimensions '{dims_str}': {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def construct_database_url() -> str:
-    """Construct database URL from individual components"""
-    database_host = get_required_env("DATABASE_HOST")
-    database_username = get_required_env("DATABASE_USERNAME") 
-    database_name = get_required_env("DATABASE_NAME")
-    database_password = get_required_env("DATABASE_PASSWORD")
-    database_port = get_optional_env("DATABASE_PORT", "5432")
-    
-    port = validate_port(database_port)
-    
-    return f"postgresql://{quote_plus(database_username)}:{quote_plus(database_password)}@{database_host}:{port}/{database_name}"
-
-
-# Load and validate configuration
-PORT = validate_port(get_required_env("PORT"))
-MODEL_PATH = get_required_env("MODEL_PATH")
-EMBEDDING_MODEL = get_required_env("EMBEDDING_MODEL")
-EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
-    get_required_env("EMBEDDING_DIMENSIONS")
-)
-REDIS_URL = get_required_env("REDIS_URL")
-DATABASE_URL = construct_database_url()
-
-# Embedding Provider configuration
-EMBEDDING_PROVIDER = get_optional_env("EMBEDDING_PROVIDER", "local").lower()
-JINA_API_KEY = get_optional_env("JINA_API_KEY", "")
-JINA_MODEL = get_optional_env("JINA_MODEL", "jina-embeddings-v3")
-JINA_API_URL = get_optional_env("JINA_API_URL", "https://api.jina.ai/v1/embeddings")
+from logger import setup_logging
+from config import *  # Import all config variables
+from routers.chat import router as chat_router
 
 # Import the appropriate embedding module based on provider
 if EMBEDDING_PROVIDER == "jina":
@@ -110,22 +36,16 @@ else:
         DEFAULT_TASK,
     )
 
-# LLM Provider configuration
-LLM_PROVIDER = get_optional_env("LLM_PROVIDER", "vllm").lower()
-VLLM_URL = get_optional_env("VLLM_URL", "http://vllm:8000")  # Make optional
-ANTHROPIC_API_KEY = get_optional_env("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = get_optional_env("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
-ANTHROPIC_MAX_TOKENS = int(get_optional_env("ANTHROPIC_MAX_TOKENS", "4096"))
+# Configure logging once at startup
+setup_logging()
 
-# AWS Bedrock configuration
-BEDROCK_MODEL_ID = get_optional_env("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
-AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Get logger for this module
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Clio AI Service", version="0.1.0")
+app = FastAPI(title="Omni AI Service", version="0.1.0")
+
+# Include routers
+app.include_router(chat_router)
 
 # Thread pool for async operations - scale based on CPU cores
 # Reserve some cores for the web server and other processes
@@ -150,11 +70,8 @@ class PrioritizedRequest:
 _request_queue: asyncio.PriorityQueue = None
 _queue_processor_task = None
 
-# Global LLM provider instance
-llm_provider: Optional[LLMProvider] = None
+# Chat models are now in models/chat.py
 
-
-# Pydantic models
 class EmbeddingRequest(BaseModel):
     texts: List[str]
     task: Optional[str] = DEFAULT_TASK  # Allow different tasks
@@ -201,15 +118,15 @@ class PromptResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize LLM provider on startup"""
-    global llm_provider, _request_queue, _queue_processor_task
+    """Initialize services on startup"""
+    global _request_queue, _queue_processor_task
 
     # Initialize priority queue
     _request_queue = asyncio.PriorityQueue(maxsize=100)
-    
+
     # Start queue processor task
     _queue_processor_task = asyncio.create_task(process_embedding_queue())
-    
+
     logger.info(f"Initialized with {max_workers} thread pool workers")
 
     # Initialize LLM provider
@@ -217,20 +134,20 @@ async def startup_event():
         if LLM_PROVIDER == "vllm":
             if not VLLM_URL:
                 raise ValueError("VLLM_URL is required when using vLLM provider")
-            llm_provider = create_llm_provider("vllm", vllm_url=VLLM_URL)
+            app.state.llm_provider = create_llm_provider("vllm", vllm_url=VLLM_URL)
             logger.info(f"Initialized vLLM provider with URL: {VLLM_URL}")
         elif LLM_PROVIDER == "anthropic":
             if not ANTHROPIC_API_KEY:
                 raise ValueError(
                     "ANTHROPIC_API_KEY is required when using Anthropic provider"
                 )
-            llm_provider = create_llm_provider(
+            app.state.llm_provider = create_llm_provider(
                 "anthropic", api_key=ANTHROPIC_API_KEY, model=ANTHROPIC_MODEL
             )
             logger.info(f"Initialized Anthropic provider with model: {ANTHROPIC_MODEL}")
         elif LLM_PROVIDER == "bedrock":
             region_name = AWS_REGION if AWS_REGION else None
-            llm_provider = create_llm_provider(
+            app.state.llm_provider = create_llm_provider(
                 "bedrock", model_id=BEDROCK_MODEL_ID, region_name=region_name
             )
             logger.info(f"Initialized AWS Bedrock provider with model: {BEDROCK_MODEL_ID}")
@@ -240,8 +157,13 @@ async def startup_event():
                 logger.info("Using auto-detected AWS region from ECS environment")
         else:
             raise ValueError(f"Unknown LLM provider: {LLM_PROVIDER}")
+
+        # Initialize searcher client
+        app.state.searcher_tool = SearcherTool()
+        logger.info("Initialized searcher client")
+
     except Exception as e:
-        logger.error(f"Failed to initialize LLM provider: {e}")
+        logger.error(f"Failed to initialize services: {e}")
         raise e
 
 
@@ -316,13 +238,11 @@ async def shutdown_event():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    global llm_provider
-
     # Check LLM provider health
     llm_health = False
-    if llm_provider:
+    if hasattr(app.state, 'llm_provider') and app.state.llm_provider:
         try:
-            llm_health = await llm_provider.health_check()
+            llm_health = await app.state.llm_provider.health_check()
         except Exception:
             llm_health = False
 
@@ -424,9 +344,7 @@ async def rag_inference(request: RAGRequest):
 @app.post("/prompt")
 async def generate_response(request: PromptRequest):
     """Generate a response from the configured LLM provider with streaming support"""
-    global llm_provider
-
-    if not llm_provider:
+    if not hasattr(app.state, 'llm_provider') or not app.state.llm_provider:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
     logger.info(
@@ -440,13 +358,16 @@ async def generate_response(request: PromptRequest):
     # Streaming response
     async def stream_generator():
         try:
-            async for chunk in llm_provider.stream_response(
+            async for event in app.state.llm_provider.stream_response(
                 request.prompt,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
                 top_p=request.top_p,
             ):
-                yield chunk
+                # Extract text content from MessageStreamEvent
+                if event.type == 'content_block_delta':
+                    if event.delta.text:
+                        yield event.delta.text
         except Exception as e:
             logger.error(f"Failed to generate streaming response: {str(e)}")
             yield f"Error: {str(e)}"
@@ -481,13 +402,11 @@ async def extract_pdf(request: PDFExtractionRequest):
 
 async def generate_non_streaming_response(request: PromptRequest) -> PromptResponse:
     """Generate non-streaming response for backward compatibility"""
-    global llm_provider
-
-    if not llm_provider:
+    if not hasattr(app.state, 'llm_provider') or not app.state.llm_provider:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
     try:
-        generated_text = await llm_provider.generate_response(
+        generated_text = await app.state.llm_provider.generate_response(
             request.prompt,
             max_tokens=request.max_tokens,
             temperature=request.temperature,

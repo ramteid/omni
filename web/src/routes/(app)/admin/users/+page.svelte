@@ -25,20 +25,15 @@
                     <thead class="bg-muted/50">
                         <tr>
                             <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                >Email</th
-                            >
+                                >Email</th>
                             <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                >Role</th
-                            >
+                                >Role</th>
                             <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                >Status</th
-                            >
+                                >Status</th>
                             <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                >Created</th
-                            >
+                                >Created</th>
                             <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                >Updated</th
-                            >
+                                >Updated</th>
                             <th class="relative px-6 py-3"><span class="sr-only">Actions</span></th>
                         </tr>
                     </thead>
@@ -53,15 +48,13 @@
                                         method="POST"
                                         action="?/updateRole"
                                         use:enhance
-                                        class="inline"
-                                    >
+                                        class="inline">
                                         <input type="hidden" name="userId" value={user.id} />
                                         <select
                                             name="role"
                                             value={user.role}
                                             on:change={(e) => e.currentTarget.form?.requestSubmit()}
-                                            class="border-border bg-background rounded-md text-sm"
-                                        >
+                                            class="border-border bg-background rounded-md text-sm">
                                             <option value="admin">Admin</option>
                                             <option value="user">User</option>
                                             <option value="viewer">Viewer</option>
@@ -74,8 +67,7 @@
 											{user.isActive
                                             ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
                                             : 'bg-destructive/10 text-destructive'}
-										"
-                                    >
+										">
                                         {user.isActive ? 'Active' : 'Inactive'}
                                     </span>
                                 </td>
@@ -92,12 +84,10 @@
                                                 <input
                                                     type="hidden"
                                                     name="userId"
-                                                    value={user.id}
-                                                />
+                                                    value={user.id} />
                                                 <button
                                                     type="submit"
-                                                    class="text-destructive hover:text-destructive/80"
-                                                >
+                                                    class="text-destructive hover:text-destructive/80">
                                                     Deactivate
                                                 </button>
                                             </form>
@@ -106,12 +96,10 @@
                                                 <input
                                                     type="hidden"
                                                     name="userId"
-                                                    value={user.id}
-                                                />
+                                                    value={user.id} />
                                                 <button
                                                     type="submit"
-                                                    class="text-green-600 hover:text-green-900 dark:text-green-400 dark:hover:text-green-300"
-                                                >
+                                                    class="text-green-600 hover:text-green-900 dark:text-green-400 dark:hover:text-green-300">
                                                     Activate
                                                 </button>
                                             </form>

@@ -310,8 +310,7 @@
                 await update()
                 isSubmitting = false
             }
-        }}
-    >
+        }}>
         <div class="grid gap-6 md:grid-cols-2">
             <!-- Google Drive Configuration -->
             <Card.Root class="relative">
@@ -331,8 +330,7 @@
                             <Switch
                                 id="driveEnabled"
                                 bind:checked={driveEnabled}
-                                name="driveEnabled"
-                            />
+                                name="driveEnabled" />
                         </div>
                     </div>
                 </Card.Header>
@@ -346,8 +344,7 @@
                         <RadioGroup.Root
                             bind:value={driveUserFilterMode}
                             name="driveUserFilterMode"
-                            disabled={!driveEnabled}
-                        >
+                            disabled={!driveEnabled}>
                             <div class="flex items-start space-x-3">
                                 <RadioGroup.Item value="all" id="drive-all" />
                                 <Label for="drive-all" class="cursor-pointer">
@@ -390,19 +387,16 @@
                                 <div class="space-y-2">
                                     <div class="relative">
                                         <Search
-                                            class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2"
-                                        />
+                                            class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
                                         <input
                                             type="text"
                                             bind:value={searchQuery}
                                             oninput={handleSearchInput}
                                             placeholder="Search users..."
-                                            class="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-10 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
-                                        />
+                                            class="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-10 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none" />
                                         {#if isSearching}
                                             <Loader2
-                                                class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin"
-                                            />
+                                                class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin" />
                                         {/if}
                                     </div>
 
@@ -412,8 +406,7 @@
                                                 <button
                                                     type="button"
                                                     onclick={() => addUser(user.email, 'drive')}
-                                                    class="hover:bg-muted flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs"
-                                                >
+                                                    class="hover:bg-muted flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs">
                                                     <div>
                                                         <div class="font-medium">{user.name}</div>
                                                         <div class="text-muted-foreground">
@@ -422,8 +415,7 @@
                                                     </div>
                                                     {#if user.isAdmin}
                                                         <Badge variant="secondary" class="text-xs"
-                                                            >Admin</Badge
-                                                        >
+                                                            >Admin</Badge>
                                                     {/if}
                                                 </button>
                                             {/each}
@@ -440,16 +432,14 @@
                                             <div class="flex flex-wrap gap-2">
                                                 {#each driveSelectedUsers as email}
                                                     <div
-                                                        class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
-                                                    >
+                                                        class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
                                                         <span>{email}</span>
                                                         <button
                                                             type="button"
                                                             onclick={() =>
                                                                 removeUser(email, 'drive')}
                                                             class="hover:bg-secondary-foreground/20 ml-1 rounded-full p-0.5 transition-colors"
-                                                            aria-label="Remove {email}"
-                                                        >
+                                                            aria-label="Remove {email}">
                                                             <X class="h-3 w-3" />
                                                         </button>
                                                     </div>
@@ -469,8 +459,7 @@
                             name={driveUserFilterMode === 'whitelist'
                                 ? 'driveUserWhitelist'
                                 : 'driveUserBlacklist'}
-                            value={email}
-                        />
+                            value={email} />
                     {/each}
                 </Card.Content>
             </Card.Root>
@@ -493,8 +482,7 @@
                             <Switch
                                 id="gmailEnabled"
                                 bind:checked={gmailEnabled}
-                                name="gmailEnabled"
-                            />
+                                name="gmailEnabled" />
                         </div>
                     </div>
                 </Card.Header>
@@ -508,8 +496,7 @@
                         <RadioGroup.Root
                             bind:value={gmailUserFilterMode}
                             name="gmailUserFilterMode"
-                            disabled={!gmailEnabled}
-                        >
+                            disabled={!gmailEnabled}>
                             <div class="flex items-start space-x-3">
                                 <RadioGroup.Item value="all" id="gmail-all" />
                                 <Label for="gmail-all" class="cursor-pointer">
@@ -552,19 +539,16 @@
                                 <div class="space-y-2">
                                     <div class="relative">
                                         <Search
-                                            class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2"
-                                        />
+                                            class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
                                         <input
                                             type="text"
                                             bind:value={searchQuery}
                                             oninput={handleSearchInput}
                                             placeholder="Search users..."
-                                            class="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-10 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
-                                        />
+                                            class="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-10 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none" />
                                         {#if isSearching}
                                             <Loader2
-                                                class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin"
-                                            />
+                                                class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin" />
                                         {/if}
                                     </div>
 
@@ -574,8 +558,7 @@
                                                 <button
                                                     type="button"
                                                     onclick={() => addUser(user.email, 'gmail')}
-                                                    class="hover:bg-muted flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs"
-                                                >
+                                                    class="hover:bg-muted flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs">
                                                     <div>
                                                         <div class="font-medium">{user.name}</div>
                                                         <div class="text-muted-foreground">
@@ -584,8 +567,7 @@
                                                     </div>
                                                     {#if user.isAdmin}
                                                         <Badge variant="secondary" class="text-xs"
-                                                            >Admin</Badge
-                                                        >
+                                                            >Admin</Badge>
                                                     {/if}
                                                 </button>
                                             {/each}
@@ -602,16 +584,14 @@
                                             <div class="flex flex-wrap gap-2">
                                                 {#each gmailSelectedUsers as email}
                                                     <div
-                                                        class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
-                                                    >
+                                                        class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
                                                         <span>{email}</span>
                                                         <button
                                                             type="button"
                                                             onclick={() =>
                                                                 removeUser(email, 'gmail')}
                                                             class="hover:bg-secondary-foreground/20 ml-1 rounded-full p-0.5 transition-colors"
-                                                            aria-label="Remove {email}"
-                                                        >
+                                                            aria-label="Remove {email}">
                                                             <X class="h-3 w-3" />
                                                         </button>
                                                     </div>
@@ -631,8 +611,7 @@
                             name={gmailUserFilterMode === 'whitelist'
                                 ? 'gmailUserWhitelist'
                                 : 'gmailUserBlacklist'}
-                            value={email}
-                        />
+                            value={email} />
                     {/each}
                 </Card.Content>
             </Card.Root>

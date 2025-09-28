@@ -8,20 +8,17 @@
     <div class="w-full max-w-md space-y-8">
         <div class="text-center">
             <div
-                class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100"
-            >
+                class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
                 <svg
                     class="h-6 w-6 text-green-600"
                     fill="none"
                     stroke="currentColor"
-                    viewBox="0 0 24 24"
-                >
+                    viewBox="0 0 24 24">
                     <path
                         stroke-linecap="round"
                         stroke-linejoin="round"
                         stroke-width="2"
-                        d="M5 13l4 4L19 7"
-                    />
+                        d="M5 13l4 4L19 7" />
                 </svg>
             </div>
             <h2 class="mt-6 text-3xl font-bold text-gray-900">Check your email</h2>
@@ -51,8 +48,7 @@
             <div class="flex justify-center space-x-4">
                 <a
                     href="/auth/request-magic-link"
-                    class="text-sm text-blue-600 hover:text-blue-500"
-                >
+                    class="text-sm text-blue-600 hover:text-blue-500">
                     Send another link
                 </a>
                 <a href="/login" class="text-sm text-blue-600 hover:text-blue-500">

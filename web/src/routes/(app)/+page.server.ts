@@ -2,6 +2,8 @@ import type { PageServerLoad } from './$types.js'
 import { db } from '$lib/server/db/index.js'
 import { sources, documents } from '$lib/server/db/schema.js'
 import { eq, sql } from 'drizzle-orm'
+import { env } from '$env/dynamic/private'
+import { logger } from '$lib/server/logger.js'
 
 export const load: PageServerLoad = async ({ locals, fetch }) => {
     // Get connected sources count
@@ -31,6 +33,14 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         }
     }
 
+    logger.info('Loaded app page data', {
+        userId: locals.user?.id,
+        connectedSources: connectedSourcesCount,
+        indexedDocuments: totalDocumentsIndexed,
+        recentSearchesCount: recentSearches.length,
+        aiFirstSearchEnabled: env.AI_FIRST_SEARCH_ENABLED === 'true',
+    })
+
     return {
         user: locals.user!,
         stats: {
@@ -38,5 +48,6 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
             indexedDocuments: totalDocumentsIndexed,
         },
         recentSearches,
+        aiFirstSearchEnabled: env.AI_FIRST_SEARCH_ENABLED === 'true',
     }
 }

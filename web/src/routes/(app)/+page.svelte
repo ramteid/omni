@@ -19,12 +19,52 @@
     $inspect(popoverContainer).with((t, v) => console.log('popover container', t, v))
     $inspect(data.recentSearches).with((t, v) => console.log('recent searches', t, v))
 
-    function handleSearch() {
+    async function handleSearch() {
         console.log('calling handleSearch', searchQuery)
+
         if (searchQuery.trim() && !isSearching) {
+            const response = await fetch(`/api/chat`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+
+            if (!response.ok) {
+                console.error('Failed to create chat session')
+                return
+            }
+
+            const { chatId } = await response.json()
+            console.log('Created chat session with ID:', chatId)
+
+            const msgResponse = await fetch(`/api/chat/${chatId}/messages`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    content: searchQuery.trim(),
+                    role: 'user',
+                }),
+            })
+
+            if (!msgResponse.ok) {
+                console.error('Failed to send message to chat session')
+                return
+            }
+
+            const { message_id: messageId } = await msgResponse.json()
+            console.log('Sent message with ID:', messageId)
+
             isSearching = true
             popoverOpen = false
-            goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
+
+            if (!data.aiFirstSearchEnabled) {
+                goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
+            } else {
+                goto(`/chat/${chatId}`)
+            }
         }
     }
 
@@ -75,8 +115,7 @@
                 class={cn(
                     'flex items-center border border-gray-300 bg-white shadow-lg',
                     popoverOpen ? 'rounded-t-xl' : 'rounded-full',
-                )}
-            >
+                )}>
                 <div class="pr-3 pl-6">
                     <Search class="h-5 w-5 text-gray-400" />
                 </div>
@@ -87,13 +126,11 @@
                     class="text-md md:text-md flex-1 border-none bg-transparent px-0 shadow-none focus:border-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
                     onkeypress={handleKeyPress}
                     onfocus={handleFocus}
-                    onblur={handleBlur}
-                />
+                    onblur={handleBlur} />
                 <Button
                     class="m-2 cursor-pointer rounded-full px-6 py-2"
                     onclick={handleSearch}
-                    disabled={!searchQuery.trim() || isSearching}
-                >
+                    disabled={!searchQuery.trim() || isSearching}>
                     {#if isSearching}
                         <Loader2 class="h-4 w-4 animate-spin" />
                     {:else}
@@ -117,20 +154,17 @@
                         onCloseAutoFocus={(e) => {
                             e.preventDefault()
                         }}
-                        onFocusOutside={(e) => e.preventDefault()}
-                    >
+                        onFocusOutside={(e) => e.preventDefault()}>
                         <div class="w-full border bg-white">
                             <div class="py-2">
                                 {#each data.recentSearches as recentQuery}
                                     <button
                                         class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground w-full px-4 py-2.5 text-left text-sm transition-colors focus:outline-none"
-                                        onclick={() => selectRecentSearch(recentQuery)}
-                                    >
+                                        onclick={() => selectRecentSearch(recentQuery)}>
                                         <div class="flex items-center gap-3">
                                             <Clock class="text-muted-foreground h-4 w-4" />
                                             <span class="font-semibold text-violet-500"
-                                                >{recentQuery}</span
-                                            >
+                                                >{recentQuery}</span>
                                         </div>
                                     </button>
                                 {/each}
