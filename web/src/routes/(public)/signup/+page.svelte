@@ -18,104 +18,87 @@
 </script>
 
 <svelte:head>
-    <title>{data.isFirstUser ? 'Welcome to Omni' : 'Sign Up - Omni'}</title>
+    <title>{data.isFirstUser ? 'Welcome to Omni' : 'Sign Up'}</title>
 </svelte:head>
 
 <Card class="w-full">
     <CardHeader class="text-center">
         {#if data.isFirstUser}
             <CardTitle class="text-2xl">Welcome to Omni</CardTitle>
-            <CardDescription>
-                Create your admin account to get started with Omni Enterprise Search.
-            </CardDescription>
+            <CardDescription>Create an admin account to get started.</CardDescription>
         {:else}
             <CardTitle class="text-2xl">Create your account</CardTitle>
             <CardDescription>Get started with Omni Enterprise Search</CardDescription>
         {/if}
     </CardHeader>
     <CardContent>
-        {#if form?.success}
-            <div class="rounded-md bg-green-50 p-4 dark:bg-green-900/50">
-                <div class="text-sm text-green-800 dark:text-green-200">
-                    {form.message}
-                </div>
-                <div class="mt-3">
-                    <a
-                        href="/login"
-                        class="text-sm font-medium text-green-600 hover:text-green-500 dark:text-green-400">
-                        Sign in now →
-                    </a>
-                </div>
-            </div>
-        {:else}
-            <form
-                method="POST"
-                use:enhance={() => {
-                    loading = true
-                    return async ({ update }) => {
-                        loading = false
-                        await update()
-                    }
-                }}
-                class="space-y-4">
-                {#if form?.error}
-                    <div class="bg-destructive/10 rounded-md p-4">
-                        <div class="text-destructive text-sm">
-                            {form.error}
-                        </div>
+        <form
+            method="POST"
+            use:enhance={() => {
+                loading = true
+                return async ({ update }) => {
+                    loading = false
+                    await update()
+                }
+            }}
+            class="space-y-4">
+            {#if form?.error}
+                <div class="bg-destructive/10 rounded-md p-4">
+                    <div class="text-destructive text-sm">
+                        {form.error}
                     </div>
-                {/if}
-
-                <div class="space-y-2">
-                    <Label for="email">Email</Label>
-                    <Input
-                        id="email"
-                        name="email"
-                        type="email"
-                        placeholder="Enter your email"
-                        value={form?.email ?? ''}
-                        required
-                        disabled={loading} />
                 </div>
+            {/if}
 
-                <div class="space-y-2">
-                    <Label for="password">Password</Label>
-                    <Input
-                        id="password"
-                        name="password"
-                        type="password"
-                        placeholder="Create a password"
-                        required
-                        disabled={loading} />
-                    <p class="text-muted-foreground text-xs">At least 8 characters</p>
-                </div>
-
-                <div class="space-y-2">
-                    <Label for="confirmPassword">Confirm Password</Label>
-                    <Input
-                        id="confirmPassword"
-                        name="confirmPassword"
-                        type="password"
-                        placeholder="Confirm your password"
-                        required
-                        disabled={loading} />
-                </div>
-
-                <Button type="submit" class="w-full cursor-pointer" disabled={loading}>
-                    {#if loading}
-                        {data.isFirstUser ? 'Creating admin account...' : 'Creating account...'}
-                    {:else}
-                        {data.isFirstUser ? 'Create admin account' : 'Create account'}
-                    {/if}
-                </Button>
-            </form>
-
-            <div class="mt-6 text-center text-sm">
-                <span class="text-muted-foreground">Already have an account?</span>
-                <a href="/login" class="text-foreground hover:text-foreground/80 font-medium">
-                    Sign in
-                </a>
+            <div class="space-y-2">
+                <Label for="email">Email</Label>
+                <Input
+                    id="email"
+                    name="email"
+                    type="email"
+                    placeholder="Enter your email"
+                    value={form?.email ?? ''}
+                    required
+                    disabled={loading} />
             </div>
-        {/if}
+
+            <div class="space-y-2">
+                <Label for="password">Password</Label>
+                <Input
+                    id="password"
+                    name="password"
+                    type="password"
+                    placeholder="Create a password"
+                    required
+                    disabled={loading} />
+                <p class="text-muted-foreground text-xs">At least 8 characters</p>
+            </div>
+
+            <div class="space-y-2">
+                <Label for="confirmPassword">Confirm Password</Label>
+                <Input
+                    id="confirmPassword"
+                    name="confirmPassword"
+                    type="password"
+                    placeholder="Confirm your password"
+                    required
+                    disabled={loading} />
+            </div>
+
+            <Button type="submit" class="w-full cursor-pointer" disabled={loading}>
+                {#if loading}
+                    {data.isFirstUser ? 'Creating admin account...' : 'Creating account...'}
+                {:else}
+                    {data.isFirstUser ? 'Create admin account' : 'Create account'}
+                {/if}
+            </Button>
+        </form>
+
+        <div class="mt-6 text-center text-sm">
+            <span class="text-muted-foreground">Already have an account?</span>
+            <a href="/login" class="text-foreground hover:text-foreground/80 font-medium">
+                Sign in
+            </a>
+        </div>
     </CardContent>
 </Card>

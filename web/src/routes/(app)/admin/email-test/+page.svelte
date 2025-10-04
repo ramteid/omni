@@ -32,7 +32,7 @@
     <title>Email Testing - Omni Admin</title>
 </svelte:head>
 
-<div class="space-y-6">
+<div class="mx-auto max-w-screen-xl space-y-6 pt-8">
     <div>
         <h1 class="text-3xl font-bold">Email Testing</h1>
         <p class="text-muted-foreground">

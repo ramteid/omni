@@ -264,7 +264,7 @@
     })
 </script>
 
-<div class="container max-w-6xl py-8">
+<div class="mx-auto max-w-screen-xl space-y-6 pt-8">
     <div class="mb-8">
         <h1 class="text-3xl font-bold">Configure Google Workspace</h1>
         <p class="text-muted-foreground mt-2">

@@ -373,7 +373,7 @@
     <title>Integrations - Omni Admin</title>
 </svelte:head>
 
-<div class="space-y-6">
+<div class="mx-auto max-w-screen-xl space-y-6 pt-8">
     <div>
         <h1 class="text-2xl font-bold tracking-tight">Integrations</h1>
         <p class="text-muted-foreground">
@@ -449,7 +449,7 @@
                     </CardTitle>
                     <CardDescription>{integration.description}</CardDescription>
                 </CardHeader>
-                <CardContent>
+                <CardContent class="flex flex-1 flex-col items-start justify-end">
                     {#if connectedSource}
                         {#if integration.id === 'google'}
                             {@const driveSource = data.connectedSources.find(
@@ -464,8 +464,8 @@
                                     <Button
                                         variant="outline"
                                         size="sm"
-                                        onclick={() =>
-                                            goto('/admin/integrations/google/configure')}>
+                                        onclick={() => goto('/admin/integrations/google/configure')}
+                                        class="cursor-pointer">
                                         Configure
                                     </Button>
                                     <AlertDialog.Root>
@@ -680,7 +680,7 @@
                             </div>
                         {/if}
                     {:else}
-                        <Button onclick={() => openSetupDialog(integration)}>
+                        <Button onclick={() => openSetupDialog(integration)} class="cursor-pointer">
                             Connect {integration.name}
                         </Button>
                     {/if}
@@ -829,7 +829,7 @@
 
         <Dialog.Footer>
             <Button variant="outline" onclick={() => (showSetupDialog = false)}>Cancel</Button>
-            <Button onclick={setupServiceAccount} disabled={isSubmitting}>
+            <Button onclick={setupServiceAccount} disabled={isSubmitting} class="cursor-pointer">
                 {isSubmitting ? 'Connecting...' : 'Connect'}
             </Button>
         </Dialog.Footer>

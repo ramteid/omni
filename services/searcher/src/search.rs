@@ -597,7 +597,10 @@ impl SearchEngine {
         for result in fts_results {
             let doc_id = result.document.id.clone();
             let normalized_score = self.normalize_fts_score(result.score);
-            debug!("FTS result document {}, score={}", doc_id, normalized_score);
+            debug!(
+                "FTS result document {} [id={}], score={}",
+                result.document.title, doc_id, normalized_score
+            );
             let prepared_doc = self.prepare_document_for_response(result.document);
             combined_results.insert(
                 doc_id,
@@ -616,8 +619,8 @@ impl SearchEngine {
             let doc_id = result.document.id.clone();
 
             debug!(
-                "Semantic result document {}, score={}",
-                doc_id, result.score
+                "Semantic result document {} [id={}], score={}",
+                result.document.title, doc_id, result.score
             );
             match combined_results.get_mut(&doc_id) {
                 Some(existing) => {

@@ -150,7 +150,7 @@
     <title>Search Results - Omni</title>
 </svelte:head>
 
-<div>
+<div class="mx-auto mt-8 max-w-screen-xl pb-24">
     <!-- Search Header -->
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">

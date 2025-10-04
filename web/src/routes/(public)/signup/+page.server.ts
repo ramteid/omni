@@ -119,21 +119,21 @@ export const actions: Actions = {
             const sessionToken = generateSessionToken()
             const session = await createSession(sessionToken, newUserId)
             setSessionTokenCookie(cookies, sessionToken, session.expiresAt)
+
+            // Redirect based on whether this was the first user
+            if (isFirstUser) {
+                // Redirect first admin to integrations page to set up data sources
+                throw redirect(302, '/admin/integrations')
+            } else {
+                // Redirect regular users to home page
+                throw redirect(302, '/')
+            }
         } catch (error) {
             console.error('Registration error:', error)
             return fail(500, {
                 error: 'An unexpected error occurred. Please try again.',
                 email,
             })
-        }
-
-        // Redirect based on whether this was the first user
-        if (isFirstUser) {
-            // Redirect first admin to integrations page to set up data sources
-            throw redirect(302, '/settings/integrations')
-        } else {
-            // Redirect regular users to home page
-            throw redirect(302, '/')
         }
     },
 }

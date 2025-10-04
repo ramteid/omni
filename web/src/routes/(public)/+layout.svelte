@@ -7,8 +7,8 @@
     <div class="flex min-h-screen items-center justify-center p-4">
         <div class="w-full max-w-md">
             <div class="mb-8 text-center">
-                <img src={omniLogo} alt="Omni" class="mx-auto mb-2 h-10 w-auto" />
-                <p class="text-muted-foreground mt-2">Enterprise Search Platform</p>
+                <p class="text-xl font-semibold">omni</p>
+                <p class="text-muted-foreground mt-2">Your AI assistant for work</p>
             </div>
             <slot />
         </div>

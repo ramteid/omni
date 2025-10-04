@@ -10,7 +10,7 @@
     }
 </script>
 
-<div class="bg-background min-h-screen">
+<div class="mx-auto max-w-screen-xl pt-8">
     <div>
         <h1 class="text-2xl font-bold tracking-tight">User Management</h1>
         <p class="text-muted-foreground">
@@ -18,7 +18,7 @@
         </p>
     </div>
 
-    <main class="mx-auto max-w-7xl py-4">
+    <div class="mx-auto max-w-7xl py-4">
         <div class="">
             <div class="ring-border mt-2 overflow-hidden shadow ring-1 md:rounded-lg">
                 <table class="divide-border min-w-full divide-y">
@@ -112,5 +112,5 @@
                 </table>
             </div>
         </div>
-    </main>
+    </div>
 </div>

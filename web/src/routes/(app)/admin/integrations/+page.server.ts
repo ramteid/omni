@@ -1,43 +1,15 @@
 import { requireAdmin } from '$lib/server/authHelpers'
-import { db } from '$lib/server/db'
-import { sources, syncRuns, documents } from '$lib/server/db/schema'
-import { sql, eq, desc } from 'drizzle-orm'
+import { sourcesRepository } from '$lib/server/repositories/sources'
+import { syncRunsRepository } from '$lib/server/repositories/sync-runs'
+import { documentsRepository } from '$lib/server/repositories/documents'
 import type { PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
-    // Get all organization-level connected sources
-    const connectedSources = await db.select().from(sources)
-
-    // Get latest 10 sync runs
-    const latestSyncRuns = await db
-        .select({
-            id: syncRuns.id,
-            sourceId: syncRuns.sourceId,
-            sourceName: sources.name,
-            sourceType: sources.sourceType,
-            syncType: syncRuns.syncType,
-            status: syncRuns.status,
-            documentsProcessed: syncRuns.documentsProcessed,
-            documentsUpdated: syncRuns.documentsUpdated,
-            startedAt: syncRuns.startedAt,
-            completedAt: syncRuns.completedAt,
-            errorMessage: syncRuns.errorMessage,
-        })
-        .from(syncRuns)
-        .leftJoin(sources, eq(syncRuns.sourceId, sources.id))
-        .orderBy(desc(syncRuns.startedAt))
-        .limit(10)
-
-    // Get actual document counts
-    const documentsBySource = await db
-        .select({
-            sourceId: documents.sourceId,
-            count: sql<number>`COUNT(*)::int`,
-        })
-        .from(documents)
-        .groupBy(documents.sourceId)
+    const connectedSources = await sourcesRepository.getAll()
+    const latestSyncRuns = await syncRunsRepository.getLatest(10)
+    const documentsBySource = await documentsRepository.getCountsBySource()
 
     const totalDocumentsIndexed = documentsBySource
         .map((r) => r.count)
