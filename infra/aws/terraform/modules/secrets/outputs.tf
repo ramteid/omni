@@ -1,0 +1,30 @@
+output "database_password_arn" {
+  description = "ARN of database password secret"
+  value       = aws_secretsmanager_secret.database_password.arn
+}
+
+output "database_password" {
+  description = "Database password value"
+  value       = random_password.database.result
+  sensitive   = true
+}
+
+output "jina_api_key_arn" {
+  description = "ARN of JINA API key secret"
+  value       = aws_secretsmanager_secret.jina_api_key.arn
+}
+
+output "encryption_key_arn" {
+  description = "ARN of encryption key secret"
+  value       = aws_secretsmanager_secret.encryption_key.arn
+}
+
+output "encryption_salt_arn" {
+  description = "ARN of encryption salt secret"
+  value       = aws_secretsmanager_secret.encryption_salt.arn
+}
+
+output "session_secret_arn" {
+  description = "ARN of session secret"
+  value       = aws_secretsmanager_secret.session_secret.arn
+}

@@ -1,0 +1,42 @@
+# Required Variables
+customer_name = "acme-corp"
+github_org    = "omni-platform"
+jina_api_key  = "your-jina-api-key-here"
+
+# Optional: AWS Configuration
+region      = "us-east-1"
+environment = "production"
+
+# Optional: Database Configuration
+database_name               = "omni"
+database_username           = "omni"
+db_instance_class           = "db.t3.micro"
+db_allocated_storage        = 20
+db_backup_retention_period  = 7
+db_multi_az                 = false
+db_deletion_protection      = false
+skip_final_snapshot         = false
+
+# Optional: Cache Configuration
+redis_node_type     = "cache.t3.micro"
+redis_engine_version = "7.1"
+
+# Optional: ECS Configuration
+ecs_task_cpu      = "512"
+ecs_task_memory   = "1024"
+ecs_desired_count = 1
+
+# Optional: Load Balancer Configuration
+# ssl_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+alb_deletion_protection = false
+
+# Optional: Monitoring Configuration
+log_retention_days = 30
+
+# Optional: Application Configuration
+google_client_id     = "your-google-client-id"
+google_client_secret = "your-google-client-secret"
+resend_api_key       = "your-resend-api-key"
+
+# Optional: Networking Configuration
+vpc_cidr = "10.0.0.0/16"

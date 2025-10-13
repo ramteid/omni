@@ -1,0 +1,29 @@
+# S3 Backend Configuration for Terraform State
+#
+# This file configures remote state storage in S3 with DynamoDB locking.
+# Rename this file to backend.tf after creating the S3 bucket and DynamoDB table.
+#
+# Prerequisites:
+# 1. Run ./scripts/init-backend.sh to create S3 bucket and DynamoDB table
+# 2. Copy this file: cp backend.tf.example backend.tf
+# 3. Update the bucket name with your AWS account ID
+# 4. Run: terraform init
+
+terraform {
+  backend "s3" {
+    # Replace {account-id} with your AWS account ID
+    bucket = "omni-terraform-state-{account-id}"
+
+    key    = "omni/terraform.tfstate"
+    region = "us-east-1"
+
+    # Enable encryption at rest
+    encrypt = true
+
+    # DynamoDB table for state locking
+    dynamodb_table = "omni-terraform-locks"
+
+    # Enable versioning and point-in-time recovery
+    # These are configured on the S3 bucket itself
+  }
+}
