@@ -10,6 +10,7 @@ pub mod models;
 pub mod queue;
 pub mod rate_limiter;
 pub mod service_auth;
+pub mod storage;
 pub mod traits;
 pub mod utils;
 
@@ -32,6 +33,10 @@ pub use models::*;
 pub use queue::{EventQueue, QueueStats};
 pub use rate_limiter::RateLimiter;
 pub use service_auth::{create_service_auth, ServiceAuth};
+pub use storage::{
+    factory::{StorageBackend, StorageFactory},
+    ContentMetadata as StorageContentMetadata, ObjectStorage, StorageError,
+};
 pub use traits::Repository;
 
 pub fn init() {

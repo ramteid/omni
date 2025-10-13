@@ -9,8 +9,8 @@ locals {
     { name = "DATABASE_USERNAME", value = var.database_username },
     { name = "DATABASE_SSL", value = "true" },
     { name = "REDIS_URL", value = local.redis_url },
-    { name = "DB_MAX_CONNECTIONS", value = "10" },
-    { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "3" },
+    { name = "DB_MAX_CONNECTIONS", value = "30" },
+    { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "30" },
     { name = "RUST_LOG", value = "debug" }
   ]
 
@@ -96,7 +96,8 @@ resource "aws_ecs_task_definition" "web" {
       { name = "EMAIL_PROVIDER", value = "resend" },
       { name = "RESEND_API_KEY", value = var.resend_api_key },
       { name = "EMAIL_FROM", value = "Omni <noreply@getomni.co>" },
-      { name = "AI_ANSWER_ENABLED", value = "true" }
+      { name = "AI_ANSWER_ENABLED", value = "true" },
+      { name = "AI_FIRST_SEARCH_ENABLED", value = "true" }
     ])
 
     secrets = concat(local.common_secrets, [
@@ -232,6 +233,7 @@ resource "aws_ecs_task_definition" "ai" {
 
     environment = concat(local.common_environment, [
       { name = "PORT", value = "3003" },
+      { name = "SEARCHER_URL", value = "http://searcher.omni-${var.customer_name}.local:3001" },
       { name = "MODEL_PATH", value = "/models" },
       { name = "EMBEDDING_MODEL", value = "intfloat/e5-large-v2" },
       { name = "EMBEDDING_DIMENSIONS", value = "1024" },

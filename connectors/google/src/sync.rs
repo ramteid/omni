@@ -22,7 +22,7 @@ use shared::models::{
 };
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
-use shared::{AIClient, ContentStorage, RateLimiter};
+use shared::{AIClient, ObjectStorage, RateLimiter};
 
 pub struct SyncManager {
     pool: PgPool,
@@ -31,7 +31,7 @@ pub struct SyncManager {
     gmail_client: GmailClient,
     admin_client: Arc<AdminClient>,
     event_queue: EventQueue,
-    content_storage: ContentStorage,
+    content_storage: Arc<dyn ObjectStorage>,
     service_credentials_repo: ServiceCredentialsRepo,
     folder_cache: LruFolderCache,
     ai_client: AIClient,
@@ -242,7 +242,7 @@ impl SyncManager {
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone(), ai_client.clone());
         let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
 
-        let content_storage = ContentStorage::new(pool.clone());
+        let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
 
         Ok(Self {
             pool,
@@ -608,7 +608,7 @@ impl SyncManager {
                 match result {
                     Ok(content) => {
                         if !content.is_empty() {
-                            match content_storage.store_text(content).await {
+                            match content_storage.store_text(&content).await {
                                 Ok(content_id) => {
                                     // Resolve the full path for this file
                                     let file_path = match self
@@ -1439,7 +1439,7 @@ impl SyncManager {
                                                 // Store content in LOB and get OID
                                                 let content_id = match self
                                                     .content_storage
-                                                    .store_text(content)
+                                                    .store_text(&content)
                                                     .await
                                                 {
                                                     Ok(oid) => oid,
@@ -2131,7 +2131,7 @@ impl SyncManager {
                         Ok(content) => {
                             if !content.trim().is_empty() {
                                 // Store content in LOB storage
-                                match self.content_storage.store_text(content).await {
+                                match self.content_storage.store_text(&content).await {
                                     Ok(content_id) => {
                                         // Create connector event
                                         match gmail_thread.to_connector_event(

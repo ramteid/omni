@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
@@ -12,24 +13,24 @@ use crate::watcher::{FilesystemEventProcessor, FilesystemWatcher};
 use shared::models::Source;
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
-use shared::ContentStorage;
+use shared::ObjectStorage;
 
 pub struct FilesystemSyncManager {
     pool: PgPool,
     event_queue: EventQueue,
-    content_storage: ContentStorage,
+    content_storage: Arc<dyn ObjectStorage>,
     sources: HashMap<String, FilesystemSource>,
 }
 
 impl FilesystemSyncManager {
-    pub fn new(pool: PgPool, event_queue: EventQueue) -> Self {
-        let content_storage = ContentStorage::new(pool.clone());
-        Self {
+    pub async fn new(pool: PgPool, event_queue: EventQueue) -> Result<Self> {
+        let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
+        Ok(Self {
             pool,
             event_queue,
             content_storage,
             sources: HashMap::new(),
-        }
+        })
     }
 
     pub async fn load_sources(&mut self) -> Result<()> {
@@ -155,7 +156,13 @@ impl FilesystemSyncManager {
                 _ = scan_timer.tick() => {
                     info!("Starting periodic scan for source: {}", source.name);
                     // Create content storage for this task
-                    let content_storage = ContentStorage::new(pool.clone());
+                    let content_storage = match shared::StorageFactory::from_env(pool.clone()).await {
+                        Ok(storage) => storage,
+                        Err(e) => {
+                            error!("Failed to create content storage: {}", e);
+                            continue;
+                        }
+                    };
                     if let Err(e) = Self::perform_full_scan(&scanner, &pool, &event_queue, &source_id, &content_storage).await {
                         error!("Full scan failed for source {}: {}", source.name, e);
                     }
@@ -179,7 +186,7 @@ impl FilesystemSyncManager {
         pool: &PgPool,
         event_queue: &EventQueue,
         source_id: &str,
-        content_storage: &ContentStorage,
+        content_storage: &Arc<dyn ObjectStorage>,
     ) -> Result<()> {
         let sync_run_id = generate_ulid();
 

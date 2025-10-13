@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use shared::models::ConnectorEvent;
 use shared::queue::EventQueue;
-use shared::ContentStorage;
+use shared::ObjectStorage;
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
@@ -12,11 +13,11 @@ use crate::models::{JiraIssue, JiraSearchResponse};
 pub struct JiraProcessor {
     client: AtlassianClient,
     event_queue: EventQueue,
-    content_storage: ContentStorage,
+    content_storage: Arc<dyn ObjectStorage>,
 }
 
 impl JiraProcessor {
-    pub fn new(event_queue: EventQueue, content_storage: ContentStorage) -> Self {
+    pub fn new(event_queue: EventQueue, content_storage: Arc<dyn ObjectStorage>) -> Self {
         Self {
             client: AtlassianClient::new(),
             event_queue,

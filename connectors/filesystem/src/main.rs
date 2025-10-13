@@ -1,8 +1,7 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 use shared::{DatabasePool, FilesystemConnectorConfig};
-use std::sync::Arc;
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod models;
@@ -31,7 +30,7 @@ async fn main() -> Result<()> {
     let db_pool = DatabasePool::from_config(&config.database).await?;
     let event_queue = EventQueue::new(db_pool.pool().clone());
 
-    let mut sync_manager = FilesystemSyncManager::new(db_pool.pool().clone(), event_queue);
+    let mut sync_manager = FilesystemSyncManager::new(db_pool.pool().clone(), event_queue).await?;
 
     // Load filesystem sources from database
     sync_manager.load_sources().await?;

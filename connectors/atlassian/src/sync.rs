@@ -3,9 +3,10 @@ use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::models::{Source, SourceType};
 use shared::queue::EventQueue;
-use shared::ContentStorage;
+use shared::ObjectStorage;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AtlassianCredentials, AuthManager};
@@ -181,7 +182,7 @@ impl SyncState {
 impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
-        let content_storage = ContentStorage::new(pool.clone());
+        let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
 
         Ok(Self {
             pool,
