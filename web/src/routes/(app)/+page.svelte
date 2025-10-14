@@ -15,10 +15,6 @@
     let popoverContainer: HTMLDivElement | undefined = $state()
     let isSearching = $state(false)
 
-    $inspect(popoverOpen).with((t, v) => console.log('popover', t, v))
-    $inspect(popoverContainer).with((t, v) => console.log('popover container', t, v))
-    $inspect(data.recentSearches).with((t, v) => console.log('recent searches', t, v))
-
     async function handleSearch() {
         console.log('calling handleSearch', searchQuery)
 
@@ -63,7 +59,11 @@
             if (!data.aiFirstSearchEnabled) {
                 goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
             } else {
-                goto(`/chat/${chatId}`)
+                goto(`/chat/${chatId}`, {
+                    state: {
+                        stream: true,
+                    },
+                })
             }
         }
     }

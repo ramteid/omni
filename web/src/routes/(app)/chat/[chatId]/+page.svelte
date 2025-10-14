@@ -1,7 +1,5 @@
 <script lang="ts">
-    import * as Accordion from '$lib/components/ui/accordion'
-    import { Button } from '$lib/components/ui/button/index.js'
-    import { Input } from '$lib/components/ui/input/index.js'
+    import { Button } from '$lib/components/ui/button'
     import type {
         MessageParam,
         MessageStreamEvent,
@@ -11,19 +9,21 @@
         TextDelta,
         InputJSONDelta,
     } from '@anthropic-ai/sdk/resources/messages'
-    import { Search, Send, Sparkles } from '@lucide/svelte'
+    import { Send, Copy, ThumbsUp, ThumbsDown, Share, Check } from '@lucide/svelte'
     import { marked } from 'marked'
     import { onMount } from 'svelte'
-    import type { PageProps } from './$types.js'
+    import type { PageProps } from './$types'
     import type {
         ProcessedMessage,
         TextMessageContent,
         ToolMessageContent,
         MessageContent,
-    } from '$lib/types/message.js'
+    } from '$lib/types/message'
     import ToolMessage from '$lib/components/tool-message.svelte'
-    import { cn } from '$lib/utils.js'
-    import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources.js'
+    import { cn } from '$lib/utils'
+    import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources'
+    import { page } from '$app/state'
+    import * as Tooltip from '$lib/components/ui/tooltip'
 
     let { data }: PageProps = $props()
 
@@ -35,15 +35,44 @@
 
     let processedMessages = $derived(processMessages(data.messages.map((m) => m.message)))
     let streamingResponseMessage = $state<ProcessedMessage | null>(null)
+    let copiedMessageId = $state<number | null>(null)
+    let copiedUrl = $state(false)
 
-    $inspect(processedMessages).with((t, v) => {
-        console.log('Processed Messages:', v)
-        for (const m of processedMessages) {
-            if (m.role === 'user' && m.content.length > 1) {
-                console.error('User message has more than one content block:', m)
-            }
-        }
-    })
+    function copyMessageToClipboard(message: ProcessedMessage) {
+        const content = message.content
+            .map((block) => {
+                if (block.type === 'text') {
+                    return (block as TextMessageContent).text
+                } else if (block.type === 'tool') {
+                    const toolBlock = block as ToolMessageContent
+
+                    if (toolBlock.toolResult?.content && toolBlock.toolResult.content.length > 0) {
+                        let toolText = 'Sources:'
+                        toolBlock.toolResult.content.forEach((result) => {
+                            toolText += `\n• ${result.title} - ${result.source}`
+                        })
+                        return toolText
+                    }
+                }
+                return ''
+            })
+            .filter((text) => text.length > 0)
+            .join('\n\n')
+
+        navigator.clipboard.writeText(content)
+        copiedMessageId = message.id
+        setTimeout(() => {
+            copiedMessageId = null
+        }, 2000)
+    }
+
+    function copyCurrentUrlToClipboard() {
+        navigator.clipboard.writeText(window.location.href)
+        copiedUrl = true
+        setTimeout(() => {
+            copiedUrl = false
+        }, 2000)
+    }
 
     function processMessages(messages: MessageParam[]): ProcessedMessage[] {
         const processedMessages: ProcessedMessage[] = []
@@ -181,9 +210,12 @@
         return message.role === 'user' && !toolResults
     }
 
-    // Start streaming when we have a query
+    // This will trigger the streaming of AI response when the component is mounted
+    // If no response is currently being streamed, nothing happens
     onMount(() => {
-        streamAIResponse(data.chat.id)
+        if ((page.state as any).stream) {
+            streamAIResponse(data.chat.id)
+        }
     })
 
     function streamAIResponse(chatId: string) {
@@ -338,7 +370,7 @@
 
 <div class="flex h-full flex-col">
     <!-- Chat Container -->
-    <div class="flex w-full flex-1 flex-col overflow-y-auto px-4 pt-6">
+    <div class="flex w-full flex-1 flex-col px-4 pt-6">
         <div class="mx-auto mb-20 w-full max-w-4xl flex-1">
             <!-- Existing Messages -->
             {#each processedMessages as message (message.id)}
@@ -363,6 +395,75 @@
                                 {/if}
                             {/each}
                         </div>
+                        <div
+                            class="mt-2 flex items-center justify-start gap-0.5"
+                            data-role="message-controls">
+                            <!-- Copy message, feedback upvote/downvote -->
+                            <Tooltip.Provider delayDuration={300}>
+                                <Tooltip.Root>
+                                    <Tooltip.Trigger>
+                                        <Button
+                                            class="cursor-pointer"
+                                            size="icon"
+                                            variant="ghost"
+                                            onclick={() => copyMessageToClipboard(message)}>
+                                            {#if copiedMessageId === message.id}
+                                                <Check class="h-4 w-4 text-green-600" />
+                                            {:else}
+                                                <Copy class="h-4 w-4" />
+                                            {/if}
+                                        </Button>
+                                    </Tooltip.Trigger>
+                                    <Tooltip.Content>
+                                        <p>Copy message</p>
+                                    </Tooltip.Content>
+                                </Tooltip.Root>
+                            </Tooltip.Provider>
+                            <Tooltip.Provider delayDuration={300}>
+                                <Tooltip.Root>
+                                    <Tooltip.Trigger>
+                                        <Button class="cursor-pointer" size="icon" variant="ghost">
+                                            <ThumbsUp class="h-4 w-4" />
+                                        </Button>
+                                    </Tooltip.Trigger>
+                                    <Tooltip.Content>
+                                        <p>Good response</p>
+                                    </Tooltip.Content>
+                                </Tooltip.Root>
+                            </Tooltip.Provider>
+                            <Tooltip.Provider delayDuration={300}>
+                                <Tooltip.Root>
+                                    <Tooltip.Trigger>
+                                        <Button class="cursor-pointer" size="icon" variant="ghost">
+                                            <ThumbsDown class="h-4 w-4" />
+                                        </Button>
+                                    </Tooltip.Trigger>
+                                    <Tooltip.Content>
+                                        <p>Bad response</p>
+                                    </Tooltip.Content>
+                                </Tooltip.Root>
+                            </Tooltip.Provider>
+                            <Tooltip.Provider delayDuration={300}>
+                                <Tooltip.Root>
+                                    <Tooltip.Trigger>
+                                        <Button
+                                            class="cursor-pointer"
+                                            size="icon"
+                                            variant="ghost"
+                                            onclick={copyCurrentUrlToClipboard}>
+                                            {#if copiedUrl}
+                                                <Check class="h-4 w-4 text-green-600" />
+                                            {:else}
+                                                <Share class="h-4 w-4" />
+                                            {/if}
+                                        </Button>
+                                    </Tooltip.Trigger>
+                                    <Tooltip.Content>
+                                        <p>Share</p>
+                                    </Tooltip.Content>
+                                </Tooltip.Root>
+                            </Tooltip.Provider>
+                        </div>
                     </div>
                 {/if}
             {/each}
@@ -371,10 +472,6 @@
             {#if isLoading || answer || error}
                 <div class="mb-6">
                     <div class="flex items-start gap-3">
-                        <div
-                            class="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-purple-500 to-pink-500">
-                            <Sparkles class="h-5 w-5 text-white" />
-                        </div>
                         <div class="flex-1">
                             {#if isLoading && !answer}
                                 <div class="text-gray-500">Thinking...</div>

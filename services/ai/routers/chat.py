@@ -23,6 +23,15 @@ from anthropic.types import (
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
 
+TITLE_GENERATION_SYSTEM_PROMPT = """You are a helpful assistant that generates concise, descriptive titles for chat conversations.
+Based on the first message(s) of a conversation, generate a title that is:
+- 3-7 words long
+- Descriptive and specific
+- Written in title case
+- Does not include quotes or special formatting
+
+Just respond with the title text, nothing else."""
+
 SEARCH_TOOLS = [
     {
         "name": "search_documents",
@@ -298,3 +307,87 @@ async def execute_search_tool(
 
     logger.info(f"[SEARCH_TOOL] Search successful, processing {len(search_response.results)} results")
     return search_response.results
+
+
+@router.post("/chat/{chat_id}/generate_title")
+async def generate_chat_title(request: Request, chat_id: str = Path(..., description="Chat thread ID")):
+    """Generate a title for a chat thread based on its first messages"""
+    if not hasattr(request.app.state, 'llm_provider') or not request.app.state.llm_provider:
+        raise HTTPException(status_code=500, detail="LLM provider not initialized")
+
+    logger.info(f"[TITLE_GEN] Generating title for chat: {chat_id}")
+
+    try:
+        # Get chat from database
+        chats_repo = ChatsRepository()
+        chat = await chats_repo.get(chat_id)
+        if not chat:
+            raise HTTPException(status_code=404, detail="Chat thread not found")
+
+        # Check if title already exists
+        if chat.title:
+            logger.info(f"[TITLE_GEN] Chat already has a title: {chat.title}")
+            return {"title": chat.title, "status": "existing"}
+
+        # Get messages from database
+        messages_repo = MessagesRepository()
+        chat_messages = await messages_repo.get_by_chat(chat_id)
+        if not chat_messages or len(chat_messages) < 2:
+            raise HTTPException(status_code=400, detail="Not enough messages to generate title")
+
+        # Build conversation context from first few messages
+        # Take first user message and first assistant response
+        conversation_text = ""
+        for msg in chat_messages[:3]:
+            role = msg.message.get('role', 'unknown')
+
+            if role == 'user':
+                content = msg.message.get('content', '')
+                if isinstance(content, str):
+                    conversation_text += f"User: {content}\n"
+            elif role == 'assistant':
+                content = msg.message.get('content', [])
+                if isinstance(content, list):
+                    text_parts = [block.get('text', '') for block in content if block.get('type') == 'text']
+                    if text_parts:
+                        conversation_text += f"Assistant: {' '.join(text_parts)}\n"
+                elif isinstance(content, str):
+                    conversation_text += f"Assistant: {content}\n"
+
+        if not conversation_text.strip():
+            raise HTTPException(status_code=400, detail="Could not extract conversation content")
+
+        logger.info(f"[TITLE_GEN] Extracted conversation text ({len(conversation_text)} chars)")
+        logger.debug(f"[TITLE_GEN] Conversation text: {conversation_text[:200]}...")
+
+        # Generate title using LLM
+        prompt = f"{TITLE_GENERATION_SYSTEM_PROMPT}\n\nConversation:\n{conversation_text}\n\nTitle:"
+
+        generated_title = await request.app.state.llm_provider.generate_response(
+            prompt=prompt,
+            max_tokens=20,
+            temperature=0.7,
+            top_p=0.9,
+        )
+
+        # Clean up the title
+        title = generated_title.strip().strip('"').strip("'")
+
+        # Limit title length just in case
+        if len(title) > 100:
+            title = title[:97] + "..."
+
+        logger.info(f"[TITLE_GEN] Generated title: {title}")
+
+        # Update chat with the new title
+        updated_chat = await chats_repo.update_title(chat_id, title)
+        if not updated_chat:
+            raise HTTPException(status_code=500, detail="Failed to update chat title")
+
+        return {"title": title, "status": "generated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[TITLE_GEN] Failed to generate title for chat {chat_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate title: {str(e)}")

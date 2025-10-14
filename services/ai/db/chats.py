@@ -50,3 +50,21 @@ class ChatsRepository:
         if row:
             return Chat.from_row(dict(row))
         return None
+
+    async def update_title(self, chat_id: str, title: str) -> Optional[Chat]:
+        """Update the title of a chat"""
+        pool = await self._get_pool()
+
+        query = """
+            UPDATE chats
+            SET title = $2, updated_at = NOW()
+            WHERE id = $1
+            RETURNING id, user_id, title, created_at, updated_at
+        """
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(query, chat_id, title)
+
+        if row:
+            return Chat.from_row(dict(row))
+        return None

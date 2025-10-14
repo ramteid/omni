@@ -40,14 +40,24 @@ export class ChatRepository {
     }
 
     /**
-     * Get all chats for a user
+     * Get all chats for a user with pagination
      */
-    async getByUserId(userId: string): Promise<Chat[]> {
-        return await this.db
+    async getByUserId(userId: string, limit?: number, offset?: number): Promise<Chat[]> {
+        let query = this.db
             .select()
             .from(chats)
             .where(eq(chats.userId, userId))
             .orderBy(desc(chats.updatedAt))
+
+        if (limit !== undefined) {
+            query = query.limit(limit)
+        }
+
+        if (offset !== undefined) {
+            query = query.offset(offset)
+        }
+
+        return await query
     }
 
     /**
