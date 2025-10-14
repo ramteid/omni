@@ -345,31 +345,23 @@
                 {#if message.role === 'user'}
                     <!-- User Message -->
                     <div class="mb-6 flex">
-                        <div class="text-foreground max-w-[80%] rounded-2xl bg-gray-100 px-6 py-4">
+                        <div class="text-foreground max-w-[80%] rounded-2xl bg-[#f0eee6] px-6 py-4">
                             {@html marked.parse((message.content[0] as TextMessageContent).text)}
                         </div>
                     </div>
                 {:else if message.role === 'assistant'}
                     <!-- Assistant Message -->
                     <div class="mb-6">
-                        <div class="flex items-start gap-3">
-                            <div
-                                class="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-purple-500 to-pink-500">
-                                <Sparkles class="h-5 w-5 text-white" />
-                            </div>
-                            <div class="flex-1">
-                                <div class="prose max-w-none">
-                                    {#each message.content as block (block.id)}
-                                        {#if block.type === 'text'}
-                                            {@html marked.parse(block.text)}
-                                        {:else if block.type === 'tool'}
-                                            <div class="mb-1">
-                                                <ToolMessage message={block} />
-                                            </div>
-                                        {/if}
-                                    {/each}
-                                </div>
-                            </div>
+                        <div class="prose max-w-none">
+                            {#each message.content as block (block.id)}
+                                {#if block.type === 'text'}
+                                    {@html marked.parse(block.text)}
+                                {:else if block.type === 'tool'}
+                                    <div class="mb-1">
+                                        <ToolMessage message={block} />
+                                    </div>
+                                {/if}
+                            {/each}
                         </div>
                     </div>
                 {/if}

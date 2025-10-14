@@ -27,9 +27,11 @@
                             .query}
                     </div>
                 </div>
-                <div class="text-muted-foreground text-xs">
-                    {message.toolResult ? message.toolResult.content.length : 0} results
-                </div>
+                {#if message.toolResult}
+                    <div class="text-muted-foreground text-xs">
+                        {message.toolResult.content.length} results
+                    </div>
+                {/if}
             </div>
         </Accordion.Trigger>
         {#if message.toolResult && message.toolResult.content.length > 0}
