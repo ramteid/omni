@@ -6,7 +6,9 @@ use shared::utils::safe_str_slice;
 use shared::{EmbeddingQueue, EmbeddingQueueItem};
 use sqlx::postgres::PgListener;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
@@ -200,13 +202,13 @@ impl EmbeddingProcessor {
             input_text: String,
         }
 
-        let mut all_input_chunks = Vec::new();
-        let mut document_to_queue_items = std::collections::HashMap::new(); // document_id -> Vec<queue_item_id>
+        let mut doc_to_input_chunks = HashMap::new(); // document_id -> Vec<InputChunkInfo>
+        let mut doc_to_queue_items = HashMap::new(); // document_id -> Vec<queue_item_id>
         let doc_repo = shared::db::repositories::DocumentRepository::new(self.state.db_pool.pool());
 
         // Group queue items by document_id to handle duplicates
         for item in &batch {
-            document_to_queue_items
+            doc_to_queue_items
                 .entry(item.document_id.clone())
                 .or_insert_with(Vec::new)
                 .push(item.id.clone());
@@ -215,11 +217,11 @@ impl EmbeddingProcessor {
         info!(
             "Processing batch of {} queue items for {} unique documents",
             batch.len(),
-            document_to_queue_items.len()
+            doc_to_queue_items.len()
         );
 
         // Process each unique document once
-        for (document_id, _queue_item_ids) in &document_to_queue_items {
+        for (document_id, _queue_item_ids) in &doc_to_queue_items {
             // Fetch document to get content_id
             let document = match doc_repo.find_by_id(document_id).await? {
                 Some(doc) => doc,
@@ -262,18 +264,21 @@ impl EmbeddingProcessor {
             }
 
             for (chunk_idx, input_text) in input_chunks.into_iter().enumerate() {
-                all_input_chunks.push(InputChunkInfo {
-                    document_id: document_id.clone(),
-                    input_chunk_index: chunk_idx,
-                    input_text: input_text.to_string(),
-                });
+                doc_to_input_chunks
+                    .entry(document_id)
+                    .or_insert_with(Vec::new)
+                    .push(InputChunkInfo {
+                        document_id: document_id.clone(),
+                        input_chunk_index: chunk_idx,
+                        input_text: input_text.to_string(),
+                    });
             }
         }
 
         info!(
             "Processing {} unique documents with total {} input chunks",
-            document_to_queue_items.len(),
-            all_input_chunks.len()
+            doc_to_queue_items.len(),
+            doc_to_input_chunks.values().map(|v| v.len()).sum::<usize>()
         );
 
         // Step 2: Process input chunks in batches of MAX_EMBEDDING_BATCH_SIZE
@@ -281,95 +286,97 @@ impl EmbeddingProcessor {
         let mut all_embeddings_by_document: HashMap<String, Vec<(Vec<f32>, (i32, i32))>> =
             HashMap::new();
         let mut model_name: Option<String> = None;
-        let mut failed_document_ids = std::collections::HashSet::new();
+        let mut failed_document_ids = HashSet::new();
 
-        for input_batch_start in (0..all_input_chunks.len()).step_by(MAX_EMBEDDING_BATCH_SIZE) {
-            let input_batch_end =
-                (input_batch_start + MAX_EMBEDDING_BATCH_SIZE).min(all_input_chunks.len());
-            let input_batch = &all_input_chunks[input_batch_start..input_batch_end];
+        for (_doc_id, input_chunks) in &doc_to_input_chunks {
+            for input_batch_start in (0..input_chunks.len()).step_by(MAX_EMBEDDING_BATCH_SIZE) {
+                let input_batch_end =
+                    (input_batch_start + MAX_EMBEDDING_BATCH_SIZE).min(input_chunks.len());
+                let input_batch = &input_chunks[input_batch_start..input_batch_end];
 
-            info!(
-                "Processing input batch {}-{} of {} total chunks",
-                input_batch_start + 1,
-                input_batch_end,
-                all_input_chunks.len()
-            );
-
-            // Extract just the text for the API call
-            let input_texts: Vec<String> = input_batch
-                .iter()
-                .map(|chunk| chunk.input_text.clone())
-                .collect();
-
-            // Call AI service for this batch
-            let ai_service_start = std::time::Instant::now();
-            let text_embeddings = match self
-                .state
-                .ai_client
-                .generate_embeddings_with_options(
-                    input_texts,
-                    Some("retrieval.passage".to_string()),
-                    Some(512),
-                    Some("sentence".to_string()),
-                    Some("low".to_string()), // Low priority for bulk indexing
-                )
-                .await
-            {
-                Ok(embeddings) => embeddings,
-                Err(e) => {
-                    error!("Failed to generate embeddings for input batch: {}", e);
-                    // Mark all documents in this batch as failed
-                    for chunk_info in input_batch {
-                        failed_document_ids.insert(chunk_info.document_id.clone());
-                    }
-                    continue;
-                }
-            };
-            debug!(
-                "AI service batch embedding generation took: {:?}",
-                ai_service_start.elapsed()
-            );
-
-            // Store model name from first successful response
-            if model_name.is_none() && !text_embeddings.is_empty() {
-                model_name = text_embeddings[0].model_name.clone();
-            }
-
-            // Step 3: Map each response back to the correct document and calculate offsets
-            for (chunk_info, text_embedding) in input_batch.iter().zip(text_embeddings.iter()) {
-                // Calculate offset adjustment for this input chunk within its document
-                let offset_adjustment = if chunk_info.input_chunk_index > 0 {
-                    (chunk_info.input_chunk_index * MAX_DOCUMENT_CHARS)
-                        - (chunk_info.input_chunk_index * CHUNK_OVERLAP_CHARS)
-                } else {
-                    0
-                };
-
-                // Add all output chunks with adjusted offsets to the document's collection
-                let document_embeddings = all_embeddings_by_document
-                    .entry(chunk_info.document_id.clone())
-                    .or_insert_with(Vec::new);
-
-                for (chunk_emb, (start, end)) in text_embedding
-                    .chunk_embeddings
-                    .iter()
-                    .zip(text_embedding.chunk_spans.iter())
-                {
-                    document_embeddings.push((
-                        chunk_emb.clone(),
-                        (
-                            start + offset_adjustment as i32,
-                            end + offset_adjustment as i32,
-                        ),
-                    ));
-                }
-
-                debug!(
-                    "Processed input chunk {} for document {} -> {} output chunks",
-                    chunk_info.input_chunk_index,
-                    chunk_info.document_id,
-                    text_embedding.chunk_embeddings.len()
+                info!(
+                    "Processing input batch {}-{} of {} total chunks",
+                    input_batch_start + 1,
+                    input_batch_end,
+                    input_chunks.len()
                 );
+
+                // Extract just the text for the API call
+                let input_texts: Vec<String> = input_batch
+                    .iter()
+                    .map(|chunk| chunk.input_text.clone())
+                    .collect();
+
+                // Call AI service for this batch
+                let ai_service_start = Instant::now();
+                let text_embeddings = match self
+                    .state
+                    .ai_client
+                    .generate_embeddings_with_options(
+                        input_texts,
+                        Some("retrieval.passage".to_string()),
+                        Some(512),
+                        Some("sentence".to_string()),
+                        Some("low".to_string()), // Low priority for bulk indexing
+                    )
+                    .await
+                {
+                    Ok(embeddings) => embeddings,
+                    Err(e) => {
+                        error!("Failed to generate embeddings for input batch: {}", e);
+                        // Mark all documents in this batch as failed
+                        for chunk_info in input_batch {
+                            failed_document_ids.insert(chunk_info.document_id.clone());
+                        }
+                        continue;
+                    }
+                };
+                debug!(
+                    "AI service batch embedding generation took: {:?}",
+                    ai_service_start.elapsed()
+                );
+
+                // Store model name from first successful response
+                if model_name.is_none() && !text_embeddings.is_empty() {
+                    model_name = text_embeddings[0].model_name.clone();
+                }
+
+                // Step 3: Map each response back to the correct document and calculate offsets
+                for (chunk_info, text_embedding) in input_batch.iter().zip(text_embeddings.iter()) {
+                    // Calculate offset adjustment for this input chunk within its document
+                    let offset_adjustment = if chunk_info.input_chunk_index > 0 {
+                        (chunk_info.input_chunk_index * MAX_DOCUMENT_CHARS)
+                            - (chunk_info.input_chunk_index * CHUNK_OVERLAP_CHARS)
+                    } else {
+                        0
+                    };
+
+                    // Add all output chunks with adjusted offsets to the document's collection
+                    let document_embeddings = all_embeddings_by_document
+                        .entry(chunk_info.document_id.clone())
+                        .or_insert_with(Vec::new);
+
+                    for (chunk_emb, (start, end)) in text_embedding
+                        .chunk_embeddings
+                        .iter()
+                        .zip(text_embedding.chunk_spans.iter())
+                    {
+                        document_embeddings.push((
+                            chunk_emb.clone(),
+                            (
+                                start + offset_adjustment as i32,
+                                end + offset_adjustment as i32,
+                            ),
+                        ));
+                    }
+
+                    debug!(
+                        "Processed input chunk {} for document {} -> {} output chunks",
+                        chunk_info.input_chunk_index,
+                        chunk_info.document_id,
+                        text_embedding.chunk_embeddings.len()
+                    );
+                }
             }
         }
 
@@ -380,7 +387,7 @@ impl EmbeddingProcessor {
         let mut document_embedding_counts: HashMap<String, usize> = HashMap::new();
 
         // First pass: collect all embeddings and identify failures
-        for (document_id, queue_item_ids) in &document_to_queue_items {
+        for (document_id, queue_item_ids) in &doc_to_queue_items {
             if failed_document_ids.contains(document_id) {
                 failed_ids.extend(queue_item_ids.iter().cloned());
                 continue;
@@ -460,7 +467,7 @@ impl EmbeddingProcessor {
             );
 
             // Bulk delete existing embeddings for all successful documents
-            let successful_document_ids: Vec<String> = document_to_queue_items
+            let successful_document_ids: Vec<String> = doc_to_queue_items
                 .iter()
                 .filter(|(_, queue_item_ids)| {
                     queue_item_ids.iter().any(|id| success_ids.contains(id))
@@ -515,7 +522,7 @@ impl EmbeddingProcessor {
             self.embedding_queue.mark_completed(&success_ids).await?;
 
             // Update document embedding status for successful documents
-            for (document_id, queue_item_ids) in &document_to_queue_items {
+            for (document_id, queue_item_ids) in &doc_to_queue_items {
                 if queue_item_ids.iter().any(|id| success_ids.contains(id)) {
                     self.update_document_embedding_status(document_id, "completed")
                         .await?;

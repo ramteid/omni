@@ -63,6 +63,7 @@ class JINAEmbeddingClient:
             "model": self.model,
             "task": task,
             "input": texts,
+            "late_chunking": True,
         }
         
         # Add dimensions if specified (for Matryoshka representation)
