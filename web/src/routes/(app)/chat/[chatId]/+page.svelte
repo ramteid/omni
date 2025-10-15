@@ -26,9 +26,14 @@
     import * as Tooltip from '$lib/components/ui/tooltip'
     import { type ChatMessage } from '$lib/server/db/schema'
     import type { ContentBlockParam } from '@anthropic-ai/sdk/resources.js'
+    import { afterNavigate } from '$app/navigation'
 
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
+
+    afterNavigate(() => {
+        chatMessages = [...data.messages]
+    })
 
     let userMessage = $state('')
     let inputRef: HTMLDivElement
@@ -239,11 +244,11 @@
     // If no response is currently being streamed, nothing happens
     onMount(() => {
         if ((page.state as any).stream) {
-            streamAIResponse(data.chat.id)
+            streamResponse(data.chat.id)
         }
     })
 
-    function streamAIResponse(chatId: string) {
+    function streamResponse(chatId: string) {
         isStreaming = true
         error = null
 
@@ -430,7 +435,7 @@
             })
 
             // Start streaming AI response
-            streamAIResponse(data.chat.id)
+            streamResponse(data.chat.id)
         }
     }
 
@@ -443,7 +448,7 @@
 </script>
 
 <svelte:head>
-    <title>Omni Chat</title>
+    <title>{data.chat.title} - Omni</title>
 </svelte:head>
 
 {#snippet messageControls(message: ProcessedMessage)}
@@ -469,38 +474,50 @@
                 </Tooltip.Content>
             </Tooltip.Root>
         </Tooltip.Provider>
-        <Tooltip.Provider delayDuration={300}>
-            <Tooltip.Root>
-                <Tooltip.Trigger>
-                    <Button
-                        class="cursor-pointer"
-                        size="icon"
-                        variant="ghost"
-                        onclick={() => handleFeedback(message.origMessageId, 'upvote')}>
-                        <ThumbsUp class="h-4 w-4" />
-                    </Button>
-                </Tooltip.Trigger>
-                <Tooltip.Content>
-                    <p>Good response</p>
-                </Tooltip.Content>
-            </Tooltip.Root>
-        </Tooltip.Provider>
-        <Tooltip.Provider delayDuration={300}>
-            <Tooltip.Root>
-                <Tooltip.Trigger>
-                    <Button
-                        class="cursor-pointer"
-                        size="icon"
-                        variant="ghost"
-                        onclick={() => handleFeedback(message.origMessageId, 'downvote')}>
-                        <ThumbsDown class="h-4 w-4" />
-                    </Button>
-                </Tooltip.Trigger>
-                <Tooltip.Content>
-                    <p>Bad response</p>
-                </Tooltip.Content>
-            </Tooltip.Root>
-        </Tooltip.Provider>
+        {#if !messageFeedback[message.origMessageId] || messageFeedback[message.origMessageId] === 'upvote'}
+            <Tooltip.Provider delayDuration={300}>
+                <Tooltip.Root>
+                    <Tooltip.Trigger>
+                        <Button
+                            class={cn(
+                                'cursor-pointer',
+                                messageFeedback[message.origMessageId] === 'upvote' &&
+                                    'text-green-600',
+                            )}
+                            size="icon"
+                            variant="ghost"
+                            onclick={() => handleFeedback(message.origMessageId, 'upvote')}>
+                            <ThumbsUp class="h-4 w-4" />
+                        </Button>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>
+                        <p>Good response</p>
+                    </Tooltip.Content>
+                </Tooltip.Root>
+            </Tooltip.Provider>
+        {/if}
+        {#if !messageFeedback[message.origMessageId] || messageFeedback[message.origMessageId] === 'downvote'}
+            <Tooltip.Provider delayDuration={300}>
+                <Tooltip.Root>
+                    <Tooltip.Trigger>
+                        <Button
+                            class={cn(
+                                'cursor-pointer',
+                                messageFeedback[message.origMessageId] === 'downvote' &&
+                                    'text-red-600',
+                            )}
+                            size="icon"
+                            variant="ghost"
+                            onclick={() => handleFeedback(message.origMessageId, 'downvote')}>
+                            <ThumbsDown class="h-4 w-4" />
+                        </Button>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>
+                        <p>Bad response</p>
+                    </Tooltip.Content>
+                </Tooltip.Root>
+            </Tooltip.Provider>
+        {/if}
         <Tooltip.Provider delayDuration={300}>
             <Tooltip.Root>
                 <Tooltip.Trigger>
