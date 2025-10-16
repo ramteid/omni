@@ -230,11 +230,21 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                         tool_result_content_blocks: list[SearchResultBlockParam] = []
                         for result in search_results:
                             doc = result.document
+                            # Append metadata hash to URL for frontend icon resolution
+                            source_url = cast(str, doc.url) if doc.url else ""
+                            if doc.source_type or doc.content_type:
+                                metadata_parts = []
+                                if doc.source_type:
+                                    metadata_parts.append(doc.source_type)
+                                if doc.content_type:
+                                    metadata_parts.append(doc.content_type)
+                                source_url = f"{source_url}#meta={','.join(metadata_parts)}"
+
                             tool_result_content_blocks.append(
                                 SearchResultBlockParam(
                                     type='search_result',
                                     title=doc.title,
-                                    source=cast(str, doc.url),
+                                    source=source_url,
                                     content=[
                                         TextBlockParam(
                                             type='text',

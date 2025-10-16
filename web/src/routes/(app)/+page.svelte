@@ -106,7 +106,7 @@
         <div class="mb-8 text-center">
             <h1 class="text-foreground mb-4 text-4xl font-bold">Welcome to Omni</h1>
             <p class="text-muted-foreground text-lg">
-                Your unified enterprise search platform. Search across your org's data.
+                Your AI copilot for work. Ask questions, create content, and get things done.
             </p>
         </div>
 

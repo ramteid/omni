@@ -6,6 +6,8 @@ import googleDocsIcon from '$lib/images/icons/google-docs.svg'
 import googleSheetsIcon from '$lib/images/icons/google-sheets.svg'
 import googleSlidesIcon from '$lib/images/icons/google-slides.svg'
 import gmailIcon from '$lib/images/icons/gmail.svg'
+import slackIcon from '$lib/images/icons/slack.svg'
+import atlassianIcon from '$lib/images/icons/atlassian.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -64,13 +66,12 @@ export function getSourceIconPath(sourceType: string): string | null {
         case SourceType.GMAIL:
             return gmailIcon
         case SourceType.SLACK:
-            return null // TODO: Add slack icon when available
+            return slackIcon
         case SourceType.CONFLUENCE:
-            return null // TODO: Add confluence icon when available
+        case SourceType.JIRA:
+            return atlassianIcon
         case SourceType.GITHUB:
             return null // TODO: Add github icon when available
-        case SourceType.JIRA:
-            return null // TODO: Add jira icon when available
         case SourceType.LOCAL_FILES:
             return null // Use fallback FileText icon
         default:
@@ -83,4 +84,83 @@ export function getSourceTypeFromId(sourceId: string, sources: any[]): string | 
     if (!sources) return null
     const source = sources.find((s) => s.id === sourceId)
     return source?.sourceType || null
+}
+
+// Parse metadata from URL hash fragment
+// Expected format: url#meta=source_type,content_type
+export function parseUrlMetadata(url: string): { sourceType?: string; contentType?: string } {
+    try {
+        const hashIndex = url.indexOf('#meta=')
+        if (hashIndex === -1) return {}
+
+        const metaString = url.substring(hashIndex + 6) // Skip '#meta='
+        const parts = metaString.split(',')
+
+        if (parts.length === 0) return {}
+        if (parts.length === 1) {
+            // Could be either source_type or content_type
+            // If it contains '/', it's likely a content_type
+            if (parts[0].includes('/')) {
+                return { contentType: parts[0] }
+            } else {
+                return { sourceType: parts[0] }
+            }
+        }
+
+        return {
+            sourceType: parts[0],
+            contentType: parts[1],
+        }
+    } catch {
+        return {}
+    }
+}
+
+// Infer source type from URL patterns (fallback)
+export function inferSourceFromUrl(url: string): string | null {
+    if (!url) return null
+
+    const urlLower = url.toLowerCase()
+
+    if (urlLower.includes('docs.google.com')) return SourceType.GOOGLE_DRIVE
+    if (urlLower.includes('drive.google.com')) return SourceType.GOOGLE_DRIVE
+    if (urlLower.includes('sheets.google.com')) return SourceType.GOOGLE_DRIVE
+    if (urlLower.includes('slides.google.com')) return SourceType.GOOGLE_DRIVE
+    if (urlLower.includes('mail.google.com') || urlLower.includes('gmail.com'))
+        return SourceType.GMAIL
+    if (urlLower.includes('slack.com')) return SourceType.SLACK
+    if (urlLower.includes('atlassian.net')) return SourceType.CONFLUENCE
+
+    return null
+}
+
+// Get icon from search result URL (main function for tool-message component)
+export function getIconFromSearchResult(sourceUrl: string): string | null {
+    if (!sourceUrl) return null
+
+    // First, try to parse metadata from URL hash
+    const metadata = parseUrlMetadata(sourceUrl)
+
+    // Try to get icon from content_type if available
+    if (metadata.contentType) {
+        const sourceType = metadata.sourceType || inferSourceFromUrl(sourceUrl)
+        if (sourceType) {
+            const icon = getDocumentIconPath(sourceType, metadata.contentType)
+            if (icon) return icon
+        }
+    }
+
+    // Try to get icon from source_type in metadata
+    if (metadata.sourceType) {
+        const icon = getSourceIconPath(metadata.sourceType)
+        if (icon) return icon
+    }
+
+    // Fallback: infer from URL patterns
+    const inferredSourceType = inferSourceFromUrl(sourceUrl)
+    if (inferredSourceType) {
+        return getSourceIconPath(inferredSourceType)
+    }
+
+    return null
 }

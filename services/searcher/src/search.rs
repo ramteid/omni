@@ -132,6 +132,22 @@ impl SearchEngine {
     ) -> shared::models::Document {
         // Clear content_id from search responses for security and efficiency
         doc.content_id = None;
+
+        // Append metadata hash to URL for frontend icon resolution
+        if let Some(url) = &doc.url {
+            if doc.content_type.is_some() {
+                let mut metadata_parts = Vec::new();
+                // Note: source_type would go here if we had it
+                // For now, we only add content_type
+                if let Some(ref ct) = doc.content_type {
+                    metadata_parts.push(ct.clone());
+                }
+                if !metadata_parts.is_empty() {
+                    doc.url = Some(format!("{}#meta={}", url, metadata_parts.join(",")));
+                }
+            }
+        }
+
         doc
     }
 

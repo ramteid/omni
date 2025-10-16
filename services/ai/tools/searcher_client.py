@@ -27,6 +27,7 @@ class Document(BaseModel):
     title: str
     content_type: str | None
     url: str | None
+    source_type: str | None = None
 
 class SearchResult(BaseModel):
     document: Document
