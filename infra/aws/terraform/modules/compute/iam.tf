@@ -105,6 +105,22 @@ resource "aws_iam_role" "ecs_task" {
     })
   }
 
+  inline_policy {
+    name = "MarketplaceAccess"
+    policy = jsonencode({
+      Version = "2012-10-17"
+      Statement = [{
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe",
+          "aws-marketplace:Unsubscribe"
+        ]
+        Resource = "*"
+      }]
+    })
+  }
+
   tags = merge(local.common_tags, {
     Name = "omni-${var.customer_name}-task-role"
   })

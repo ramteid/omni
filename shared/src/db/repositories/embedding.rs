@@ -129,12 +129,19 @@ impl EmbeddingRepository {
         limit: i64,
         offset: i64,
         user_email: Option<&str>,
+        document_id: Option<&str>,
     ) -> Result<Vec<ChunkResult>, DatabaseError> {
         let vector = Vector::from(embedding);
 
         let mut where_conditions = Vec::new();
 
         let mut bind_index = 4; // Starting after $1 (vector) and $2 (limit) and $3 (offset)
+
+        // Add document_id filter if provided
+        if let Some(_) = document_id {
+            where_conditions.push(format!("e.document_id = ${}", bind_index));
+            bind_index += 1;
+        }
 
         if let Some(src) = source_types {
             if !src.is_empty() {
@@ -149,7 +156,7 @@ impl EmbeddingRepository {
         if let Some(ct) = content_types {
             if !ct.is_empty() {
                 where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
-                // bind_index would be incremented here for additional filters
+                bind_index += 1;
             }
         }
 
@@ -185,6 +192,10 @@ impl EmbeddingRepository {
             .bind(&vector)
             .bind(limit)
             .bind(offset);
+
+        if let Some(doc_id) = document_id {
+            query = query.bind(doc_id);
+        }
 
         if let Some(src) = source_types {
             if !src.is_empty() {

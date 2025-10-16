@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from db import ChatsRepository, MessagesRepository
 from tools import SearcherTool, SearchRequest, SearchResponse, SearchResult
-from models.chat import SearchToolParams
+from models.chat import SearchToolParams, ReadDocumentParams
 from config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TOP_P, LLM_PROVIDER
 
 from anthropic import MessageStreamEvent, AsyncStream
@@ -60,6 +60,24 @@ SEARCH_TOOLS = [
             },
             "required": ["query"]
         }
+    },
+    {
+        "name": "read_document",
+        "description": "Read the content of a specific document by its URL. For small documents, returns the full content. For large documents, you can provide a query parameter to get the most relevant sections. Use this when you need detailed information from a specific document (e.g., from search results).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL of the document to read"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional: For large documents, specify what you're looking for to get the most relevant sections"
+                }
+            },
+            "required": ["url"]
+        }
     }
 ]
 
@@ -109,6 +127,9 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
             conversation_messages = messages.copy()
             max_iterations = 7  # Prevent infinite loops
             logger.info(f"[ASK] Starting conversation with {len(conversation_messages)} initial messages")
+
+            # Maintain URL to document ID map for read_document tool
+            url_to_doc_id: dict[str, str] = {}
 
             # Extract the first user message query for caching purposes
             # We only cache the initial question, not follow-ups, as follow-ups don't make sense in isolation
@@ -226,9 +247,71 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                         logger.info(f"[ASK] Search returned {len(documents)} documents")
                         logger.debug(f"[ASK] Document titles: {[doc.title for doc in documents]}...")
 
+                        # Update url_to_doc_id map with results
+                        for result in search_results:
+                            if result.document.url:
+                                url_to_doc_id[result.document.url] = result.document.id
+                        logger.debug(f"[ASK] Updated url_to_doc_id map, now has {len(url_to_doc_id)} entries")
+
                         # Add each document as a document block for automatic citations
                         tool_result_content_blocks: list[SearchResultBlockParam] = []
                         for result in search_results:
+                            doc = result.document
+                            # Append metadata hash to URL for frontend icon resolution
+                            source_url = cast(str, doc.url) if doc.url else ""
+                            if doc.source_type or doc.content_type:
+                                metadata_parts = []
+                                if doc.source_type:
+                                    metadata_parts.append(doc.source_type)
+                                if doc.content_type:
+                                    metadata_parts.append(doc.content_type)
+                                source_url = f"{source_url}#meta={','.join(metadata_parts)}"
+
+                            tool_result_content_blocks.append(
+                                SearchResultBlockParam(
+                                    type='search_result',
+                                    title=doc.title,
+                                    source=source_url,
+                                    content=[
+                                        TextBlockParam(
+                                            type='text',
+                                            text='\n'.join(result.highlights),
+                                        )
+                                    ],
+                                    citations=CitationsConfigParam(enabled=True),
+                                )
+                            )
+
+                        tool_result = \
+                            ToolResultBlockParam(
+                                type='tool_result',
+                                tool_use_id=tool_call['id'],
+                                content=tool_result_content_blocks,
+                                is_error=False,
+                            )
+                        tool_results.append(tool_result)
+
+                        yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
+
+                    elif tool_call['name'] == 'read_document':
+                        try:
+                            tool_call_params = ReadDocumentParams.model_validate(tool_call['input'])
+                        except ValidationError as e:
+                            logger.error(f"[ASK] Failed to parse read_document tool call input: {tool_call['input']}. Error: {e}")
+                            continue
+
+                        logger.info(f"[ASK] Executing read_document tool with URL: {tool_call_params.url}")
+                        read_results = await execute_read_document_tool(
+                            searcher_tool=request.app.state.searcher_tool,
+                            tool_input=tool_call_params,
+                            url_to_doc_id=url_to_doc_id,
+                            user_id=chat.user_id
+                        )
+                        logger.info(f"[ASK] Read document returned {len(read_results)} chunks/content")
+
+                        # Add document content as search result blocks for citations
+                        tool_result_content_blocks: list[SearchResultBlockParam] = []
+                        for result in read_results:
                             doc = result.document
                             # Append metadata hash to URL for frontend icon resolution
                             source_url = cast(str, doc.url) if doc.url else ""
@@ -314,6 +397,46 @@ async def execute_search_tool(
         return []
 
     logger.info(f"[SEARCH_TOOL] Search successful, processing {len(search_response.results)} results")
+    return search_response.results
+
+
+async def execute_read_document_tool(
+    searcher_tool: SearcherTool,
+    tool_input: ReadDocumentParams,
+    url_to_doc_id: dict[str, str],
+    user_id: str,
+    user_email: str | None = None
+) -> List[SearchResult]:
+    """Execute read_document tool by calling omni-searcher with document_id filter"""
+    logger.info(f"[READ_DOC_TOOL] Reading document with URL: {tool_input.url}")
+
+    # Look up document ID from URL
+    document_id = url_to_doc_id.get(tool_input.url)
+    if not document_id:
+        logger.error(f"[READ_DOC_TOOL] Document not found in conversation context: {tool_input.url}")
+        return []
+
+    logger.info(f"[READ_DOC_TOOL] Found document ID: {document_id}")
+
+    # Create search request with document_id filter
+    # Use query if provided for semantic search within document, otherwise use empty query
+    search_request = SearchRequest(
+        query=tool_input.query or "",
+        document_id=document_id,
+        limit=20,  # Get up to 20 chunks for large documents
+        offset=0,
+        mode="semantic" if tool_input.query else "hybrid",
+        user_id=user_id,
+        user_email=user_email,
+    )
+
+    try:
+        search_response: SearchResponse = await searcher_tool.handle(search_request)
+    except Exception as e:
+        logger.error(f"[READ_DOC_TOOL] Read document failed: {e}")
+        return []
+
+    logger.info(f"[READ_DOC_TOOL] Read successful, retrieved {len(search_response.results)} chunks")
     return search_response.results
 
 

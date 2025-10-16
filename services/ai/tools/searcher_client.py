@@ -22,8 +22,10 @@ class SearchRequest(BaseModel):
     user_email: Optional[str] = None
     is_generated_query: Optional[bool] = None
     original_user_query: Optional[str] = None
+    document_id: Optional[str] = None
 
 class Document(BaseModel):
+    id: str
     title: str
     content_type: str | None
     url: str | None
@@ -74,6 +76,7 @@ class SearcherClient:
                 "user_email": request.user_email,
                 "is_generated_query": request.is_generated_query,
                 "original_user_query": request.original_user_query,
+                "document_id": request.document_id,
             }
 
             logger.info(f"Calling searcher service with query: {request.query}...")

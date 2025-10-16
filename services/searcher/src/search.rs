@@ -160,6 +160,12 @@ impl SearchEngine {
             request.search_mode()
         );
 
+        // Handle document_id filter for read_document tool
+        if let Some(document_id) = &request.document_id {
+            info!("Document ID filter detected: {}", document_id);
+            return self.read_document_by_id(document_id, &request).await;
+        }
+
         // Generate cache key based on request parameters
         let cache_key = self.generate_cache_key(&request);
 
@@ -323,6 +329,7 @@ impl SearchEngine {
                 request.limit(),
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
+                None,
             )
             .await?;
 
@@ -426,6 +433,163 @@ impl SearchEngine {
         safe_str_slice(content, start, end).to_string()
     }
 
+    /// Read a specific document by ID, returning full content for small documents
+    /// or relevant chunks for large documents
+    async fn read_document_by_id(
+        &self,
+        document_id: &str,
+        request: &SearchRequest,
+    ) -> Result<SearchResponse> {
+        let start_time = Instant::now();
+        info!("Reading document by ID: {}", document_id);
+
+        let doc_repo = DocumentRepository::new(self.db_pool.pool());
+        let doc = doc_repo
+            .find_by_id(document_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Document not found: {}", document_id))?;
+
+        const CONTENT_SIZE_THRESHOLD: usize = 10_000; // 10KB threshold
+
+        // Get actual content size (extracted text, not original file)
+        let results = if let Some(content_id) = &doc.content_id {
+            match self.content_storage.get_text(content_id).await {
+                Ok(content) => {
+                    let content_size = content.len();
+                    if content_size < CONTENT_SIZE_THRESHOLD {
+                        // Small document: return full content
+                        info!(
+                            "Document content is small ({}B), returning full content",
+                            content_size
+                        );
+                        vec![SearchResult {
+                            document: self.prepare_document_for_response(doc.clone()),
+                            score: 1.0,
+                            highlights: vec![content],
+                            match_type: "full_content".to_string(),
+                            content: None,
+                        }]
+                    } else {
+                        // Large document: use chunk-based retrieval
+                        info!(
+                            "Document content is large ({}B), using chunk-based retrieval",
+                            content_size
+                        );
+                        self.read_document_chunks(document_id, &doc, request)
+                            .await?
+                    }
+                }
+                Err(e) => {
+                    info!(
+                        "Failed to read document content: {}, falling back to chunk retrieval",
+                        e
+                    );
+                    self.read_document_chunks(document_id, &doc, request)
+                        .await?
+                }
+            }
+        } else {
+            info!("No content_id available for document");
+            vec![]
+        };
+
+        let total_count = results.len() as i64;
+        let query_time = start_time.elapsed().as_millis() as u64;
+
+        info!(
+            "Read document completed in {}ms, returned {} chunks",
+            query_time,
+            results.len()
+        );
+
+        Ok(SearchResponse {
+            results,
+            total_count,
+            query_time_ms: query_time,
+            has_more: false,
+            query: request.query.clone(),
+            corrected_query: None,
+            corrections: None,
+            facets: None,
+        })
+    }
+
+    /// Read document chunks, optionally filtered by query for semantic search
+    async fn read_document_chunks(
+        &self,
+        document_id: &str,
+        doc: &shared::models::Document,
+        request: &SearchRequest,
+    ) -> Result<Vec<SearchResult>> {
+        let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
+
+        let chunk_results = if !request.query.trim().is_empty() {
+            // Query provided: do semantic search within document
+            info!("Query provided, performing semantic search within document");
+            let query_embedding = self.generate_query_embedding(&request.query).await?;
+            embedding_repo
+                .find_similar_with_filters(
+                    query_embedding,
+                    None, // No source filter
+                    None, // No content type filter
+                    request.limit(),
+                    0,    // offset
+                    None, // No permission filter for now
+                    Some(document_id),
+                )
+                .await?
+        } else {
+            // No query: return first N chunks by chunk index
+            info!(
+                "No query provided, returning first {} chunks",
+                request.limit()
+            );
+            let all_embeddings = embedding_repo.find_by_document_id(document_id).await?;
+            all_embeddings
+                .into_iter()
+                .take(request.limit() as usize)
+                .map(|e| ChunkResult {
+                    document_id: e.document_id,
+                    similarity_score: 1.0,
+                    chunk_start_offset: e.chunk_start_offset,
+                    chunk_end_offset: e.chunk_end_offset,
+                    chunk_index: e.chunk_index,
+                })
+                .collect()
+        };
+
+        let mut results = Vec::new();
+
+        if let Some(content_id) = &doc.content_id {
+            if let Ok(content) = self.content_storage.get_text(content_id).await {
+                for chunk_result in chunk_results {
+                    let chunk_text = self.extract_chunk_from_content(
+                        &content,
+                        chunk_result.chunk_start_offset,
+                        chunk_result.chunk_end_offset,
+                    );
+
+                    if !chunk_text.trim().is_empty() {
+                        let prepared_doc = self.prepare_document_for_response(doc.clone());
+                        results.push(SearchResult {
+                            document: prepared_doc,
+                            score: chunk_result.similarity_score,
+                            highlights: vec![chunk_text.trim().to_string()],
+                            match_type: if !request.query.trim().is_empty() {
+                                "semantic".to_string()
+                            } else {
+                                "chunk".to_string()
+                            },
+                            content: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     async fn generate_query_embedding(&self, query: &str) -> Result<Vec<f32>> {
         debug!("Generating query embeddings for query '{}'", query);
         let embeddings = self
@@ -473,6 +637,7 @@ impl SearchEngine {
                 request.limit(),
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
+                None,
             )
             .await?;
 

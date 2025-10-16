@@ -7,6 +7,7 @@ import logging
 from typing import AsyncIterator, Optional, List, Dict, Any
 
 import boto3
+from boto3.session import Session 
 from botocore.exceptions import ClientError
 from anthropic.types import (
     ContentBlockDeltaEvent,

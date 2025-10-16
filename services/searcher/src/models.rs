@@ -25,6 +25,7 @@ pub struct SearchRequest {
     pub user_id: Option<String>,
     pub is_generated_query: Option<bool>,
     pub original_user_query: Option<String>,
+    pub document_id: Option<String>,
 }
 
 impl SearchRequest {

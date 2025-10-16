@@ -7,3 +7,7 @@ class SearchToolParams(BaseModel):
     content_types: Optional[List[str]] = None
     limit: Optional[int] = 20
 
+class ReadDocumentParams(BaseModel):
+    url: str
+    query: Optional[str] = None
+
