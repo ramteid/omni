@@ -6,7 +6,7 @@ use sqlx::FromRow;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
-#[sqlx(type_name = "text", rename_all = "lowercase")]
+#[sqlx(type_name = "varchar", rename_all = "lowercase")]
 pub enum UserRole {
     Admin,
     User,
@@ -14,7 +14,7 @@ pub enum UserRole {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
-#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[sqlx(type_name = "varchar", rename_all = "snake_case")]
 pub enum AuthMethod {
     Password,
     MagicLink,

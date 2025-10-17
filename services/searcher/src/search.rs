@@ -7,7 +7,7 @@ use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use shared::models::ChunkResult;
 use shared::utils::safe_str_slice;
-use shared::{AIClient, ContentStorage, DatabasePool, SearcherConfig};
+use shared::{AIClient, ContentStorage, DatabasePool, Repository, SearcherConfig, UserRepository};
 use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, info};
@@ -134,7 +134,7 @@ impl SearchEngine {
         doc.content_id = None;
 
         // Append metadata hash to URL for frontend icon resolution
-        if let Some(url) = &doc.url {
+        if let Some(url_str) = &doc.url {
             if doc.content_type.is_some() {
                 let mut metadata_parts = Vec::new();
                 // Note: source_type would go here if we had it
@@ -143,7 +143,15 @@ impl SearchEngine {
                     metadata_parts.push(ct.clone());
                 }
                 if !metadata_parts.is_empty() {
-                    doc.url = Some(format!("{}#meta={}", url, metadata_parts.join(",")));
+                    // Parse URL and update/replace hash fragment
+                    if let Ok(mut parsed_url) = url::Url::parse(url_str) {
+                        parsed_url
+                            .set_fragment(Some(&format!("meta={}", metadata_parts.join(","))));
+                        doc.url = Some(parsed_url.to_string());
+                    } else {
+                        // Fallback for unparseable URLs (shouldn't happen, but be defensive)
+                        doc.url = Some(format!("{}#meta={}", url_str, metadata_parts.join(",")));
+                    }
                 }
             }
         }
@@ -159,6 +167,29 @@ impl SearchEngine {
             request.query,
             request.search_mode()
         );
+
+        // In case the request contains only user_id, populate user_email for permission filtering
+        let user_repo = UserRepository::new(self.db_pool.pool());
+        let request = match (&request.user_id, &request.user_email) {
+            (Some(user_id), None) => {
+                info!("Search request has user_id but no email, fetching email from DB for user ID: {}", user_id);
+                let res = user_repo.find_by_id(user_id.clone()).await;
+                info!("Fetched user: {:?}", res);
+                if let Ok(Some(user)) = res {
+                    info!(
+                        "Fetched user email: {} for user ID: {}",
+                        user.email, user_id
+                    );
+                    let mut new_request = request.clone();
+                    new_request.user_email = Some(user.email);
+                    new_request
+                } else {
+                    info!("Failed to fetch user email for user ID: {}", user_id);
+                    request
+                }
+            }
+            _ => request,
+        };
 
         // Handle document_id filter for read_document tool
         if let Some(document_id) = &request.document_id {

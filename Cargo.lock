@@ -3278,6 +3278,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+ "url",
  "urlencoding",
  "uuid",
 ]

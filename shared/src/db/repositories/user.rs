@@ -61,7 +61,7 @@ impl Repository<User, String> for UserRepository {
         let user = sqlx::query_as::<_, User>(
             r#"
             SELECT id, email, password_hash, full_name, avatar_url,
-                   role, is_active, created_at, updated_at, last_login_at
+                   role, is_active, created_at, updated_at, last_login_at, auth_method, domain
             FROM users
             WHERE id = $1
             "#,
