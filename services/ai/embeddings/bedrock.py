@@ -31,7 +31,7 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
         self.client = BedrockEmbeddingClient(self.model_id, self.region_name)
 
-    def generate_embeddings_sync(
+    async def generate_embeddings_sync(
         self,
         texts: List[str],
         task: str,

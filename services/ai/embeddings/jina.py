@@ -33,7 +33,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
 
         self.client = JINAEmbeddingClient(self.api_key, self.model, self.api_url)
 
-    def generate_embeddings_sync(
+    async def generate_embeddings_sync(
         self,
         texts: List[str],
         task: str,
@@ -43,24 +43,8 @@ class JinaEmbeddingProvider(EmbeddingProvider):
     ) -> List[List[Chunk]]:
         """
         Generate embeddings using JINA API with chunking support.
-        Synchronous wrapper that runs the async implementation.
         """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        client = None
-        try:
-            # Create client instance with our configuration
-            result = loop.run_until_complete(
-                self._generate_embeddings_with_jina(
-                    texts, task, chunk_size, chunking_mode, n_sentences
-                )
-            )
-            return result
-        finally:
-            # Clean up client
-            if client:
-                loop.run_until_complete(client.close())
-            loop.close()
+        return await self._generate_embeddings_with_jina(texts, task, chunk_size, chunking_mode, n_sentences)
 
     def get_model_name(self) -> str:
         """Get the name of the JINA model being used."""

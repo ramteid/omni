@@ -57,8 +57,6 @@ class PrioritizedRequest:
 _request_queue: asyncio.PriorityQueue = None
 _queue_processor_task = None
 
-# Chat models are now in models/chat.py
-
 class EmbeddingRequest(BaseModel):
     texts: List[str]
     task: Optional[str] = DEFAULT_TASK  # Allow different tasks
@@ -192,9 +190,7 @@ async def process_embedding_queue():
             
             try:
                 # Process the embedding request using the provider
-                chunk_batch = await asyncio.get_event_loop().run_in_executor(
-                    _executor,
-                    app.state.embedding_provider.generate_embeddings_sync,
+                chunk_batch = await app.state.embedding_provider.generate_embeddings_sync(
                     request.texts,
                     request.task,
                     request.chunk_size,
