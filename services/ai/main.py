@@ -117,6 +117,7 @@ async def startup_event():
     # Initialize embedding provider
     try:
         if EMBEDDING_PROVIDER == "jina":
+            logger.info(f"Initializing JINA embedding provider with model: {JINA_MODEL}")
             app.state.embedding_provider = create_embedding_provider(
                 EMBEDDING_PROVIDER,
                 api_key=JINA_API_KEY,
@@ -124,6 +125,7 @@ async def startup_event():
                 api_url=JINA_API_URL
             )
         elif EMBEDDING_PROVIDER == "bedrock":
+            logger.info(f"Initializing Bedrock embedding provider with model: {BEDROCK_EMBEDDING_MODEL_ID}")
             region_name = AWS_REGION if AWS_REGION else None
             app.state.embedding_provider = create_embedding_provider(
                 EMBEDDING_PROVIDER,
@@ -190,7 +192,7 @@ async def process_embedding_queue():
             
             try:
                 # Process the embedding request using the provider
-                chunk_batch = await app.state.embedding_provider.generate_embeddings_sync(
+                chunk_batch = await app.state.embedding_provider.generate_embeddings(
                     request.texts,
                     request.task,
                     request.chunk_size,

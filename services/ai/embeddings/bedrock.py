@@ -2,7 +2,7 @@ import logging
 import time
 import boto3
 import json
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 # Import common chunking utilities
 from . import EmbeddingProvider, Chunk, chunk_by_sentences, generate_sentence_chunks
@@ -31,7 +31,7 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
         self.client = BedrockEmbeddingClient(self.model_id, self.region_name)
 
-    async def generate_embeddings_sync(
+    async def generate_embeddings(
         self,
         texts: List[str],
         task: str,

@@ -33,7 +33,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
 
         self.client = JINAEmbeddingClient(self.api_key, self.model, self.api_url)
 
-    async def generate_embeddings_sync(
+    async def generate_embeddings(
         self,
         texts: List[str],
         task: str,

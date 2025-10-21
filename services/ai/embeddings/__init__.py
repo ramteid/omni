@@ -19,7 +19,7 @@ class EmbeddingProvider(ABC):
     """Abstract base class for embedding providers."""
 
     @abstractmethod
-    async def generate_embeddings_sync(
+    async def generate_embeddings(
         self,
         texts: List[str],
         task: str,
