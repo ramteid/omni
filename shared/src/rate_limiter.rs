@@ -51,33 +51,25 @@ impl RateLimiter {
             match operation().await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
-                    let error_str = e.to_string();
-
-                    if (error_str.contains("403") && error_str.contains("rate limit"))
-                        || error_str.contains("429")
-                    {
-                        if retries >= self.max_retries {
-                            return Err(e);
-                        }
-
-                        retries += 1;
-
-                        let jitter = thread_rng().gen_range(0..1000);
-                        let wait_time = delay + Duration::from_millis(jitter);
-
-                        warn!(
-                            "Rate limit hit, retry {} of {}, waiting {:?}",
-                            retries, self.max_retries, wait_time
-                        );
-
-                        sleep(wait_time).await;
-
-                        delay = delay.saturating_mul(2);
-                        if delay > Duration::from_secs(32) {
-                            delay = Duration::from_secs(32);
-                        }
-                    } else {
+                    if retries >= self.max_retries {
                         return Err(e);
+                    }
+
+                    retries += 1;
+
+                    let jitter = thread_rng().gen_range(0..1000);
+                    let wait_time = delay + Duration::from_millis(jitter);
+
+                    warn!(
+                        "Rate limit hit, retry {} of {}, waiting {:?}",
+                        retries, self.max_retries, wait_time
+                    );
+
+                    sleep(wait_time).await;
+
+                    delay = delay.saturating_mul(2);
+                    if delay > Duration::from_secs(32) {
+                        delay = Duration::from_secs(32);
                     }
                 }
             }
