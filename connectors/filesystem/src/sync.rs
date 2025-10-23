@@ -214,7 +214,7 @@ impl FilesystemSyncManager {
             };
 
             // Store content in LOB and get OID
-            let content_id = match content_storage.store_text(&content).await {
+            let content_id = match content_storage.store_text(&content, None).await {
                 Ok(oid) => oid,
                 Err(e) => {
                     error!(

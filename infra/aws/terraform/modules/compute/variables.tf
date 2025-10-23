@@ -158,3 +158,29 @@ variable "service_version" {
   type        = string
   default     = "0.1.0"
 }
+
+# Storage variables for S3 access
+variable "content_bucket_arn" {
+  description = "ARN of the S3 bucket for content storage"
+  type        = string
+}
+
+variable "content_bucket_name" {
+  description = "Name of the S3 bucket for content storage"
+  type        = string
+}
+
+variable "batch_bucket_arn" {
+  description = "ARN of the S3 bucket for batch inference"
+  type        = string
+}
+
+variable "batch_bucket_name" {
+  description = "Name of the S3 bucket for batch inference"
+  type        = string
+}
+
+variable "bedrock_batch_role_arn" {
+  description = "ARN of the IAM role for Bedrock batch inference"
+  type        = string
+}

@@ -75,3 +75,19 @@ output "next_steps" {
          --command "/bin/sh"
   EOT
 }
+
+# Storage outputs
+output "content_bucket_name" {
+  description = "S3 bucket name for content storage"
+  value       = module.storage.content_bucket_name
+}
+
+output "batch_bucket_name" {
+  description = "S3 bucket name for batch inference"
+  value       = module.storage.batch_bucket_name
+}
+
+output "bedrock_batch_role_arn" {
+  description = "IAM role ARN for Bedrock batch inference (set as EMBEDDING_BATCH_BEDROCK_ROLE_ARN)"
+  value       = module.storage.bedrock_batch_role_arn
+}

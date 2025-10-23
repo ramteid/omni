@@ -18,14 +18,19 @@ impl PostgresStorage {
 
 #[async_trait]
 impl ObjectStorage for PostgresStorage {
-    async fn store_content(&self, content: &[u8]) -> Result<String, StorageError> {
-        self.store_content_with_type(content, None).await
+    async fn store_content(
+        &self,
+        content: &[u8],
+        _prefix: Option<&str>,
+    ) -> Result<String, StorageError> {
+        self.store_content_with_type(content, None, _prefix).await
     }
 
     async fn store_content_with_type(
         &self,
         content: &[u8],
         content_type: Option<&str>,
+        _prefix: Option<&str>,
     ) -> Result<String, StorageError> {
         let content_id = generate_ulid();
         let size_bytes = content.len() as i64;
@@ -181,7 +186,7 @@ mod tests {
 
         // Test storing and retrieving content
         let test_content = b"Hello, World! This is a test content.";
-        let content_id = storage.store_content(test_content).await.unwrap();
+        let content_id = storage.store_content(test_content, None).await.unwrap();
 
         let retrieved_content = storage.get_content(&content_id).await.unwrap();
         assert_eq!(test_content, retrieved_content.as_slice());

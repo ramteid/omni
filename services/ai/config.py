@@ -90,3 +90,17 @@ DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))
 BEDROCK_MODEL_ID = get_optional_env("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
 
+# Embedding batch inference configuration
+ENABLE_EMBEDDING_BATCH_INFERENCE = get_optional_env("ENABLE_EMBEDDING_BATCH_INFERENCE", "false").lower() == "true"
+EMBEDDING_BATCH_S3_BUCKET = get_optional_env("EMBEDDING_BATCH_S3_BUCKET", "")
+EMBEDDING_BATCH_BEDROCK_ROLE_ARN = get_optional_env("EMBEDDING_BATCH_BEDROCK_ROLE_ARN", "")
+
+# Embedding batch accumulation thresholds
+EMBEDDING_BATCH_MIN_DOCUMENTS = int(get_optional_env("EMBEDDING_BATCH_MIN_DOCUMENTS", "100"))
+EMBEDDING_BATCH_MAX_DOCUMENTS = int(get_optional_env("EMBEDDING_BATCH_MAX_DOCUMENTS", "50000"))
+EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS = int(get_optional_env("EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS", "300"))  # 5 minutes
+
+# Embedding batch processing intervals
+EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL = int(get_optional_env("EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL", "10"))  # 10 seconds
+EMBEDDING_BATCH_MONITOR_POLL_INTERVAL = int(get_optional_env("EMBEDDING_BATCH_MONITOR_POLL_INTERVAL", "30"))  # 30 seconds
+

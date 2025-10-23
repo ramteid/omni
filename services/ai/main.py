@@ -19,6 +19,8 @@ from logger import setup_logging
 from config import *  # Import all config variables
 from routers.chat import router as chat_router
 from telemetry import init_telemetry
+from embeddings.batch_processor import start_batch_processing
+from storage import create_content_storage
 
 # Configure logging once at startup
 setup_logging()
@@ -168,6 +170,18 @@ async def startup_event():
         # Initialize searcher client
         app.state.searcher_tool = SearcherTool()
         logger.info("Initialized searcher client")
+
+        # Initialize content storage and start batch processing if enabled
+        if ENABLE_EMBEDDING_BATCH_INFERENCE:
+            app.state.content_storage = create_content_storage()
+            logger.info("Initialized content storage for batch processing")
+
+            # Start batch processing in background
+            asyncio.create_task(start_batch_processing(
+                app.state.content_storage,
+                app.state.embedding_provider
+            ))
+            logger.info("Started embedding batch processing")
 
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")

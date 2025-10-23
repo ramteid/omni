@@ -245,7 +245,18 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "LLM_PROVIDER", value = "bedrock" },
       { name = "BEDROCK_MODEL_ID", value = "amazon.nova-pro-v1:0" },
       { name = "ANTHROPIC_MAX_TOKENS", value = "4096" },
-      { name = "AI_WORKERS", value = "1" }
+      { name = "AI_WORKERS", value = "1" },
+      # Storage configuration
+      { name = "STORAGE_BACKEND", value = "s3" },
+      { name = "S3_BUCKET", value = var.content_bucket_name },
+      { name = "S3_REGION", value = var.region },
+      # Batch inference configuration
+      { name = "ENABLE_EMBEDDING_BATCH_INFERENCE", value = "false" },
+      { name = "EMBEDDING_BATCH_S3_BUCKET", value = var.batch_bucket_name },
+      { name = "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", value = var.bedrock_batch_role_arn },
+      { name = "EMBEDDING_BATCH_MIN_DOCUMENTS", value = "100" },
+      { name = "EMBEDDING_BATCH_MAX_DOCUMENTS", value = "50000" },
+      { name = "EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS", value = "300" }
     ])
 
     secrets = concat(local.common_secrets, [

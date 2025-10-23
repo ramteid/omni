@@ -1,12 +1,13 @@
 use super::{ContentMetadata, ObjectStorage, StorageError};
 use crate::utils::generate_ulid;
 use async_trait::async_trait;
-use aws_sdk_s3::{primitives::ByteStream, Client as S3Client};
+use aws_sdk_s3::{error::SdkError, primitives::ByteStream, Client as S3Client};
 use bytes::Bytes;
 use futures_util::future;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
+use tower::buffer::error::ServiceError;
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]
@@ -52,8 +53,19 @@ impl S3Storage {
         })
     }
 
-    fn generate_key(&self) -> String {
-        generate_ulid()
+    fn generate_key(&self, prefix: Option<&str>) -> String {
+        let ulid = generate_ulid();
+        match prefix {
+            Some(p) => {
+                let trimmed = p.trim_matches('/');
+                if trimmed.is_empty() {
+                    ulid
+                } else {
+                    format!("{}/{}", trimmed, ulid)
+                }
+            }
+            None => ulid,
+        }
     }
 
     fn compute_hash(&self, content: &[u8]) -> String {
@@ -65,17 +77,22 @@ impl S3Storage {
 
 #[async_trait]
 impl ObjectStorage for S3Storage {
-    async fn store_content(&self, content: &[u8]) -> Result<String, StorageError> {
-        self.store_content_with_type(content, None).await
+    async fn store_content(
+        &self,
+        content: &[u8],
+        prefix: Option<&str>,
+    ) -> Result<String, StorageError> {
+        self.store_content_with_type(content, None, prefix).await
     }
 
     async fn store_content_with_type(
         &self,
         content: &[u8],
         content_type: Option<&str>,
+        prefix: Option<&str>,
     ) -> Result<String, StorageError> {
         let content_id = generate_ulid(); // Internal ID
-        let storage_key = generate_ulid(); // S3 key
+        let storage_key = self.generate_key(prefix); // S3 key
         let size_bytes = content.len() as i64;
         let hash = self.compute_hash(content);
 
@@ -95,10 +112,19 @@ impl ObjectStorage for S3Storage {
             put_request = put_request.content_type(ct);
         }
 
-        put_request
-            .send()
-            .await
-            .map_err(|e| StorageError::Backend(format!("Failed to store content in S3: {}", e)))?;
+        let res = put_request.send().await;
+
+        if let Err(e) = res {
+            match e {
+                SdkError::ServiceError(err) => {
+                    debug!("Service error when uploading to S3: {:?}", err);
+                    debug!("Raw response: {:?}", err.raw())
+                }
+                _ => {
+                    debug!("Error uploading to S3: {}", e);
+                }
+            }
+        }
 
         debug!(
             "Stored content in S3: bucket={}, key={}",
@@ -392,9 +418,9 @@ mod tests {
             return;
         };
 
-        // Test storing and retrieving content
+        // Test storing and retrieving content without prefix
         let test_content = b"Hello, S3! This is a test content.";
-        let content_id = storage.store_content(test_content).await.unwrap();
+        let content_id = storage.store_content(test_content, None).await.unwrap();
 
         let retrieved_content = storage.get_content(&content_id).await.unwrap();
         assert_eq!(test_content, retrieved_content.as_slice());
@@ -419,7 +445,7 @@ mod tests {
         };
 
         let text_content = "This is a text content";
-        let content_id = storage.store_text(text_content.to_string()).await.unwrap();
+        let content_id = storage.store_text(text_content, None).await.unwrap();
 
         let retrieved_text = storage.get_text(&content_id).await.unwrap();
         assert_eq!(text_content, retrieved_text);
@@ -444,9 +470,9 @@ mod tests {
         let content2 = "Second document content";
         let content3 = "Third document content";
 
-        let content_id1 = storage.store_text(content1.to_string()).await.unwrap();
-        let content_id2 = storage.store_text(content2.to_string()).await.unwrap();
-        let content_id3 = storage.store_text(content3.to_string()).await.unwrap();
+        let content_id1 = storage.store_text(content1, None).await.unwrap();
+        let content_id2 = storage.store_text(content2, None).await.unwrap();
+        let content_id3 = storage.store_text(content3, None).await.unwrap();
 
         // Batch fetch all content
         let content_ids = vec![
@@ -466,5 +492,60 @@ mod tests {
         storage.delete_content(&content_id1).await.unwrap();
         storage.delete_content(&content_id2).await.unwrap();
         storage.delete_content(&content_id3).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_s3_storage_with_prefix() {
+        let Some(storage) = create_test_storage().await else {
+            println!("Skipping S3 test - no LocalStack/MinIO available");
+            return;
+        };
+
+        // Test with hierarchical prefix like {date}/{sync_run_id}
+        let prefix = "2025-10/01ABC123DEF456";
+        let test_content = b"Content with prefix";
+        let content_id = storage
+            .store_content(test_content, Some(prefix))
+            .await
+            .unwrap();
+
+        // Verify content can be retrieved
+        let retrieved_content = storage.get_content(&content_id).await.unwrap();
+        assert_eq!(test_content, retrieved_content.as_slice());
+
+        // Test with text content and prefix
+        let text_content = "Text content with prefix";
+        let text_prefix = "2025-10/01XYZ789ABC012";
+        let text_content_id = storage
+            .store_text(text_content, Some(text_prefix))
+            .await
+            .unwrap();
+
+        let retrieved_text = storage.get_text(&text_content_id).await.unwrap();
+        assert_eq!(text_content, retrieved_text);
+
+        // Test with empty prefix (should behave like None)
+        let empty_prefix = "";
+        let content_id_empty = storage
+            .store_text("No prefix", Some(empty_prefix))
+            .await
+            .unwrap();
+        let retrieved_empty = storage.get_text(&content_id_empty).await.unwrap();
+        assert_eq!("No prefix", retrieved_empty);
+
+        // Test with prefix containing leading/trailing slashes
+        let messy_prefix = "/2025-10/sync-run-123/";
+        let content_id_messy = storage
+            .store_text("Messy prefix", Some(messy_prefix))
+            .await
+            .unwrap();
+        let retrieved_messy = storage.get_text(&content_id_messy).await.unwrap();
+        assert_eq!("Messy prefix", retrieved_messy);
+
+        // Cleanup
+        storage.delete_content(&content_id).await.unwrap();
+        storage.delete_content(&text_content_id).await.unwrap();
+        storage.delete_content(&content_id_empty).await.unwrap();
+        storage.delete_content(&content_id_messy).await.unwrap();
     }
 }

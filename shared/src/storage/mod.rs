@@ -28,13 +28,18 @@ pub struct ContentMetadata {
 #[async_trait]
 pub trait ObjectStorage: Send + Sync {
     /// Store content and return the content ID
-    async fn store_content(&self, content: &[u8]) -> Result<String, StorageError>;
+    async fn store_content(
+        &self,
+        content: &[u8],
+        prefix: Option<&str>,
+    ) -> Result<String, StorageError>;
 
-    /// Store content with optional content type
+    /// Store content with optional content type and optional prefix for hierarchical organization
     async fn store_content_with_type(
         &self,
         content: &[u8],
         content_type: Option<&str>,
+        prefix: Option<&str>,
     ) -> Result<String, StorageError>;
 
     /// Retrieve content by content ID
@@ -44,8 +49,12 @@ pub trait ObjectStorage: Send + Sync {
     async fn delete_content(&self, content_id: &str) -> Result<(), StorageError>;
 
     /// Store content as string (convenience method)
-    async fn store_text(&self, content: &str) -> Result<String, StorageError> {
-        self.store_content_with_type(content.as_bytes(), Some("text/plain"))
+    async fn store_text(
+        &self,
+        content: &str,
+        prefix: Option<&str>,
+    ) -> Result<String, StorageError> {
+        self.store_content_with_type(content.as_bytes(), Some("text/plain"), prefix)
             .await
     }
 

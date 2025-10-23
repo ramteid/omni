@@ -240,7 +240,7 @@ impl ConfluenceProcessor {
             let placeholder_sync_run_id = shared::utils::generate_ulid();
 
             // Store content in LOB and get OID
-            let content_id = match self.content_storage.store_text(&content).await {
+            let content_id = match self.content_storage.store_text(&content, None).await {
                 Ok(oid) => oid,
                 Err(e) => {
                     error!(
@@ -314,7 +314,7 @@ impl ConfluenceProcessor {
         // Store content in LOB and get OID
         let content_id = self
             .content_storage
-            .store_text(&content)
+            .store_text(&content, None)
             .await
             .map_err(|e| {
                 anyhow!(

@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use futures::stream::{self, StreamExt};
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::types::time::OffsetDateTime;
 use sqlx::PgPool;
@@ -227,10 +228,15 @@ impl SyncManager {
         let event_queue = EventQueue::new(pool.clone());
         let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
 
+        // Google API Rate limits:
+        //   - Drive API (list files, etc.): 12,000 req/min
+        //   - Docs API (get content, etc.): 3,000 req/min/project, 300 req/min/user
+        // The below rate limit is for the Drive API only.
+        // For the Docs API, we need to have a separate rate limiter for each user.
         let api_rate_limit = std::env::var("GOOGLE_API_RATE_LIMIT")
-            .unwrap_or_else(|_| "180".to_string())
+            .unwrap_or_else(|_| "50".to_string())
             .parse::<u32>()
-            .unwrap_or(180);
+            .unwrap_or(50);
 
         let max_retries = std::env::var("GOOGLE_MAX_RETRIES")
             .unwrap_or_else(|_| "5".to_string())
@@ -284,6 +290,17 @@ impl SyncManager {
         );
 
         Ok((drive_format, gmail_format))
+    }
+
+    fn get_storage_prefix(sync_run: &SyncRun) -> String {
+        format!(
+            "{}/{}",
+            sync_run
+                .created_at
+                .format(&time::format_description::well_known::Iso8601::DATE)
+                .unwrap_or_else(|_| "unknown-date".to_string()),
+            sync_run.id
+        )
     }
 
     pub async fn sync_all_sources(&self) -> Result<()> {
@@ -379,11 +396,11 @@ impl SyncManager {
         }
 
         // Create a sync run record
-        let sync_run_id = self.create_sync_run(&source.id, SyncType::Full).await?;
+        let sync_run = self.create_sync_run(&source.id, SyncType::Full).await?;
 
         let result = match source.source_type {
-            SourceType::GoogleDrive => self.sync_drive_source_internal(source, &sync_run_id).await,
-            SourceType::Gmail => self.sync_gmail_source_internal(source, &sync_run_id).await,
+            SourceType::GoogleDrive => self.sync_drive_source_internal(source, &sync_run).await,
+            SourceType::Gmail => self.sync_gmail_source_internal(source, &sync_run).await,
             _ => {
                 return Err(anyhow::anyhow!(
                     "Unsupported source type: {:?}",
@@ -396,14 +413,14 @@ impl SyncManager {
         match &result {
             Ok((files_processed, files_updated)) => {
                 self.update_sync_run_completed(
-                    &sync_run_id,
+                    &sync_run.id,
                     *files_processed as i32,
                     *files_updated as i32,
                 )
                 .await?;
             }
             Err(e) => {
-                self.update_sync_run_failed(&sync_run_id, &e.to_string())
+                self.update_sync_run_failed(&sync_run.id, &e.to_string())
                     .await?;
             }
         }
@@ -416,10 +433,9 @@ impl SyncManager {
         user_email: &str,
         service_auth: Arc<ServiceAccountAuth>,
         source_id: &str,
-        sync_run_id: &str,
+        sync_run: &SyncRun,
         sync_state: &SyncState,
         current_files: Arc<std::sync::Mutex<HashSet<String>>>,
-        rate_limiter: Arc<RateLimiter>,
         created_after: Option<&str>,
     ) -> Result<(usize, usize)> {
         info!("Processing Drive files for user: {}", user_email);
@@ -432,40 +448,30 @@ impl SyncManager {
 
         loop {
             debug!(
-                "Listing files for user {} with page_token: {:?}",
+                "Listing files for user {} with page_token: '{:?}'",
                 user_email, page_token
             );
 
-            // Use rate limiter for listing files
-            let response = rate_limiter
-                .execute_with_retry(|| {
-                    let drive_client = self.drive_client.clone();
-                    let service_auth = service_auth.clone();
-                    let user_email = user_email.to_string();
-                    let page_token = page_token.clone();
-
-                    async move {
-                        drive_client
-                            .list_files(
-                                &service_auth,
-                                &user_email,
-                                page_token.as_deref(),
-                                created_after,
-                            )
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "Failed to list files for user {} (page_token: {:?})",
-                                    user_email, page_token
-                                )
-                            })
-                    }
-                })
-                .await?;
+            let response = self
+                .drive_client
+                .list_files(
+                    &service_auth,
+                    &user_email,
+                    page_token.as_deref(),
+                    created_after,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to list files for user {} (page_token: {:?})",
+                        user_email, page_token
+                    )
+                })?;
 
             debug!(
-                "Got {} files in this page for user {}",
+                "Got {} files in this page with page_token: '{:?}' for user {}",
                 response.files.len(),
+                page_token,
                 user_email
             );
 
@@ -518,10 +524,9 @@ impl SyncManager {
                                 .process_file_batch(
                                     file_batch.clone(),
                                     source_id,
-                                    sync_run_id,
+                                    sync_run,
                                     sync_state,
                                     service_auth.clone(),
-                                    rate_limiter.clone(),
                                 )
                                 .await?;
 
@@ -546,10 +551,9 @@ impl SyncManager {
                 .process_file_batch(
                     file_batch,
                     source_id,
-                    sync_run_id,
+                    sync_run,
                     sync_state,
                     service_auth.clone(),
-                    rate_limiter.clone(),
                 )
                 .await?;
 
@@ -568,23 +572,25 @@ impl SyncManager {
         &self,
         files: Vec<UserFile>,
         source_id: &str,
-        sync_run_id: &str,
+        sync_run: &SyncRun,
         sync_state: &SyncState,
         service_auth: Arc<ServiceAccountAuth>,
-        rate_limiter: Arc<RateLimiter>,
     ) -> Result<(usize, usize)> {
         info!("Processing batch of {} files", files.len());
 
         let mut processed = 0;
         let mut updated = 0;
 
+        // Create storage prefix from sync_run
+        let storage_prefix = Self::get_storage_prefix(sync_run);
+
         // Process files concurrently within the batch
         let tasks = files.into_iter().map(|user_file| {
             let service_auth = service_auth.clone();
             let source_id = source_id.to_string();
-            let sync_run_id = sync_run_id.to_string();
+            let sync_run_id = sync_run.id.clone();
+            let storage_prefix = storage_prefix.clone();
             let sync_state = sync_state.clone();
-            let rate_limiter = rate_limiter.clone();
             let drive_client = self.drive_client.clone();
             let event_queue = self.event_queue.clone();
             let content_storage = self.content_storage.clone();
@@ -593,22 +599,15 @@ impl SyncManager {
                 debug!("Processing file: {} ({}) for user: {}", user_file.file.name, user_file.file.id, user_file.user_email);
 
                 // Use rate limiter for file content download
-                let result = rate_limiter.execute_with_retry(|| {
-                    let drive_client = drive_client.clone();
-                    let service_auth = service_auth.clone();
-                    let user_file = user_file.clone();
-                    async move {
-                        drive_client
-                            .get_file_content(&service_auth, &user_file.user_email, &user_file.file)
-                            .await
-                            .with_context(|| format!("Getting content for file {} ({})", user_file.file.name, user_file.file.id))
-                    }
-                }).await;
+                let result = drive_client
+                    .get_file_content(&service_auth, &user_file.user_email, &user_file.file)
+                    .await
+                    .with_context(|| format!("Getting content for file {} ({})", user_file.file.name, user_file.file.id));
 
                 match result {
                     Ok(content) => {
                         if !content.is_empty() {
-                            match content_storage.store_text(&content).await {
+                            match content_storage.store_text(&content, Some(&storage_prefix)).await {
                                 Ok(content_id) => {
                                     // Resolve the full path for this file
                                     let file_path = match self
@@ -616,7 +615,6 @@ impl SyncManager {
                                             &service_auth,
                                             &user_file.user_email,
                                             &user_file.file,
-                                            rate_limiter.clone(),
                                         )
                                         .await
                                     {
@@ -690,7 +688,7 @@ impl SyncManager {
     async fn sync_drive_source_internal(
         &self,
         source: &Source,
-        sync_run_id: &str,
+        sync_run: &SyncRun,
     ) -> Result<(usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
@@ -728,62 +726,114 @@ impl SyncManager {
         let sync_state = SyncState::new(self.redis_client.clone());
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
         let current_files = Arc::new(std::sync::Mutex::new(HashSet::new()));
-        let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
-
-        // Use single global rate limiter (200 req/sec) for ALL Google API calls
-        let global_rate_limiter = Arc::new(RateLimiter::new(200, 5));
-        info!("Using single global rate limiter at 200 req/sec for all API calls");
 
         info!(
             "Starting sequential user processing for {} users",
             filtered_users.len()
         );
 
-        let mut total_processed = 0;
-        let mut total_updated = 0;
+        let results: Vec<Result<(usize, usize)>> = stream::iter(filtered_users)
+            .map(|user| {
+                let service_auth = service_auth.clone();
+                let sync_state = sync_state.clone();
+                let current_files = current_files.clone();
+                let drive_cutoff_date = drive_cutoff_date.clone();
 
-        for user in filtered_users {
-            let user_email = user.primary_email.clone();
+                async move {
+                    info!("Processing user: {}", user.primary_email);
+                    let _token = service_auth.get_access_token(&user.primary_email)
+                        .await
+                        .inspect_err(|e| {
+                            error!("Failed to get access token for user {}: {}. This user may not have Drive access.", user.primary_email, e);
+                        })
+                        .with_context(|| format!("Failed to get access token for user: {}", user.primary_email))?;
 
-            // Get access token for this user
-            match service_auth.get_access_token(&user_email).await {
-                Ok(_token) => {
-                    info!("Processing user: {}", user_email);
-                    match self
-                        .sync_drive_for_user(
-                            &user_email,
+                    let res =
+                        self.sync_drive_for_user(
+                            &user.primary_email,
                             service_auth.clone(),
                             &source.id,
-                            sync_run_id,
+                            sync_run,
                             &sync_state,
                             current_files.clone(),
-                            global_rate_limiter.clone(),
                             Some(&drive_cutoff_date),
                         )
-                        .await
-                    {
+                        .await;
+
+                    match &res {
                         Ok((processed, updated)) => {
-                            total_processed += processed;
-                            total_updated += updated;
                             info!(
                                 "User {} completed: {} processed, {} updated",
-                                user_email, processed, updated
+                                user.primary_email, processed, updated
                             );
                         }
                         Err(e) => {
-                            error!("Failed to process user {}: {}", user_email, e);
+                            error!("Failed to process user {}: {}", user.primary_email, e);
                         }
                     }
+
+                    res
                 }
-                Err(e) => {
-                    warn!("Failed to get access token for user {}: {}. This user may not have Drive access.", user_email, e);
+            })
+            .buffer_unordered(10)
+            .collect()
+            .await;
+
+        let mut total_processed = 0;
+        let mut total_updated = 0;
+        let mut errors = 0;
+
+        for result in results {
+            match result {
+                Ok((processed, updated)) => {
+                    total_processed += processed;
+                    total_updated += updated;
                 }
+                Err(_) => errors += 1,
             }
         }
 
+        // for user in filtered_users {
+        //     let user_email = user.primary_email.clone();
+
+        //     // Get access token for this user
+        //     match service_auth.get_access_token(&user_email).await {
+        //         Ok(_token) => {
+        //             info!("Processing user: {}", user_email);
+        //             match self
+        //                 .sync_drive_for_user(
+        //                     &user_email,
+        //                     service_auth.clone(),
+        //                     &source.id,
+        //                     sync_run,
+        //                     &sync_state,
+        //                     current_files.clone(),
+        //                     Some(&drive_cutoff_date),
+        //                 )
+        //                 .await
+        //             {
+        //                 Ok((processed, updated)) => {
+        //                     total_processed += processed;
+        //                     total_updated += updated;
+        //                     info!(
+        //                         "User {} completed: {} processed, {} updated",
+        //                         user_email, processed, updated
+        //                     );
+        //                 }
+        //                 Err(e) => {
+        //                     error!("Failed to process user {}: {}", user_email, e);
+        //                 }
+        //             }
+        //         }
+        //         Err(e) => {
+        //             warn!("Failed to get access token for user {}: {}. This user may not have Drive access.", user_email, e);
+        //         }
+        //     }
+        // }
+
         info!(
-            "User processing complete. Total: {} processed, {} updated",
-            total_processed, total_updated
+            "User processing complete. Total: {} processed, {} updated, {} errors",
+            total_processed, total_updated, errors
         );
 
         // Handle deletions
@@ -797,7 +847,7 @@ impl SyncManager {
                 "File {} was deleted, publishing deletion event",
                 deleted_file_id
             );
-            self.publish_deletion_event(sync_run_id, &source.id, deleted_file_id)
+            self.publish_deletion_event(&sync_run.id, &source.id, deleted_file_id)
                 .await?;
             sync_state
                 .delete_file_sync_state(&source.id, deleted_file_id)
@@ -823,7 +873,7 @@ impl SyncManager {
     async fn sync_gmail_source_internal(
         &self,
         source: &Source,
-        sync_run_id: &str,
+        sync_run: &SyncRun,
     ) -> Result<(usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
@@ -860,10 +910,6 @@ impl SyncManager {
 
         let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
 
-        // Use single global rate limiter (200 req/sec) for ALL Google API calls
-        let global_rate_limiter = Arc::new(RateLimiter::new(200, 5));
-        info!("Using single global rate limiter at 200 req/sec for all API calls");
-
         info!(
             "Starting sequential user processing for {} users (Gmail only)",
             filtered_users.len()
@@ -884,9 +930,8 @@ impl SyncManager {
                             &user_email,
                             service_auth.clone(),
                             &source.id,
-                            sync_run_id,
+                            sync_run,
                             processed_threads.clone(),
-                            global_rate_limiter.clone(),
                             Some(&gmail_cutoff_date),
                         )
                         .await
@@ -1084,8 +1129,9 @@ impl SyncManager {
         Ok(sync_run)
     }
 
-    async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> Result<String> {
+    async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> Result<SyncRun> {
         let id = generate_ulid();
+        let now = OffsetDateTime::now_utc();
 
         sqlx::query(
             "INSERT INTO sync_runs (id, source_id, sync_type, status)
@@ -1098,7 +1144,19 @@ impl SyncManager {
         .execute(&self.pool)
         .await?;
 
-        Ok(id)
+        Ok(SyncRun {
+            id,
+            source_id: source_id.to_string(),
+            sync_type,
+            status: SyncStatus::Running,
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            completed_at: None,
+            documents_processed: 0,
+            documents_updated: 0,
+            error_message: None,
+        })
     }
 
     async fn update_sync_run_completed(
@@ -1376,9 +1434,12 @@ impl SyncManager {
             .await?;
 
         // Create a sync run record for incremental sync
-        let sync_run_id = self
+        let sync_run = self
             .create_sync_run(&source.id, SyncType::Incremental)
             .await?;
+
+        // Create storage prefix from sync_run
+        let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         // List recent changes
         match self
@@ -1398,7 +1459,7 @@ impl SyncManager {
                             // File was removed
                             if let Some(file_id) = &change.file_id {
                                 info!("Processing deletion for file_id: {}", file_id);
-                                self.publish_deletion_event(&sync_run_id, &source.id, file_id)
+                                self.publish_deletion_event(&sync_run.id, &source.id, file_id)
                                     .await?;
 
                                 let sync_state = SyncState::new(self.redis_client.clone());
@@ -1425,7 +1486,6 @@ impl SyncManager {
                                                         &service_auth,
                                                         &user_email,
                                                         &file,
-                                                        rate_limiter.clone(),
                                                     )
                                                     .await
                                                 {
@@ -1439,7 +1499,7 @@ impl SyncManager {
                                                 // Store content in LOB and get OID
                                                 let content_id = match self
                                                     .content_storage
-                                                    .store_text(&content)
+                                                    .store_text(&content, Some(&storage_prefix))
                                                     .await
                                                 {
                                                     Ok(oid) => oid,
@@ -1450,7 +1510,7 @@ impl SyncManager {
                                                 };
 
                                                 let event = file.to_connector_event(
-                                                    &sync_run_id,
+                                                    &sync_run.id,
                                                     &source.id,
                                                     &content_id,
                                                     file_path,
@@ -1497,7 +1557,7 @@ impl SyncManager {
                 }
 
                 self.update_sync_run_completed(
-                    &sync_run_id,
+                    &sync_run.id,
                     processed_count as i32,
                     updated_count as i32,
                 )
@@ -1509,7 +1569,7 @@ impl SyncManager {
             }
             Err(e) => {
                 error!("Failed to list changes for source {}: {}", source.id, e);
-                self.update_sync_run_failed(&sync_run_id, &e.to_string())
+                self.update_sync_run_failed(&sync_run.id, &e.to_string())
                     .await?;
             }
         }
@@ -1781,12 +1841,11 @@ impl SyncManager {
         auth: &ServiceAccountAuth,
         user_email: &str,
         file: &crate::models::GoogleDriveFile,
-        rate_limiter: Arc<RateLimiter>,
     ) -> Result<String> {
         if let Some(parents) = &file.parents {
             if let Some(parent_id) = parents.first() {
                 return self
-                    .build_full_path(auth, user_email, parent_id, &file.name, rate_limiter)
+                    .build_full_path(auth, user_email, parent_id, &file.name)
                     .await;
             }
         }
@@ -1801,7 +1860,6 @@ impl SyncManager {
         user_email: &str,
         folder_id: &str,
         file_name: &str,
-        rate_limiter: Arc<RateLimiter>,
     ) -> Result<String> {
         debug!(
             "Building full path for file: {}, starting from folder: {}",
@@ -1846,18 +1904,9 @@ impl SyncManager {
                         "Folder {} not found in cache, fetching metadata.",
                         current_folder_id
                     );
-                    let folder_metadata = rate_limiter
-                        .execute_with_retry(|| {
-                            let drive_client = self.drive_client.clone();
-                            let auth = auth.clone();
-                            let user_email = user_email.to_string();
-                            let folder_id = current_folder_id.clone();
-                            async move {
-                                drive_client
-                                    .get_folder_metadata(&auth, &user_email, &folder_id)
-                                    .await
-                            }
-                        })
+                    let folder_metadata = self
+                        .drive_client
+                        .get_folder_metadata(&auth, &user_email, &folder_id)
                         .await;
 
                     match folder_metadata {
@@ -1899,6 +1948,10 @@ impl SyncManager {
 
             if let Some(parent_id) = parent_folder_id {
                 debug!("Folder {} has parent: {:?}", current_folder_id, parent_id);
+                if parent_id == current_folder_id {
+                    debug!("Reached root folder {}", current_folder_id);
+                    break;
+                }
                 current_folder_id = parent_id;
             } else {
                 debug!("Reached root folder {}", current_folder_id);
@@ -1916,12 +1969,14 @@ impl SyncManager {
         user_email: &str,
         service_auth: Arc<ServiceAccountAuth>,
         source_id: &str,
-        sync_run_id: &str,
+        sync_run: &SyncRun,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
-        rate_limiter: Arc<RateLimiter>,
         created_after: Option<&str>,
     ) -> Result<(usize, usize)> {
         info!("Processing Gmail for user: {}", user_email);
+
+        // Create storage prefix from sync_run
+        let storage_prefix = Self::get_storage_prefix(sync_run);
 
         let mut total_processed = 0;
         let mut total_updated = 0;
@@ -1938,34 +1993,23 @@ impl SyncManager {
                 user_email, page_token
             );
 
-            // Use rate limiter for listing threads
-            let response = rate_limiter
-                .execute_with_retry(|| {
-                    let gmail_client = self.gmail_client.clone();
-                    let service_auth = service_auth.clone();
-                    let user_email = user_email.to_string();
-                    let page_token = page_token.clone();
-
-                    async move {
-                        gmail_client
-                            .list_threads(
-                                &service_auth,
-                                &user_email,
-                                None,
-                                Some(BATCH_SIZE as u32),
-                                page_token.as_deref(),
-                                created_after,
-                            )
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "Failed to list Gmail threads for user {} (page_token: {:?})",
-                                    user_email, page_token
-                                )
-                            })
-                    }
-                })
-                .await?;
+            let response = self
+                .gmail_client
+                .list_threads(
+                    &service_auth,
+                    &user_email,
+                    None,
+                    Some(BATCH_SIZE as u32),
+                    page_token.as_deref(),
+                    created_after,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to list Gmail threads for user {} (page_token: {:?})",
+                        user_email, page_token
+                    )
+                })?;
 
             // Collect thread IDs
             if let Some(threads) = response.threads {
@@ -2032,29 +2076,18 @@ impl SyncManager {
             debug!("Processing batch of {} threads", unprocessed_threads.len());
 
             // Step 3: Fetch threads in batch
-            let batch_results = match rate_limiter
-                .execute_with_retry(|| {
-                    let gmail_client = self.gmail_client.clone();
-                    let service_auth = service_auth.clone();
-                    let user_email = user_email.to_string();
-                    let thread_ids = unprocessed_threads.clone();
-
-                    async move {
-                        gmail_client
-                            .batch_get_threads(
-                                &service_auth,
-                                &user_email,
-                                &thread_ids,
-                                MessageFormat::Full,
-                            )
-                            .await
-                            .with_context(|| {
-                                format!("Failed to get Gmail threads batch for user {}", user_email)
-                            })
-                    }
-                })
+            let batch_results = match self
+                .gmail_client
+                .batch_get_threads(
+                    &service_auth,
+                    &user_email,
+                    &unprocessed_threads,
+                    MessageFormat::Full,
+                )
                 .await
-            {
+                .with_context(|| {
+                    format!("Failed to get Gmail threads batch for user {}", user_email)
+                }) {
                 Ok(results) => results,
                 Err(e) => {
                     warn!("Failed to fetch thread batch: {}", e);
@@ -2131,11 +2164,15 @@ impl SyncManager {
                         Ok(content) => {
                             if !content.trim().is_empty() {
                                 // Store content in LOB storage
-                                match self.content_storage.store_text(&content).await {
+                                match self
+                                    .content_storage
+                                    .store_text(&content, Some(&storage_prefix))
+                                    .await
+                                {
                                     Ok(content_id) => {
                                         // Create connector event
                                         match gmail_thread.to_connector_event(
-                                            sync_run_id,
+                                            &sync_run.id,
                                             source_id,
                                             &content_id,
                                             &self.gmail_client,
@@ -2244,10 +2281,10 @@ impl SyncManager {
                         // Continue the sync using the existing sync run ID
                         let result = match source.source_type {
                             SourceType::GoogleDrive => {
-                                self.sync_drive_source_internal(&source, &sync_run.id).await
+                                self.sync_drive_source_internal(&source, &sync_run).await
                             }
                             SourceType::Gmail => {
-                                self.sync_gmail_source_internal(&source, &sync_run.id).await
+                                self.sync_gmail_source_internal(&source, &sync_run).await
                             }
                             _ => Err(anyhow::anyhow!(
                                 "Unsupported source type: {:?}",

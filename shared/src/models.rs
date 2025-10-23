@@ -351,8 +351,8 @@ pub struct SyncRun {
     pub id: String,
     pub source_id: String,
     pub sync_type: SyncType,
-    #[serde(with = "time::serde::iso8601")]
-    pub started_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601::option")]
+    pub started_at: Option<OffsetDateTime>,
     #[serde(with = "time::serde::iso8601::option")]
     pub completed_at: Option<OffsetDateTime>,
     pub status: SyncStatus,

@@ -1,4 +1,4 @@
-pub mod embedding_processor;
+// pub mod embedding_processor; // No longer needed - omni-ai handles all embedding processing
 pub mod error;
 pub mod lexeme_refresh;
 pub mod queue_processor;
@@ -150,7 +150,7 @@ async fn create_document(
     // Store content in content_blobs table
     let content_id = state
         .content_storage
-        .store_content_with_type(request.content.as_bytes(), Some("text/plain"))
+        .store_content_with_type(request.content.as_bytes(), Some("text/plain"), None)
         .await
         .map_err(|e| error::IndexerError::Internal(format!("Failed to store content: {}", e)))?;
 
@@ -224,7 +224,7 @@ async fn update_document(
         Some(
             state
                 .content_storage
-                .store_content_with_type(content.as_bytes(), Some("text/plain"))
+                .store_content_with_type(content.as_bytes(), Some("text/plain"), None)
                 .await
                 .map_err(|e| {
                     error::IndexerError::Internal(format!("Failed to store content: {}", e))
@@ -352,7 +352,7 @@ async fn process_create_operation(
     // Store content in content_blobs table
     let content_id = state
         .content_storage
-        .store_content_with_type(request.content.as_bytes(), Some("text/plain"))
+        .store_content_with_type(request.content.as_bytes(), Some("text/plain"), None)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to store content: {}", e))?;
 
@@ -389,7 +389,7 @@ async fn process_update_operation(
         Some(
             state
                 .content_storage
-                .store_content_with_type(content.as_bytes(), Some("text/plain"))
+                .store_content_with_type(content.as_bytes(), Some("text/plain"), None)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to store content: {}", e))?,
         )
@@ -548,12 +548,13 @@ pub async fn run_server() -> anyhow::Result<()> {
     });
 
     // Start embedding processor
-    let embedding_processor = embedding_processor::EmbeddingProcessor::new(app_state.clone());
-    let embedding_handle = tokio::spawn(async move {
-        if let Err(e) = embedding_processor.start().await {
-            error!("Embedding processor failed: {}", e);
-        }
-    });
+    // NOTE: Embedding processor commented out - omni-ai now handles all embedding processing
+    // let embedding_processor = embedding_processor::EmbeddingProcessor::new(app_state.clone());
+    // let embedding_handle = tokio::spawn(async move {
+    //     if let Err(e) = embedding_processor.start().await {
+    //         error!("Embedding processor failed: {}", e);
+    //     }
+    // });
 
     // Start lexeme refresh background task
     let lexeme_db_pool = app_state.db_pool.clone();
@@ -575,9 +576,9 @@ pub async fn run_server() -> anyhow::Result<()> {
         _ = processor_handle => {
             error!("Event processor task completed unexpectedly");
         }
-        _ = embedding_handle => {
-            error!("Embedding processor task completed unexpectedly");
-        }
+        // _ = embedding_handle => {
+        //     error!("Embedding processor task completed unexpectedly");
+        // }
         _ = lexeme_refresh_handle => {
             error!("Lexeme refresh task completed unexpectedly");
         }

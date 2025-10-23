@@ -330,7 +330,7 @@ impl SyncManager {
             // Store content in LOB and get OID
             let content_id = match self
                 .content_storage
-                .store_text(&group.to_document_content())
+                .store_text(&group.to_document_content(), None)
                 .await
             {
                 Ok(oid) => oid,
@@ -363,7 +363,7 @@ impl SyncManager {
                     let placeholder_sync_run_id = shared::utils::generate_ulid();
 
                     // Store content in LOB and get OID
-                    let content_id = match self.content_storage.store_text(&content).await {
+                    let content_id = match self.content_storage.store_text(&content, None).await {
                         Ok(oid) => oid,
                         Err(e) => {
                             error!(

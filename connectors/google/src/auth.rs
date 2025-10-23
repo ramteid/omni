@@ -4,6 +4,7 @@ use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use shared::models::SourceType;
+use shared::RateLimiter;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -237,7 +238,7 @@ pub enum ApiResult<T> {
 pub async fn execute_with_auth_retry<T, F, Fut>(
     auth: &ServiceAccountAuth,
     user_email: &str,
-    rate_limiter: &Option<Arc<shared::RateLimiter>>,
+    rate_limiter: Arc<RateLimiter>,
     operation: F,
 ) -> Result<T>
 where
@@ -247,15 +248,9 @@ where
     let mut token = auth.get_fresh_token(user_email).await?;
 
     for attempt in 0..2 {
-        let api_result = match rate_limiter {
-            Some(limiter) => {
-                let token_clone = token.clone();
-                limiter
-                    .execute_with_retry(|| operation(token_clone.clone()))
-                    .await?
-            }
-            None => operation(token.clone()).await?,
-        };
+        let api_result = rate_limiter
+            .execute_with_retry(|| operation(token.clone()))
+            .await?;
 
         match api_result {
             ApiResult::Success(response) => return Ok(response),

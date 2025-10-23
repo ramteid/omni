@@ -71,6 +71,17 @@ module "loadbalancer" {
   enable_deletion_protection = var.alb_deletion_protection
 }
 
+module "storage" {
+  source = "./modules/storage"
+
+  customer_name = var.customer_name
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+    Customer    = var.customer_name
+  }
+}
+
 module "compute" {
   source = "./modules/compute"
 
@@ -109,6 +120,13 @@ module "compute" {
   google_client_id     = var.google_client_id
   google_client_secret = var.google_client_secret
   resend_api_key       = var.resend_api_key
+
+  # Storage resources for S3 and batch inference
+  content_bucket_arn       = module.storage.content_bucket_arn
+  content_bucket_name      = module.storage.content_bucket_name
+  batch_bucket_arn         = module.storage.batch_bucket_arn
+  batch_bucket_name        = module.storage.batch_bucket_name
+  bedrock_batch_role_arn   = module.storage.bedrock_batch_role_arn
 }
 
 module "migrations" {

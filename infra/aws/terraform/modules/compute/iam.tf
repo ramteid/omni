@@ -59,19 +59,63 @@ resource "aws_iam_role" "ecs_task" {
     name = "BedrockAccess"
     policy = jsonencode({
       Version = "2012-10-17"
+      Statement = [
+        {
+          Effect = "Allow"
+          Action = [
+            "bedrock:InvokeModel",
+            "bedrock:InvokeModelWithResponseStream"
+          ]
+          Resource = [
+            "arn:aws:bedrock:*:*:inference-profile/us.anthropic.*",
+            "arn:aws:bedrock:*:*:inference-profile/eu.anthropic.*",
+            "arn:aws:bedrock:*::foundation-model/anthropic.*",
+            "arn:aws:bedrock:*:*:inference-profile/us.amazon.*",
+            "arn:aws:bedrock:*:*:inference-profile/eu.amazon.*",
+            "arn:aws:bedrock:*::foundation-model/amazon.*"
+          ]
+        },
+        {
+          Effect = "Allow"
+          Action = [
+            "bedrock:CreateModelInvocationJob",
+            "bedrock:GetModelInvocationJob",
+            "bedrock:ListModelInvocationJobs",
+            "bedrock:StopModelInvocationJob"
+          ]
+          Resource = "*"
+        },
+        {
+          Effect = "Allow"
+          Action = ["iam:PassRole"]
+          Resource = var.bedrock_batch_role_arn
+          Condition = {
+            StringEquals = {
+              "iam:PassedToService" = "bedrock.amazonaws.com"
+            }
+          }
+        }
+      ]
+    })
+  }
+
+  inline_policy {
+    name = "S3Access"
+    policy = jsonencode({
+      Version = "2012-10-17"
       Statement = [{
         Effect = "Allow"
         Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
         ]
         Resource = [
-          "arn:aws:bedrock:*:*:inference-profile/us.anthropic.*",
-          "arn:aws:bedrock:*:*:inference-profile/eu.anthropic.*",
-          "arn:aws:bedrock:*::foundation-model/anthropic.*",
-          "arn:aws:bedrock:*:*:inference-profile/us.amazon.*",
-          "arn:aws:bedrock:*:*:inference-profile/eu.amazon.*",
-          "arn:aws:bedrock:*::foundation-model/amazon.*"
+          var.content_bucket_arn,
+          "${var.content_bucket_arn}/*",
+          var.batch_bucket_arn,
+          "${var.batch_bucket_arn}/*"
         ]
       }]
     })

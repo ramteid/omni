@@ -1,11 +1,13 @@
 use anyhow::Result;
 use governor::{Quota, RateLimiter as GovernorRateLimiter};
-use nonzero_ext::*;
 use rand::{thread_rng, Rng};
+use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct RateLimiter {
@@ -17,23 +19,58 @@ pub struct RateLimiter {
         >,
     >,
     max_retries: u32,
+    request_count: Arc<AtomicU64>,
+    last_log_time: Arc<std::sync::Mutex<Instant>>,
+    configured_rps: u32,
 }
 
 impl RateLimiter {
+    const MAX_BACKOFF: Duration = Duration::from_secs(32); // Maximum backoff time in seconds
+
     pub fn new(requests_per_second: u32, max_retries: u32) -> Self {
-        let requests_per_second =
-            std::num::NonZeroU32::new(requests_per_second).unwrap_or(nonzero!(180u32));
-        let quota = Quota::per_second(requests_per_second);
+        let requests_per_second_nz = NonZeroU32::new(requests_per_second).expect(
+            format!(
+                "Invalid requests_per_second for RateLimiter: {}",
+                requests_per_second
+            )
+            .as_str(),
+        );
+        let quota = Quota::per_second(requests_per_second_nz);
         let limiter = Arc::new(GovernorRateLimiter::direct(quota));
 
+        debug!(
+            "Creating rate limit with limit of {} requests per second",
+            requests_per_second
+        );
         Self {
             limiter,
             max_retries,
+            request_count: Arc::new(AtomicU64::new(0)),
+            last_log_time: Arc::new(std::sync::Mutex::new(Instant::now())),
+            configured_rps: requests_per_second,
         }
     }
 
     pub async fn check_rate_limit(&self) -> Result<()> {
         self.limiter.until_ready().await;
+
+        self.request_count.fetch_add(1, Ordering::Relaxed);
+
+        let mut last_log = self.last_log_time.lock().unwrap();
+        let elapsed = last_log.elapsed();
+
+        if elapsed >= Duration::from_secs(1) {
+            let count = self.request_count.swap(0, Ordering::Relaxed);
+            let actual_rps = count as f64 / elapsed.as_secs_f64();
+
+            info!(
+                "Rate limiter stats: actual={:.2} req/sec, limit={} req/sec",
+                actual_rps, self.configured_rps
+            );
+
+            *last_log = Instant::now();
+        }
+
         Ok(())
     }
 
@@ -68,8 +105,8 @@ impl RateLimiter {
                     sleep(wait_time).await;
 
                     delay = delay.saturating_mul(2);
-                    if delay > Duration::from_secs(32) {
-                        delay = Duration::from_secs(32);
+                    if delay > Self::MAX_BACKOFF {
+                        delay = Self::MAX_BACKOFF;
                     }
                 }
             }

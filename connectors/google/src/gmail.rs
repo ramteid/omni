@@ -3,7 +3,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::debug;
 
@@ -15,7 +16,8 @@ const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
 #[derive(Clone)]
 pub struct GmailClient {
     client: Client,
-    rate_limiter: Option<Arc<RateLimiter>>,
+    rate_limiter: Arc<RateLimiter>,
+    user_rate_limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter>>>>,
 }
 
 impl GmailClient {
@@ -26,9 +28,12 @@ impl GmailClient {
             .build()
             .expect("Failed to build HTTP client");
 
+        let rate_limiter = Arc::new(RateLimiter::new(200, 5));
+        let user_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
         Self {
             client,
-            rate_limiter: None,
+            rate_limiter,
+            user_rate_limiters,
         }
     }
 
@@ -42,10 +47,48 @@ impl GmailClient {
             .build()
             .expect("Failed to build HTTP client");
 
+        let user_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
         Self {
             client,
-            rate_limiter: Some(rate_limiter),
+            rate_limiter,
+            user_rate_limiters,
         }
+    }
+
+    fn get_or_create_user_rate_limiter(&self, user_email: &str) -> Result<Arc<RateLimiter>> {
+        {
+            let rate_limiters = self.user_rate_limiters.read().map_err(|e| {
+                anyhow!("Failed to acquire read lock on user rate limiters: {:?}", e)
+            })?;
+            if let Some(limiter) = rate_limiters.get(user_email) {
+                return Ok(Arc::clone(limiter));
+            }
+        }
+
+        let mut rate_limiters = self.user_rate_limiters.write().map_err(|e| {
+            anyhow!(
+                "Failed to acquire write lock on user rate limiters: {:?}",
+                e
+            )
+        })?;
+
+        let limiter = rate_limiters
+            .entry(user_email.to_string())
+            .or_insert_with(|| Arc::new(RateLimiter::new(25, 5))) // 1500 req/min for each user, 5 retry attempts
+            .clone();
+
+        Ok(limiter)
+    }
+
+    fn delete_user_rate_limiter(&self, user_email: &str) -> Result<()> {
+        let mut rate_limiters = self.user_rate_limiters.write().map_err(|e| {
+            anyhow!(
+                "Failed to acquire write lock on user rate limiters: {:?}",
+                e
+            )
+        })?;
+        rate_limiters.remove(user_email);
+        Ok(())
     }
 
     pub async fn list_messages(
@@ -61,7 +104,8 @@ impl GmailClient {
         let page_token = page_token.map(|s| s.to_string());
         let created_after = created_after.map(|s| s.to_string());
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let base_query = base_query.clone();
             let page_token = page_token.clone();
             let created_after = created_after.clone();
@@ -139,7 +183,8 @@ impl GmailClient {
         let page_token = page_token.map(|s| s.to_string());
         let created_after = created_after.map(|s| s.to_string());
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let base_query = base_query.clone();
             let page_token = page_token.clone();
             let created_after = created_after.clone();
@@ -213,7 +258,8 @@ impl GmailClient {
     ) -> Result<GmailMessage> {
         let message_id = message_id.to_string();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let message_id = message_id.clone();
             async move {
                 let url = format!(
@@ -286,7 +332,8 @@ impl GmailClient {
     ) -> Result<GmailThreadResponse> {
         let thread_id = thread_id.to_string();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let thread_id = thread_id.clone();
             async move {
                 let url = format!(
@@ -365,7 +412,8 @@ impl GmailClient {
         let chunk_size = std::cmp::min(100, thread_ids.len());
         let thread_chunk = &thread_ids[..chunk_size];
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let thread_chunk = thread_chunk.to_vec();
             async move {
                 let batch_url = "https://www.googleapis.com/batch/gmail/v1";
@@ -515,7 +563,8 @@ impl GmailClient {
         let start_history_id = start_history_id.to_string();
         let page_token = page_token.map(|s| s.to_string());
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let start_history_id = start_history_id.clone();
             let page_token = page_token.clone();
             async move {
@@ -572,7 +621,8 @@ impl GmailClient {
         auth: &ServiceAccountAuth,
         user_email: &str,
     ) -> Result<GmailProfile> {
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| async move {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| async move {
             let url = format!("{}/users/{}/profile", GMAIL_API_BASE, user_email);
 
             let response = self.client.get(&url).bearer_auth(&token).send().await?;

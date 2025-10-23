@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -9,6 +9,7 @@ use tracing::{debug, warn};
 use docx_rs::read_docx;
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
+use std::collections::HashMap;
 use std::io::Cursor;
 use zip::ZipArchive;
 
@@ -27,8 +28,12 @@ const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
 #[derive(Clone)]
 pub struct DriveClient {
     client: Client,
-    rate_limiter: Option<Arc<RateLimiter>>,
+    // This rate limiter is for Drive APIs (rate limit: 12k req/min)
+    rate_limiter: Arc<RateLimiter>,
     ai_client: Option<AIClient>,
+    // These rate limiters, one per user, are for Docs/Sheets etc. APIs,
+    // which have a rate limit per user of 300 req/min
+    user_rate_limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter>>>>,
 }
 
 impl DriveClient {
@@ -42,10 +47,14 @@ impl DriveClient {
             .build()
             .expect("Failed to build HTTP client");
 
+        let rate_limiter = Arc::new(RateLimiter::new(200, 5)); // 12000 req/min
+        let user_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
+
         Self {
             client,
-            rate_limiter: None,
+            rate_limiter,
             ai_client: None,
+            user_rate_limiters,
         }
     }
 
@@ -61,8 +70,9 @@ impl DriveClient {
 
         Self {
             client,
-            rate_limiter: Some(rate_limiter),
+            rate_limiter,
             ai_client: Some(ai_client),
+            user_rate_limiters: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -76,7 +86,7 @@ impl DriveClient {
         let page_token = page_token.map(|s| s.to_string());
         let created_after = created_after.map(|s| s.to_string());
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        execute_with_auth_retry(auth, user_email, self.rate_limiter.clone(), |token| {
             let page_token = page_token.clone();
             let created_after = created_after.clone();
             async move {
@@ -101,6 +111,7 @@ impl DriveClient {
                 params.push(("pageToken", page_token));
             }
 
+            debug!("[GOOGLE API CALL] list_files for user {}, page_token {:?}", user_email, page_token);
             let response = self
                 .client
                 .get(&url)
@@ -178,6 +189,42 @@ impl DriveClient {
         }
     }
 
+    fn get_or_create_user_rate_limiter(&self, user_email: &str) -> Result<Arc<RateLimiter>> {
+        {
+            let rate_limiters = self.user_rate_limiters.read().map_err(|e| {
+                anyhow!("Failed to acquire read lock on user rate limiters: {:?}", e)
+            })?;
+            if let Some(limiter) = rate_limiters.get(user_email) {
+                return Ok(Arc::clone(limiter));
+            }
+        }
+
+        let mut rate_limiters = self.user_rate_limiters.write().map_err(|e| {
+            anyhow!(
+                "Failed to acquire write lock on user rate limiters: {:?}",
+                e
+            )
+        })?;
+
+        let limiter = rate_limiters
+            .entry(user_email.to_string())
+            .or_insert_with(|| Arc::new(RateLimiter::new(5, 5))) // 300 req/min for each user, 5 retry attempts
+            .clone();
+
+        Ok(limiter)
+    }
+
+    fn delete_user_rate_limiter(&self, user_email: &str) -> Result<()> {
+        let mut rate_limiters = self.user_rate_limiters.write().map_err(|e| {
+            anyhow!(
+                "Failed to acquire write lock on user rate limiters: {:?}",
+                e
+            )
+        })?;
+        rate_limiters.remove(user_email);
+        Ok(())
+    }
+
     async fn get_google_doc_content(
         &self,
         auth: &ServiceAccountAuth,
@@ -186,11 +233,13 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/documents/{}", DOCS_API_BASE, &file_id);
 
+                debug!("[GOOGLE API CALL] get_google_doc_content for user {}, file_id {}", user_email, file_id);
                 let response = self
                     .client
                     .get(&url)
@@ -245,7 +294,8 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, &file_id);
@@ -308,7 +358,8 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/presentations/{}", SLIDES_API_BASE, &file_id);
@@ -354,7 +405,8 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
@@ -400,7 +452,8 @@ impl DriveClient {
     ) -> Result<Vec<u8>> {
         let file_id = file_id.to_string();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
                 let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
@@ -469,7 +522,8 @@ impl DriveClient {
         let file_id = file_id.to_string();
         let ai_client = ai_client.clone();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             let ai_client = ai_client.clone();
             async move {
@@ -761,7 +815,7 @@ impl DriveClient {
     ) -> Result<GoogleDriveFile> {
         let folder_id = folder_id.to_string();
 
-        execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
+        execute_with_auth_retry(auth, user_email, self.rate_limiter.clone(), |token| {
             let folder_id = folder_id.clone();
             async move {
                 let url = format!("{}/files/{}", DRIVE_API_BASE, folder_id);
