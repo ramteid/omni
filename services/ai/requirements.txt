@@ -27,6 +27,7 @@ asyncpg==0.30.0
 
 # Utilities
 python-ulid==3.1.0
+smart-open==7.4.1
 
 # OpenTelemetry
 opentelemetry-api==1.29.0

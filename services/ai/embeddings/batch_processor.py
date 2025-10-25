@@ -8,14 +8,15 @@ import logging
 import json
 import time
 import boto3
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Generator, AsyncGenerator
 from dataclasses import dataclass
 from collections import defaultdict
 from datetime import datetime
 import ulid
 import asyncpg
+import smart_open
 
-from ..config import (
+from config import (
     DATABASE_URL,
     ENABLE_EMBEDDING_BATCH_INFERENCE,
     EMBEDDING_BATCH_S3_BUCKET,
@@ -28,6 +29,7 @@ from ..config import (
     BEDROCK_EMBEDDING_MODEL_ID,
     AWS_REGION,
 )
+
 from embeddings import chunk_by_sentences
 
 logger = logging.getLogger(__name__)
@@ -68,7 +70,7 @@ class EmbeddingQueueItem:
 class StorageClient:
     """Abstraction for cloud storage operations (S3, GCS, etc.)"""
 
-    async def upload_jsonl(self, path: str, records: List[dict]) -> None:
+    async def upload_jsonl(self, path: str, records: AsyncGenerator[dict, None]) -> int:
         """Upload JSONL to cloud storage"""
         raise NotImplementedError
 
@@ -92,22 +94,23 @@ class S3StorageClient(StorageClient):
             self.s3_client = boto3.client('s3')
         logger.info(f"Initialized S3 storage client for bucket: {bucket}")
 
-    async def upload_jsonl(self, path: str, records: List[dict]) -> None:
-        """Upload JSONL to S3"""
-        # Convert records to JSONL format
-        jsonl_content = '\n'.join(json.dumps(record) for record in records)
+        self.max_records_per_file = 1000
 
-        # Upload to S3
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: self.s3_client.put_object(
-                Bucket=self.bucket,
-                Key=path,
-                Body=jsonl_content.encode('utf-8')
-            )
-        )
-        logger.info(f"Uploaded {len(records)} records to s3://{self.bucket}/{path}")
+    async def upload_jsonl(self, path: str, records: AsyncGenerator[dict, None]) -> int:
+        """Upload JSONL to S3."""
+
+        num_records = 0
+        with smart_open.open(f"s3://{self.bucket}/{path}", 'w', transport_params={ 'min_part_size': 25 * 1024 * 1024 }, buffering=5 * 1024 * 1024) as f:
+            async for record in records:
+                jsonl = json.dumps(record) + '\n'
+                f.write(jsonl)
+                num_records += 1
+
+                if num_records % 100 == 0:
+                    logger.info(f"Uploaded {num_records} records to s3://{self.bucket}/{path}")
+        
+        logger.info(f"Uploaded {num_records} records to s3://{self.bucket}/{path}")
+        return num_records
 
     async def download_jsonl(self, path: str) -> List[dict]:
         """Download JSONL from S3"""
@@ -243,6 +246,18 @@ class BatchDatabase:
 
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
+    
+    async def get_num_pending_queue_items(self) -> int:
+        """Get number of pending queue items."""
+        res = await self.pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM embedding_queue
+            WHERE status = 'pending' AND batch_job_id IS NULL AND retry_count < 5
+            """
+        )
+
+        return int(res)
 
     async def get_pending_queue_items(self, limit: int) -> List[EmbeddingQueueItem]:
         """Fetch pending items not assigned to any batch"""
@@ -250,7 +265,7 @@ class BatchDatabase:
             """
             SELECT id, document_id, status, batch_job_id, created_at
             FROM embedding_queue
-            WHERE status = 'pending' AND batch_job_id IS NULL
+            WHERE status = 'pending' AND batch_job_id IS NULL AND retry_count < 5
             ORDER BY created_at ASC
             LIMIT $1
             """,
@@ -258,17 +273,17 @@ class BatchDatabase:
         )
         return [EmbeddingQueueItem(**dict(row)) for row in rows]
 
-    async def create_batch_job(self, provider: str, document_count: int) -> str:
+    async def create_batch_job(self, provider: str) -> str:
         """Create new batch job record, return job_id"""
         job_id = str(ulid.ULID())
         await self.pool.execute(
             """
-            INSERT INTO embedding_batch_jobs (id, status, provider, document_count)
-            VALUES ($1, 'pending', $2, $3)
+            INSERT INTO embedding_batch_jobs (id, status, provider)
+            VALUES ($1, 'pending', $2)
             """,
-            job_id, provider, document_count
+            job_id, provider
         )
-        logger.info(f"Created batch job {job_id} with {document_count} documents")
+        logger.info(f"Created batch job {job_id}")
         return job_id
 
     async def assign_items_to_batch(self, batch_id: str, item_ids: List[str]) -> None:
@@ -276,7 +291,7 @@ class BatchDatabase:
         await self.pool.execute(
             """
             UPDATE embedding_queue
-            SET batch_job_id = $1, status = 'batched'
+            SET batch_job_id = $1, status = 'pending'
             WHERE id = ANY($2)
             """,
             batch_id, item_ids
@@ -304,11 +319,12 @@ class BatchDatabase:
         external_job_id: Optional[str] = None,
         input_storage_path: Optional[str] = None,
         output_storage_path: Optional[str] = None,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        document_count: Optional[int] = None,
     ) -> None:
         """Update batch job status and other fields"""
         updates = ['status = $2']
-        params = [job_id, status]
+        params: list[str | int] = [job_id, status]
         param_idx = 3
 
         if external_job_id is not None:
@@ -329,6 +345,11 @@ class BatchDatabase:
         if error_message is not None:
             updates.append(f'error_message = ${param_idx}')
             params.append(error_message)
+            param_idx += 1
+        
+        if document_count is not None:
+            updates.append(f'document_count = ${param_idx}')
+            params.append(document_count)
             param_idx += 1
 
         if status == 'submitted':
@@ -369,6 +390,18 @@ class BatchDatabase:
             item_ids
         )
         logger.info(f"Marked {len(item_ids)} queue items as completed")
+
+    async def mark_items_pending(self, item_ids: List[str]) -> None:
+        """Mark queue items as failed"""
+        await self.pool.execute(
+            """
+            UPDATE embedding_queue
+            SET status = 'pending', batch_job_id = NULL
+            WHERE id = ANY($1)
+            """,
+            item_ids
+        )
+        logger.error(f"Marked {len(item_ids)} queue items as pending")
 
     async def mark_items_failed(self, item_ids: List[str], error: str) -> None:
         """Mark queue items as failed"""
@@ -495,9 +528,8 @@ class EmbeddingBatchProcessor:
     async def _check_and_create_batch(self):
         """Check thresholds and create batch if conditions met"""
         # Query pending items
-        items = await self.db.get_pending_queue_items(EMBEDDING_BATCH_MAX_DOCUMENTS)
-        current_count = len(items)
-
+        current_count = await self.db.get_num_pending_queue_items()
+        logger.debug(f"Current pending items: {current_count}")
         if current_count == 0:
             return
 
@@ -523,39 +555,90 @@ class EmbeddingBatchProcessor:
                 f"Creating batch with {current_count} documents "
                 f"(idle for {time_since_last_change:.1f}s)"
             )
-            await self.create_batch(items)
+            num_documents = await asyncio.create_task(self.create_batch())
 
             # Reset accumulation state
             self.accumulation_state['last_seen_count'] = 0
             self.accumulation_state['last_change_time'] = current_time
+        else:
+            logger.debug(
+                f"Not creating batch yet: {current_count} documents "
+                f"(idle for {time_since_last_change:.1f}s)"
+            )
 
-    async def create_batch(self, items: List[EmbeddingQueueItem]):
-        """Create and submit a new batch job"""
+    async def create_batch(self):
+        """Create and submit a new batch job, returning the item IDs that were included in the batch."""
         try:
-            # Create batch job record
-            batch_id = await self.db.create_batch_job('bedrock', len(items))
-
-            # Assign items to batch
-            item_ids = [item.id for item in items]
-            await self.db.assign_items_to_batch(batch_id, item_ids)
-
-            # Prepare and submit in background
-            asyncio.create_task(self._prepare_and_submit_safe(batch_id))
-
+            # Create batch job record with 0 documents to start, will get updated as we include more documents
+            # in this batch
+            batch_id = await self.db.create_batch_job('bedrock')
         except Exception as e:
             logger.error(f"Failed to create batch: {e}", exc_info=True)
+            return
 
-    async def _prepare_and_submit_safe(self, batch_id: str):
-        """Safe wrapper for prepare_and_submit with error handling"""
         try:
-            await self.prepare_and_submit(batch_id)
-        except Exception as e:
-            logger.error(f"Failed to prepare/submit batch {batch_id}: {e}", exc_info=True)
+            await self.db.update_batch_job_status(batch_id, status='preparing')
 
-            # Mark batch and items as failed
-            await self.db.update_batch_job_status(batch_id, 'failed', error_message=str(e))
+            async def record_generator():
+                num_records_in_batch = 0
+                items = await self.db.get_pending_queue_items(EMBEDDING_BATCH_MAX_DOCUMENTS)
+                for item in items:
+                    jsonl_records = await self._fetch_and_chunk_document(item)
+                    if num_records_in_batch + len(jsonl_records) >= EMBEDDING_BATCH_MAX_DOCUMENTS:
+                        logger.info(f"Batch {batch_id} reached max documents ({num_records_in_batch})")
+                        break
+
+                    logger.debug(f"Including {len(jsonl_records)} records from document {item.document_id} in batch {batch_id}")
+                    await self.db.assign_items_to_batch(batch_id, [item.id])
+                    for record in jsonl_records:
+                        yield record
+                    num_records_in_batch += len(jsonl_records)
+            
+                # Update the batch job record with the number of documents in the batch
+                await self.db.update_batch_job_status(batch_id, status='preparing', document_count=num_records_in_batch)
+
+            # Upload to storage
+            logger.info(f"Uploading batch {batch_id} to storage...")
+            date = datetime.now().strftime("%Y-%m-%d")
+            input_key = f"{date}/{batch_id}/input.jsonl"
+            num_records_uploaded = await self.storage_client.upload_jsonl(input_key, record_generator())
+            logger.info(f"Completed upload of {num_records_uploaded} to s3://{EMBEDDING_BATCH_S3_BUCKET}/{input_key}")
+
+            # Submit job
+            input_path = f"s3://{EMBEDDING_BATCH_S3_BUCKET}/{input_key}"
+            output_path = f"s3://{EMBEDDING_BATCH_S3_BUCKET}/{batch_id}/output"
+            job_name = f"embedding-batch-{batch_id}"
+            logger.info(f"Submitting batch job {batch_id} to provider...")
+            external_job_id = await self.provider.submit_job(input_path, output_path, job_name)
+            logger.info(f"Submitted batch {batch_id} to provider, external_job_id: {external_job_id}")
+
+            # Update batch job with submission details
+            await self.db.update_batch_job_status(
+                batch_id,
+                status='submitted',
+                external_job_id=external_job_id,
+                input_storage_path=input_path,
+                output_storage_path=output_path,
+                document_count=num_records_uploaded
+            )
+
+            # Update queue items to processing
+            await self.db.pool.execute(
+                """
+                UPDATE embedding_queue
+                SET status = 'processing'
+                WHERE batch_job_id = $1
+                """,
+                batch_id
+            )
+
+            logger.info(f"Batch {batch_id} submitted successfully (external_job_id: {external_job_id})")
+        except Exception as e:
+            logger.error(f"Failed to prepare batch {batch_id}: {e}")
+            await self.db.update_batch_job_status(batch_id, status='failed', error_message=str(e))
+            # Reset all items included in this batch, put them back in the pending pool
             items = await self.db.get_queue_items_for_batch(batch_id)
-            await self.db.mark_items_failed([item.id for item in items], str(e))
+            await self.db.mark_items_pending([item.id for item in items])
 
     # ------------------------------------------------------------------------
     # Batch Preparation & Submission
@@ -606,6 +689,51 @@ class EmbeddingBatchProcessor:
         )
 
         logger.info(f"Batch {batch_id} submitted successfully (external_job_id: {external_job_id})")
+    
+    async def _fetch_and_chunk_document(self, item: EmbeddingQueueItem) -> List[dict]:
+        """Fetch a single document and generate JSONL records."""
+        chunks = []
+
+        try:
+            # Fetch document from DB
+            doc = await self.db.pool.fetchrow(
+                "SELECT id, content_id FROM documents WHERE id = $1",
+                item.document_id
+            )
+
+            if not doc or not doc['content_id']:
+                logger.error(f"Document {item.document_id} has no content_id, skipping")
+                return chunks
+            
+            # Fetch content from storage
+            logger.debug(f"Fetching content ID {doc['content_id']} from database.")
+            content = await self.db.pool.fetchrow(
+                "SELECT id, content_type, storage_key, storage_backend FROM content_blobs WHERE id = $1",
+                doc['content_id']
+            )
+            content_text = await self.content_storage.get_text(content['storage_key'])
+            if not content_text or not content_text.strip():
+                logger.error(f"Empty content for document {item.document_id}")
+            
+            # Chunk the content
+            chunk_spans = chunk_by_sentences(content_text, chunk_size=4096)
+
+            for chunk_idx, (start_char, end_char) in enumerate(chunk_spans):
+                chunk_text = content_text[start_char:end_char]
+
+                chunks.append({
+                    'recordId': f"{item.document_id}:{chunk_idx}:{start_char}:{end_char}",
+                    'modelInput': {
+                        'inputText': chunk_text
+                    }
+                })
+            
+            logger.debug(f"Document {item.document_id} chunked into {len(chunks)} chunks.")
+            
+        except Exception as e:
+            logger.error(f"Failed to process document {item.document_id}: {e}", exc_info=True)
+
+        return chunks
 
     async def _fetch_and_chunk_documents(self, items: List[EmbeddingQueueItem]) -> List[dict]:
         """Fetch content and generate JSONL records"""

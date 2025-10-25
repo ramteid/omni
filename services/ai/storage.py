@@ -21,14 +21,14 @@ class ContentStorage:
             self.s3_client = boto3.client('s3')
         logger.info(f"Initialized content storage client for bucket: {bucket}")
 
-    async def get_text(self, content_id: str) -> str:
+    async def get_text(self, key: str) -> str:
         """Fetch text content from S3"""
         import asyncio
 
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None,
-            lambda: self.s3_client.get_object(Bucket=self.bucket, Key=content_id)
+            lambda: self.s3_client.get_object(Bucket=self.bucket, Key=key)
         )
 
         content = response['Body'].read().decode('utf-8')
