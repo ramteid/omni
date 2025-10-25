@@ -121,7 +121,8 @@ pub async fn search(
         state.redis_client,
         state.ai_client,
         state.config,
-    );
+    )
+    .await?;
 
     let response = match search_engine.search(request.clone()).await {
         Ok(response) => response,
@@ -165,7 +166,8 @@ pub async fn suggestions(
         state.redis_client,
         state.ai_client,
         state.config,
-    );
+    )
+    .await?;
     let response = search_engine.suggest(&query.q, query.limit()).await?;
 
     Ok(Json(serde_json::to_value(response)?))
@@ -185,7 +187,8 @@ pub async fn recent_searches(
         state.redis_client,
         state.ai_client,
         state.config,
-    );
+    )
+    .await?;
 
     let response = search_engine.get_recent_searches(&query.user_id).await?;
 
@@ -203,7 +206,9 @@ pub async fn ai_answer(
         state.redis_client.clone(),
         state.ai_client.clone(),
         state.config.clone(),
-    );
+    )
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Generate cache key for AI answer
     let cache_key = search_engine.generate_ai_cache_key(&request.query);
