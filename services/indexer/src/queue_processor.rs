@@ -1,5 +1,5 @@
 use crate::AppState;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::future::join_all;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use shared::embedding_queue::EmbeddingQueue;
@@ -610,11 +610,41 @@ impl QueueProcessor {
             .map(|(doc, _)| doc.clone())
             .collect();
 
+        // Batch fetch content from storage
+        let content_fetch_start = std::time::Instant::now();
+        let content_ids: Vec<String> = documents
+            .iter()
+            .filter_map(|d| d.content_id.clone())
+            .collect();
+
+        let content_map = self
+            .state
+            .content_storage
+            .batch_get_text(content_ids)
+            .await?;
+
+        // Build contents vector in the same order as documents
+        let contents: Vec<String> = documents
+            .iter()
+            .map(|doc| {
+                doc.content_id
+                    .as_ref()
+                    .and_then(|cid| content_map.get(cid).cloned())
+                    .with_context(|| format!("Failed to get content for document {}", doc.id))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        debug!(
+            "Batch fetched content for {} documents in {:?}",
+            documents.len(),
+            content_fetch_start.elapsed()
+        );
+
         let repo = DocumentRepository::new(self.state.db_pool.pool());
 
-        // Batch upsert documents
+        // Batch upsert documents with content
         let upsert_start = std::time::Instant::now();
-        let upserted_documents = repo.batch_upsert(documents).await?;
+        let upserted_documents = repo.batch_upsert(documents, contents).await?;
         debug!(
             "Batch upsert of {} documents took {:?}",
             upserted_documents.len(),
@@ -667,12 +697,35 @@ impl QueueProcessor {
     ) -> Result<Vec<String>> {
         let repo = DocumentRepository::new(self.state.db_pool.pool());
 
+        // Batch fetch content from storage
+        let documents: Vec<&Document> = documents_with_event_ids
+            .iter()
+            .map(|(doc, _)| doc)
+            .collect();
+
+        let content_ids: Vec<String> = documents
+            .iter()
+            .filter_map(|d| d.content_id.clone())
+            .collect();
+
+        let content_map = self
+            .state
+            .content_storage
+            .batch_get_text(content_ids)
+            .await?;
+
         // For updates, we need to handle them individually since we need to find existing documents
         let mut successful_event_ids = Vec::new();
         let mut updated_documents = Vec::new();
 
         for (document, event_ids) in documents_with_event_ids {
-            match repo.update(&document.id, document.clone()).await {
+            let content = document
+                .content_id
+                .as_ref()
+                .and_then(|cid| content_map.get(cid).cloned())
+                .unwrap_or_default();
+
+            match repo.update(&document.id, document.clone(), &content).await {
                 Ok(Some(updated_doc)) => {
                     updated_documents.push((event_ids.clone(), updated_doc));
                     successful_event_ids.extend(event_ids.clone());
@@ -985,29 +1038,22 @@ impl ProcessorContext {
             last_indexed_at: now,
         };
 
-        let repo = DocumentRepository::new(self.state.db_pool.pool());
-        let upsert_start = std::time::Instant::now();
-        let upserted = repo.upsert(document).await?;
-        debug!("Document upsert took: {:?}", upsert_start.elapsed());
-
-        // Fetch content from LOB storage for tsvector generation and embedding queueing
+        // Fetch content from storage for tsvector generation and embedding queueing
         let content = match self.state.content_storage.get_text(&content_id).await {
             Ok(content) => content,
             Err(e) => {
                 error!(
-                    "Failed to fetch content from LOB storage for document {}: {}",
+                    "Failed to fetch content from storage for document {}: {}",
                     document_id, e
                 );
                 return Err(e.into());
             }
         };
 
-        let search_vector_start = std::time::Instant::now();
-        repo.update_search_vector(&upserted.id).await?;
-        debug!(
-            "Search vector update took: {:?}",
-            search_vector_start.elapsed()
-        );
+        let repo = DocumentRepository::new(self.state.db_pool.pool());
+        let upsert_start = std::time::Instant::now();
+        let upserted = repo.upsert(document, &content).await?;
+        debug!("Document upsert took: {:?}", upsert_start.elapsed());
 
         // Queue embeddings for async generation instead of generating them synchronously
         if content.trim().is_empty() {
@@ -1072,21 +1118,19 @@ impl ProcessorContext {
             }
             document.updated_at = now;
 
-            let updated_document = repo.update(&doc_id, document).await?;
-
-            // Fetch content from LOB storage for tsvector generation and embedding queueing
+            // Fetch content from storage for tsvector generation and embedding queueing
             let content = match self.state.content_storage.get_text(&content_id).await {
                 Ok(content) => content,
                 Err(e) => {
                     error!(
-                        "Failed to fetch content from LOB storage for document {}: {}",
+                        "Failed to fetch content from storage for document {}: {}",
                         document_id, e
                     );
                     return Err(e.into());
                 }
             };
 
-            repo.update_search_vector(&doc_id).await?;
+            let updated_document = repo.update(&doc_id, document, &content).await?;
 
             // Queue embeddings for async generation
             if let Some(_updated_doc) = &updated_document {

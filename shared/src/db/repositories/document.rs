@@ -501,11 +501,13 @@ impl DocumentRepository {
         &self,
         id: &str,
         document: Document,
+        content: &str,
     ) -> Result<Option<Document>, DatabaseError> {
         let updated_document = sqlx::query_as::<_, Document>(
             r#"
             UPDATE documents
-            SET title = $2, content_id = $3, metadata = $4, permissions = $5
+            SET title = $2, content_id = $3, metadata = $4, permissions = $5,
+                tsv_content = setweight(to_tsvector('english', $2), 'A') || setweight(to_tsvector('english', $6), 'B')
             WHERE id = $1
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
@@ -517,6 +519,7 @@ impl DocumentRepository {
         .bind(&document.content_id)
         .bind(&document.metadata)
         .bind(&document.permissions)
+        .bind(content)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -547,11 +550,16 @@ impl DocumentRepository {
         Ok(())
     }
 
-    pub async fn upsert(&self, document: Document) -> Result<Document, DatabaseError> {
+    pub async fn upsert(
+        &self,
+        document: Document,
+        content: &str,
+    ) -> Result<Document, DatabaseError> {
         let upserted_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at, tsv_content)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                    setweight(to_tsvector('english', $4), 'A') || setweight(to_tsvector('english', $15), 'B'))
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = EXCLUDED.title,
@@ -559,7 +567,8 @@ impl DocumentRepository {
                 metadata = EXCLUDED.metadata,
                 permissions = EXCLUDED.permissions,
                 updated_at = EXCLUDED.updated_at,
-                last_indexed_at = EXCLUDED.last_indexed_at
+                last_indexed_at = EXCLUDED.last_indexed_at,
+                tsv_content = setweight(to_tsvector('english', EXCLUDED.title), 'A') || setweight(to_tsvector('english', $15), 'B')
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
@@ -579,6 +588,7 @@ impl DocumentRepository {
         .bind(&document.created_at)
         .bind(&document.updated_at)
         .bind(&document.last_indexed_at)
+        .bind(content)
         .fetch_one(&self.pool)
         .await?;
 
@@ -697,6 +707,7 @@ impl DocumentRepository {
     pub async fn batch_upsert(
         &self,
         documents: Vec<Document>,
+        contents: Vec<String>,
     ) -> Result<Vec<Document>, DatabaseError> {
         if documents.is_empty() {
             return Ok(vec![]);
@@ -728,12 +739,15 @@ impl DocumentRepository {
 
         let upserted_documents = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
-            SELECT * FROM UNNEST(
-                $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], 
-                $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[], 
-                $12::timestamptz[], $13::timestamptz[], $14::timestamptz[]
-            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at, tsv_content)
+            SELECT
+                id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at,
+                setweight(to_tsvector('english', title), 'A') || setweight(to_tsvector('english', content), 'B') as tsv_content
+            FROM UNNEST(
+                $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
+                $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[],
+                $12::timestamptz[], $13::timestamptz[], $14::timestamptz[], $15::text[]
+            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at, content)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = EXCLUDED.title,
@@ -741,7 +755,12 @@ impl DocumentRepository {
                 metadata = EXCLUDED.metadata,
                 permissions = EXCLUDED.permissions,
                 updated_at = EXCLUDED.updated_at,
-                last_indexed_at = EXCLUDED.last_indexed_at
+                last_indexed_at = EXCLUDED.last_indexed_at,
+                tsv_content = setweight(to_tsvector('english', EXCLUDED.title), 'A') || setweight(to_tsvector('english', (
+                    SELECT content FROM UNNEST($15::text[]) WITH ORDINALITY AS c(content, ord)
+                    WHERE ord = (SELECT ord FROM UNNEST($3::text[]) WITH ORDINALITY AS e(external_id, ord) WHERE e.external_id = EXCLUDED.external_id LIMIT 1)
+                    LIMIT 1
+                )), 'B')
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
                       metadata, permissions, created_at, updated_at, last_indexed_at
@@ -761,6 +780,7 @@ impl DocumentRepository {
         .bind(&created_ats)
         .bind(&updated_ats)
         .bind(&last_indexed_ats)
+        .bind(&contents)
         .fetch_all(&self.pool)
         .await?;
 
