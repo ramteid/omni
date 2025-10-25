@@ -126,6 +126,28 @@ resource "aws_iam_role" "bedrock_batch" {
     })
   }
 
+  inline_policy {
+    name = "BedrockModelInvoke"
+    policy = jsonencode({
+      Version = "2012-10-17"
+      Statement = [{
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel"
+        ]
+        Resource = [
+          "arn:aws:bedrock:*:*:inference-profile/us.anthropic.*",
+          "arn:aws:bedrock:*:*:inference-profile/eu.anthropic.*",
+          "arn:aws:bedrock:*::foundation-model/anthropic.*",
+          "arn:aws:bedrock:*:*:inference-profile/us.amazon.*",
+          "arn:aws:bedrock:*:*:inference-profile/eu.amazon.*",
+          "arn:aws:bedrock:*::foundation-model/amazon.*",
+          "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-*"
+        ]
+      }]
+    })
+  }
+
   tags = merge(var.tags, {
     Name = "omni-${var.customer_name}-bedrock-batch-role"
     Purpose = "Bedrock batch inference S3 access"

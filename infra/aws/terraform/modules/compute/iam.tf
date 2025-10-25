@@ -72,7 +72,8 @@ resource "aws_iam_role" "ecs_task" {
             "arn:aws:bedrock:*::foundation-model/anthropic.*",
             "arn:aws:bedrock:*:*:inference-profile/us.amazon.*",
             "arn:aws:bedrock:*:*:inference-profile/eu.amazon.*",
-            "arn:aws:bedrock:*::foundation-model/amazon.*"
+            "arn:aws:bedrock:*::foundation-model/amazon.*",
+            "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-*"
           ]
         },
         {
