@@ -3,14 +3,7 @@ use crate::{
     models::{Document, Facet, FacetValue},
     SourceType,
 };
-use sqlx::{FromRow, PgPool};
-
-#[derive(FromRow)]
-pub struct DocumentWithHighlight {
-    #[sqlx(flatten)]
-    pub document: Document,
-    pub highlight: String,
-}
+use sqlx::PgPool;
 
 pub struct DocumentRepository {
     pool: PgPool,
@@ -141,16 +134,7 @@ impl DocumentRepository {
         limit: i64,
         offset: i64,
         user_email: Option<&str>,
-    ) -> Result<Vec<DocumentWithHighlight>, DatabaseError> {
-        let base_query = r#"
-            WITH top_results AS (
-                SELECT id, source_id, external_id, title, content_id, content_type,
-                       file_size, file_extension, url,
-                       metadata, permissions, created_at, updated_at, last_indexed_at
-                FROM documents
-                WHERE tsv_content @@ websearch_to_tsquery('english', $1)
-        "#;
-
+    ) -> Result<Vec<Document>, DatabaseError> {
         let has_sources = source_types.map_or(false, |s| !s.is_empty());
         let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
         let has_user_filter = user_email.is_some();
@@ -188,39 +172,34 @@ impl DocumentRepository {
         };
 
         let full_query = format!(
-            r#"{}{}{}{}
-                ORDER BY (
-                    -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
-                    ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1)) *
-                    -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
-                    (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - (regexp_replace(metadata->>'updated_at', '^\+00', ''))::timestamptz)) / 86400.0 / -365.0)) * 0.3) *
-                    -- Title exact match boost
-                    CASE 
-                        WHEN title ILIKE '%' || $1 || '%' THEN 1.4
-                        ELSE 1.0
-                    END
-                ) DESC
-                LIMIT {} OFFSET {}
+            r#"
+            WITH candidates AS (
+                SELECT *
+                FROM documents
+                WHERE tsv_content @@ websearch_to_tsquery('english', $1)
+                {}{}{}
+                LIMIT 10000
             )
-            SELECT d.id, d.source_id, d.external_id, d.title, d.content_id, d.content_type,
-                   d.file_size, d.file_extension, d.url,
-                   d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
-                   COALESCE(
-                       ts_headline('english', convert_from(c.content, 'utf8'), plainto_tsquery('english', $1),
-                                  'StartSel=**, StopSel=**, MaxWords=80, MinWords=20, MaxFragments=3, FragmentDelimiter=...'),
-                       ''
-                   ) as highlight
-            FROM top_results d
-            LEFT JOIN content_blobs c ON d.content_id = c.id"#,
-            base_query,
-            source_filter,
-            content_type_filter,
-            permission_filter,
-            limit_param,
-            offset_param
+            SELECT id, source_id, external_id, title, content_id, content_type,
+                   file_size, file_extension, url,
+                   metadata, permissions, created_at, updated_at, last_indexed_at
+            FROM candidates
+            ORDER BY (
+                -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
+                ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1)) *
+                -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
+                (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - (regexp_replace(metadata->>'updated_at', '^\+00', ''))::timestamptz)) / 86400.0 / -365.0)) * 0.3) *
+                -- Title exact match boost
+                CASE
+                    WHEN title ILIKE '%' || $1 || '%' THEN 1.4
+                    ELSE 1.0
+                END
+            ) DESC
+            LIMIT {} OFFSET {}"#,
+            source_filter, content_type_filter, permission_filter, limit_param, offset_param
         );
 
-        let mut query = sqlx::query_as::<_, DocumentWithHighlight>(&full_query).bind(query);
+        let mut query = sqlx::query_as::<_, Document>(&full_query).bind(query);
 
         if let Some(src) = source_types {
             if !src.is_empty() {
@@ -345,7 +324,7 @@ impl DocumentRepository {
         max_distance: i32,
         min_word_length: usize,
         user_email: Option<&str>,
-    ) -> Result<(Vec<DocumentWithHighlight>, Option<String>), DatabaseError> {
+    ) -> Result<(Vec<Document>, Option<String>), DatabaseError> {
         // First, try to search with the original query
         let original_results = self
             .search_with_filters(

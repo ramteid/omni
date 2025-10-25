@@ -4,7 +4,7 @@ pub mod service_credentials;
 pub mod source;
 pub mod user;
 
-pub use document::{DocumentRepository, DocumentWithHighlight};
+pub use document::DocumentRepository;
 pub use embedding::EmbeddingRepository;
 pub use service_credentials::ServiceCredentialsRepo;
 pub use source::SourceRepository;

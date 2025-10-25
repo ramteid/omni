@@ -1,4 +1,5 @@
 pub mod handlers;
+pub mod highlighting;
 pub mod models;
 pub mod search;
 
