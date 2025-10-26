@@ -1,4 +1,4 @@
-FROM rust:1.85-slim-bookworm
+FROM rust:1.90-slim-bookworm
 
 # Install SQLx CLI with postgres features and jq for URL encoding
 RUN apt-get update && apt-get install -y \

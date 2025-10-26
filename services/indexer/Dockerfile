@@ -1,5 +1,5 @@
 # Multi-stage build for Indexer service
-FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.90.0-bookworm  AS chef
 WORKDIR /app
 
 FROM chef AS planner
