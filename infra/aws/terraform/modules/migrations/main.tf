@@ -82,9 +82,25 @@ data "archive_file" "lambda_zip" {
   }
 }
 
+# Create a hash of all migration files to detect changes
+data "external" "migrations_hash" {
+  program = ["bash", "-c", <<-EOT
+    if [ -d "${path.root}/../../../services/migrations" ]; then
+      hash=$(find ${path.root}/../../../services/migrations -name "*.sql" -type f -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
+    else
+      hash="no-migrations"
+    fi
+    echo "{\"hash\": \"$hash\"}"
+  EOT
+  ]
+}
+
 resource "null_resource" "run_migrations" {
   triggers = {
-    always_run = timestamp()
+    # Only run when migrations change or when the task definition changes
+    migrations_hash        = data.external.migrations_hash.result.hash
+    task_definition_arn    = var.migrator_task_definition_arn
+    lambda_code_hash       = aws_lambda_function.migrator.source_code_hash
   }
 
   provisioner "local-exec" {

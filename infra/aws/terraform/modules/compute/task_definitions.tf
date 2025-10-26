@@ -9,7 +9,7 @@ locals {
     { name = "DATABASE_USERNAME", value = var.database_username },
     { name = "DATABASE_SSL", value = "true" },
     { name = "REDIS_URL", value = local.redis_url },
-    { name = "DB_MAX_CONNECTIONS", value = "30" },
+    { name = "DB_MAX_CONNECTIONS", value = "10" },
     { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "30" },
     { name = "RUST_LOG", value = "debug" },
     { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint },
@@ -251,7 +251,7 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "EMBEDDING_DIMENSIONS", value = "1024" },
       { name = "EMBEDDING_PROVIDER", value = "jina" },
       { name = "LLM_PROVIDER", value = "bedrock" },
-      { name = "BEDROCK_MODEL_ID", value = "amazon.nova-pro-v1:0" },
+      { name = "BEDROCK_MODEL_ID", value = "us.anthropic.claude-sonnet-4-5-20250929-v1:0" },
       { name = "TITLE_GENERATION_MODEL_ID", value = "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
       { name = "ANTHROPIC_MAX_TOKENS", value = "4096" },
       { name = "AI_WORKERS", value = "1" },
@@ -262,9 +262,8 @@ resource "aws_ecs_task_definition" "ai" {
       # Batch inference configuration
       # TODO: Batch processing on AWS Bedrock is not enabled by default, it requires creating a support case. We will
       # therefore avoid using batch processing for now.
-      # The first var is used to enable the batch processor, which will, despite the name, function only as a queue processor
-      # and make calls to the Bedrock endpoint one item at a time.
-      { name = "ENABLE_EMBEDDING_BATCH_INFERENCE", value = "true" },
+      # We will disable embeddings entirely for now, until we find a good solution for this issue.
+      { name = "ENABLE_EMBEDDING_BATCH_INFERENCE", value = "false" },
       { name = "EMBEDDING_BATCH_S3_BUCKET", value = var.batch_bucket_name },
       { name = "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", value = var.bedrock_batch_role_arn },
       { name = "EMBEDDING_BATCH_MIN_DOCUMENTS", value = "100" },
@@ -320,7 +319,11 @@ resource "aws_ecs_task_definition" "google_connector" {
       { name = "GOOGLE_SYNC_INTERVAL_SECONDS", value = "3600" },
       { name = "GOOGLE_MAX_AGE_DAYS", value = "730" },
       { name = "GOOGLE_WEBHOOK_URL", value = "${local.app_url}/api/integrations/google/webhook" },
-      { name = "WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS", value = "3600" }
+      { name = "WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS", value = "3600" },
+      # Storage configuration
+      { name = "STORAGE_BACKEND", value = "s3" },
+      { name = "S3_BUCKET", value = var.content_bucket_name },
+      { name = "S3_REGION", value = var.region }
     ])
 
     secrets = concat(local.common_secrets, [
