@@ -21,7 +21,11 @@ pub fn safe_str_slice(content: &str, start: usize, end: usize) -> &str {
             content.len()
         );
     }
-    if start >= end {
+    if start == end {
+        return "";
+    }
+
+    if start > end {
         panic!("safe_str_slice: start ({}) >= end ({})", start, end);
     }
 

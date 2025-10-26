@@ -1,4 +1,6 @@
+use hyper::body::Frame;
 use shared::utils::safe_str_slice;
+use tracing::debug;
 
 #[derive(Debug, Clone)]
 pub struct HighlightConfig {
@@ -40,20 +42,36 @@ struct Fragment {
 
 pub fn generate_highlights(content: &str, query: &str, config: &HighlightConfig) -> String {
     if content.is_empty() || query.trim().is_empty() {
+        debug!(
+            "Empty content or query, returning empty highlights. Content len: {}, query len: {}",
+            content.len(),
+            query.len()
+        );
         return String::new();
     }
 
     let query_terms = parse_query(query);
     if query_terms.is_empty() {
+        debug!(
+            "No valid query terms after parsing. Original query: {}",
+            query
+        );
         return String::new();
     }
 
     let matches = find_matches(content, &query_terms);
     if matches.is_empty() {
+        debug!("No matches found for query: {}", query);
         return String::new();
     }
 
+    debug!("Building fragments for {} matches", matches.len());
     let fragments = build_fragments(content, &matches, config);
+    debug!(
+        "Built {} fragments from {} matches",
+        fragments.len(),
+        matches.len()
+    );
     format_fragments(content, &fragments, &matches, config)
 }
 
@@ -199,6 +217,7 @@ fn format_fragments(
     matches: &[Match],
     config: &HighlightConfig,
 ) -> String {
+    debug!("Formatting {} fragments", fragments.len());
     let mut result = String::new();
 
     for (i, fragment) in fragments.iter().enumerate() {

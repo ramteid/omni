@@ -1,3 +1,4 @@
+use crate::highlighting::HighlightConfig;
 use crate::models::{
     RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
     SuggestionsResponse,
@@ -199,7 +200,7 @@ impl SearchEngine {
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
-        let (documents, corrected_query) = if self.config.typo_tolerance_enabled {
+        let (documents_with_scores, corrected_query) = if self.config.typo_tolerance_enabled {
             debug!("Searching for {} with typo tolerance", &request.query);
             repo.search_with_typo_tolerance_and_filters(
                 &request.query,
@@ -228,11 +229,12 @@ impl SearchEngine {
             )
         };
 
-        let content_ids: Vec<String> = documents
+        let content_ids: Vec<String> = documents_with_scores
             .iter()
-            .filter_map(|doc| doc.content_id.clone())
+            .filter_map(|doc| doc.document.content_id.clone())
             .collect();
 
+        let content_fetch_start = Instant::now();
         let content_map = if !content_ids.is_empty() {
             self.content_storage
                 .batch_get_text(content_ids)
@@ -241,11 +243,22 @@ impl SearchEngine {
         } else {
             HashMap::new()
         };
+        info!("Content fetch took {:?}", content_fetch_start.elapsed());
 
-        let highlight_config = crate::highlighting::HighlightConfig::default();
+        let highlight_config = HighlightConfig::default();
         let mut results = Vec::new();
 
-        for doc in documents {
+        for doc_with_score in documents_with_scores {
+            let doc = doc_with_score.document;
+            debug!(
+                "[FTS] Document {} [id={}] score={}, base_rank={}, recency_boost={}, title_boost={}", 
+                doc.title,
+                doc.id,
+                doc_with_score.score,
+                doc_with_score.base_rank,
+                doc_with_score.recency_boost,
+                doc_with_score.title_boost,
+            );
             let prepared_doc = self.prepare_document_for_response(doc.clone());
 
             let highlights = if let Some(content_id) = &doc.content_id {
@@ -256,20 +269,29 @@ impl SearchEngine {
                         &highlight_config,
                     );
                     if highlight_text.is_empty() {
+                        debug!("generate_highlights returned empty highlight text");
                         vec![]
                     } else {
                         vec![highlight_text]
                     }
                 } else {
+                    debug!(
+                        "Could not fetch content for doc {} [id={}], returning empty highlights.",
+                        doc.title, doc.id
+                    );
                     vec![]
                 }
             } else {
+                debug!(
+                    "Doc {} [id={}] has not content ID, returning empty highlights.",
+                    doc.title, doc.id
+                );
                 vec![]
             };
 
             results.push(SearchResult {
                 document: prepared_doc,
-                score: 1.0,
+                score: doc_with_score.score as f32,
                 highlights,
                 match_type: "fulltext".to_string(),
                 content: None,
@@ -782,9 +804,8 @@ impl SearchEngine {
     }
 
     fn normalize_fts_score(&self, score: f32) -> f32 {
-        // Simple normalization - in practice this would be more sophisticated
-        // based on the actual FTS scoring algorithm
-        score.min(1.0).max(0.0)
+        // TODO
+        score
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {
