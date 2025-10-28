@@ -386,6 +386,7 @@ async def execute_search_tool(
         is_generated_query=True,
         original_user_query=original_user_query,
         include_facets=False,
+        ignore_typos=True, # LLMs will generaly not generate typos, so we avoid typo handling
     )
     try:
         search_response: SearchResponse = await searcher_tool.handle(search_request)

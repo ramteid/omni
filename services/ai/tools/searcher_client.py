@@ -24,6 +24,7 @@ class SearchRequest(BaseModel):
     original_user_query: Optional[str] = None
     document_id: Optional[str] = None
     include_facets: Optional[bool] = None
+    ignore_typos: Optional[bool] = None
 
 class Document(BaseModel):
     id: str
@@ -79,6 +80,7 @@ class SearcherClient:
                 "original_user_query": request.original_user_query,
                 "document_id": request.document_id,
                 "include_facets": request.include_facets,
+                "ignore_typos": request.ignore_typos,
             }
 
             logger.info(f"Calling searcher service with query: {request.query}...")
