@@ -385,6 +385,7 @@ async def execute_search_tool(
         user_email=user_email,
         is_generated_query=True,
         original_user_query=original_user_query,
+        include_facets=False,
     )
     try:
         search_response: SearchResponse = await searcher_tool.handle(search_request)

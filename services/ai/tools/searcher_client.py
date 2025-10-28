@@ -23,6 +23,7 @@ class SearchRequest(BaseModel):
     is_generated_query: Optional[bool] = None
     original_user_query: Optional[str] = None
     document_id: Optional[str] = None
+    include_facets: Optional[bool] = None
 
 class Document(BaseModel):
     id: str
@@ -77,6 +78,7 @@ class SearcherClient:
                 "is_generated_query": request.is_generated_query,
                 "original_user_query": request.original_user_query,
                 "document_id": request.document_id,
+                "include_facets": request.include_facets,
             }
 
             logger.info(f"Calling searcher service with query: {request.query}...")
