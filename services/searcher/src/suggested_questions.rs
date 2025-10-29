@@ -13,12 +13,14 @@ use tracing::{debug, error, info, warn};
 const REDIS_CACHE_KEY: &str = "suggested_questions:v1";
 const CACHE_TTL_SECONDS: u64 = 86400; // 7 days
 const MAX_RETRIES: usize = 5;
-const QUESTION_PROMPT_TEMPLATE: &str = r#"Given the following document excerpt, generate ONE specific question that someone might ask to find this document. The question should be natural, specific, and answerable by the document content.
+const QUESTION_PROMPT_TEMPLATE: &str = r#"Given the following document excerpt, generate ONE specific question or instruction related to the content.
+If you choose to generate a question, it should be natural, specific, and answerable by the document content. 
+If you choose to generate a command/instruction, it should be something that a person might want to do with the content.
 
 Document excerpt:
 {content}
 
-Generate only the question, nothing else. Do not include quotes or prefixes like "Question:"."#;
+Generate only the question/instruction, nothing else. Do not include quotes or prefixes like "Question:"."#;
 
 pub struct SuggestedQuestionsGenerator {
     redis_client: RedisClient,
