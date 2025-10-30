@@ -4,14 +4,18 @@ use crate::{
     SourceType,
 };
 use sqlx::{FromRow, PgPool};
+use tracing::debug;
 
 #[derive(FromRow)]
 pub struct DocumentWithScores {
     #[sqlx(flatten)]
     pub document: Document,
     pub score: f32,
+    #[sqlx(default)]
     pub base_rank: f32,
+    #[sqlx(default)]
     pub recency_boost: f32,
+    #[sqlx(default)]
     pub title_boost: f32,
 }
 
@@ -28,12 +32,9 @@ impl DocumentRepository {
     fn generate_permission_filter(&self, user_email: &str) -> String {
         format!(
             r#"(
-                (permissions->>'public')::boolean = true OR
-                permissions->'users' ? '{}' OR
-                permissions->'groups' ? ANY(
-                    -- TODO: Add group membership lookup here
-                    ARRAY['{}']::text[]
-                )
+                id @@@ paradedb.term('permissions.public', true) OR
+                id @@@ paradedb.term('permissions.users', '{}') OR
+                id @@@ paradedb.term('permissions.groups', '{}') -- TODO: Add group membership lookup here
             )"#,
             user_email, user_email
         )
@@ -174,6 +175,80 @@ impl DocumentRepository {
     ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
         let has_sources = source_types.map_or(false, |s| !s.is_empty());
         let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
+
+        let mut filters = vec!["(title @@@ $1 OR content @@@ $2)".to_string()];
+        let mut param_idx = 3; // Params 1 and 2 are for the query (title query and content query)
+
+        if has_sources {
+            filters.push(format!(
+                "source_id IN (SELECT id FROM sources WHERE source_type = ANY(${}))",
+                param_idx
+            ));
+            param_idx += 1;
+        }
+
+        if has_content_types {
+            filters.push(format!("content_type = ANY(${})", param_idx));
+            param_idx += 1;
+        }
+
+        if let Some(email) = user_email {
+            filters.push(self.generate_permission_filter(email));
+        }
+
+        let where_clause = filters.join(" AND ");
+
+        let full_query = format!(
+            r#"
+            SELECT id, source_id, external_id, title, content_id, content_type,
+                   file_size, file_extension, url,
+                   metadata, permissions, created_at, updated_at, last_indexed_at,
+                   paradedb.score(id) as score
+            FROM documents
+            WHERE {}
+            ORDER BY score DESC
+            LIMIT ${} OFFSET ${}"#,
+            where_clause,
+            param_idx,
+            param_idx + 1
+        );
+
+        let title_query = format!("{}^2", query);
+        let mut query = sqlx::query_as::<_, DocumentWithScores>(&full_query)
+            .bind(title_query)
+            .bind(query);
+
+        if let Some(src) = source_types {
+            if !src.is_empty() {
+                query = query.bind(src);
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                query = query.bind(ct);
+            }
+        }
+
+        query = query.bind(limit).bind(offset);
+
+        let results = query.fetch_all(&self.pool).await?;
+
+        Ok(results)
+    }
+
+    #[deprecated(note = "Use search_with_filters instead")]
+    pub async fn search_with_filters_v0(
+        &self,
+        query: &str,
+        source_types: Option<&[SourceType]>,
+        content_types: Option<&[String]>,
+        limit: i64,
+        offset: i64,
+        user_email: Option<&str>,
+    ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
+        let has_sources = source_types.map_or(false, |s| !s.is_empty());
+        let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
         let has_user_filter = user_email.is_some();
 
         let source_filter = if has_sources {
@@ -282,6 +357,7 @@ impl DocumentRepository {
         Ok(similar_words)
     }
 
+    #[deprecated(note = "Not required anymore")]
     pub async fn search_with_typo_tolerance(
         &self,
         query: &str,
@@ -353,6 +429,7 @@ impl DocumentRepository {
         }
     }
 
+    #[deprecated(note = "Not required anymore")]
     pub async fn search_with_typo_tolerance_and_filters(
         &self,
         query: &str,
@@ -366,7 +443,7 @@ impl DocumentRepository {
     ) -> Result<(Vec<DocumentWithScores>, Option<String>), DatabaseError> {
         // First, try to search with the original query
         let original_results = self
-            .search_with_filters(
+            .search_with_filters_v0(
                 query,
                 source_types,
                 content_types,
@@ -428,7 +505,7 @@ impl DocumentRepository {
 
         // Search with corrected query
         let corrected_results = self
-            .search_with_filters(
+            .search_with_filters_v0(
                 &corrected_query,
                 source_types,
                 content_types,
@@ -515,7 +592,42 @@ impl DocumentRepository {
         Ok(created_document)
     }
 
+    /// Directly populates content to use the BM25 index
     pub async fn update(
+        &self,
+        id: &str,
+        document: Document,
+        content: &str,
+    ) -> Result<Option<Document>, DatabaseError> {
+        let updated_document = sqlx::query_as::<_, Document>(
+            r#"
+            UPDATE documents
+            SET 
+                title = $2, 
+                content_id = $3, 
+                metadata = $4, 
+                permissions = $5,
+                content = $6
+            WHERE id = $1
+            RETURNING id, source_id, external_id, title, content_id, content_type,
+                      file_size, file_extension, url,
+                      metadata, permissions, created_at, updated_at, last_indexed_at
+            "#,
+        )
+        .bind(id)
+        .bind(&document.title)
+        .bind(&document.content_id)
+        .bind(&document.metadata)
+        .bind(&document.permissions)
+        .bind(content)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(updated_document)
+    }
+
+    #[deprecated(note = "Use update instead.")]
+    pub async fn update_v0(
         &self,
         id: &str,
         document: Document,
@@ -654,6 +766,82 @@ impl DocumentRepository {
         source_types: Option<&[SourceType]>,
         content_types: Option<&[String]>,
     ) -> Result<Vec<Facet>, DatabaseError> {
+        let mut filters = vec!["(title @@@ $1 OR content @@@ $2)".to_string()];
+        let mut bind_index = 3;
+
+        if let Some(src) = source_types {
+            if !src.is_empty() {
+                filters.push(format!("s.source_type = ANY(${})", bind_index));
+                bind_index += 1;
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                filters.push(format!("d.content_type = ANY(${})", bind_index));
+            }
+        }
+
+        let where_clause = filters.join(" AND ");
+
+        let query_str = format!(
+            r#"
+            SELECT 'source_type' as facet, s.source_type as value, count(*) as count
+            FROM documents d 
+            JOIN sources s ON d.source_id = s.id
+            WHERE {}
+            GROUP BY s.source_type 
+            ORDER BY count DESC
+            "#,
+            where_clause
+        );
+
+        let title_query = format!("{}^2", query);
+        let mut query = sqlx::query_as::<_, (String, String, i64)>(&query_str)
+            .bind(title_query)
+            .bind(query);
+
+        if let Some(src) = source_types {
+            if !src.is_empty() {
+                query = query.bind(src);
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                query = query.bind(ct);
+            }
+        }
+
+        let facet_rows = query.fetch_all(&self.pool).await?;
+
+        // Group the results by facet name
+        let mut facets_map: std::collections::HashMap<String, Vec<FacetValue>> =
+            std::collections::HashMap::new();
+
+        for (facet_name, value, count) in facet_rows {
+            facets_map
+                .entry(facet_name)
+                .or_insert_with(Vec::new)
+                .push(FacetValue { value, count });
+        }
+
+        // Convert to Vec<Facet>
+        let facets: Vec<Facet> = facets_map
+            .into_iter()
+            .map(|(name, values)| Facet { name, values })
+            .collect();
+
+        Ok(facets)
+    }
+
+    #[deprecated(note = "Use get_facet_counts_with_filters instead")]
+    pub async fn get_facet_counts_with_filters_v0(
+        &self,
+        query: &str,
+        source_types: Option<&[SourceType]>,
+        content_types: Option<&[String]>,
+    ) -> Result<Vec<Facet>, DatabaseError> {
         let mut where_conditions =
             vec!["d.tsv_content @@ websearch_to_tsquery('english', $1::text)".to_string()];
         let mut bind_index = 2;
@@ -721,8 +909,103 @@ impl DocumentRepository {
         Ok(facets)
     }
 
-    // Batch operations for improved performance
+    /// Directly populates the content field since we use the ParadeDB BM25 index now
     pub async fn batch_upsert(
+        &self,
+        documents: Vec<Document>,
+        contents: Vec<String>,
+    ) -> Result<Vec<Document>, DatabaseError> {
+        if documents.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build arrays for the batch upsert
+        let ids: Vec<String> = documents.iter().map(|d| d.id.clone()).collect();
+        let source_ids: Vec<String> = documents.iter().map(|d| d.source_id.clone()).collect();
+        let external_ids: Vec<String> = documents.iter().map(|d| d.external_id.clone()).collect();
+        let titles: Vec<String> = documents.iter().map(|d| d.title.clone()).collect();
+        let content_ids: Vec<Option<String>> =
+            documents.iter().map(|d| d.content_id.clone()).collect();
+        let content_types: Vec<Option<String>> =
+            documents.iter().map(|d| d.content_type.clone()).collect();
+        let file_sizes: Vec<Option<i64>> = documents.iter().map(|d| d.file_size).collect();
+        let file_extensions: Vec<Option<String>> =
+            documents.iter().map(|d| d.file_extension.clone()).collect();
+        let urls: Vec<Option<String>> = documents.iter().map(|d| d.url.clone()).collect();
+        let metadata: Vec<serde_json::Value> =
+            documents.iter().map(|d| d.metadata.clone()).collect();
+        let permissions: Vec<serde_json::Value> =
+            documents.iter().map(|d| d.permissions.clone()).collect();
+        let created_ats: Vec<sqlx::types::time::OffsetDateTime> =
+            documents.iter().map(|d| d.created_at).collect();
+        let updated_ats: Vec<sqlx::types::time::OffsetDateTime> =
+            documents.iter().map(|d| d.updated_at).collect();
+        let last_indexed_ats: Vec<sqlx::types::time::OffsetDateTime> =
+            documents.iter().map(|d| d.last_indexed_at).collect();
+
+        let upserted_documents = sqlx::query_as::<_, Document>(
+            r#"
+            INSERT INTO documents (
+                id, 
+                source_id, 
+                external_id, 
+                title, 
+                content_id, 
+                content_type, 
+                file_size, 
+                file_extension, 
+                url, 
+                metadata, 
+                permissions, 
+                created_at, 
+                updated_at, 
+                last_indexed_at, 
+                content
+            )
+            SELECT *
+            FROM UNNEST(
+                $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
+                $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[],
+                $12::timestamptz[], $13::timestamptz[], $14::timestamptz[], $15::text[]
+            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at, content)
+            ON CONFLICT (source_id, external_id)
+            DO UPDATE SET
+                title = EXCLUDED.title,
+                content_id = EXCLUDED.content_id,
+                metadata = EXCLUDED.metadata,
+                permissions = EXCLUDED.permissions,
+                updated_at = EXCLUDED.updated_at,
+                last_indexed_at = EXCLUDED.last_indexed_at,
+                content = EXCLUDED.content
+            RETURNING id, source_id, external_id, title, content_id, content_type,
+                      file_size, file_extension, url,
+                      metadata, permissions, created_at, updated_at, last_indexed_at
+            "#
+        )
+        .bind(&ids)
+        .bind(&source_ids)
+        .bind(&external_ids)
+        .bind(&titles)
+        .bind(&content_ids)
+        .bind(&content_types)
+        .bind(&file_sizes)
+        .bind(&file_extensions)
+        .bind(&urls)
+        .bind(&metadata)
+        .bind(&permissions)
+        .bind(&created_ats)
+        .bind(&updated_ats)
+        .bind(&last_indexed_ats)
+        .bind(&contents)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(upserted_documents)
+    }
+
+    // Batch operations for improved performance
+    #[deprecated(note = "Use batch_upsert instead.")]
+    pub async fn batch_upsert_v0(
         &self,
         documents: Vec<Document>,
         contents: Vec<String>,

@@ -1,7 +1,7 @@
 services:
   # Infrastructure Services
   postgres:
-    image: pgvector/pgvector:pg17
+    image: paradedb/paradedb:0.18.15-pg17
     shm_size: 4gb
     container_name: omni-postgres
     environment:

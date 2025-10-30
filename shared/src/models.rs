@@ -229,7 +229,7 @@ pub enum ConnectorEvent {
         sync_run_id: String,
         source_id: String,
         document_id: String,
-        content_id: String, // Content blob ID in content_blobs table
+        content_id: String,
         metadata: DocumentMetadata,
         permissions: DocumentPermissions,
     },
@@ -237,7 +237,7 @@ pub enum ConnectorEvent {
         sync_run_id: String,
         source_id: String,
         document_id: String,
-        content_id: String, // Content blob ID in content_blobs table
+        content_id: String,
         metadata: DocumentMetadata,
         permissions: Option<DocumentPermissions>,
     },

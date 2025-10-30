@@ -35,7 +35,6 @@ pub struct SyncManager {
     content_storage: Arc<dyn ObjectStorage>,
     service_credentials_repo: ServiceCredentialsRepo,
     folder_cache: LruFolderCache,
-    ai_client: AIClient,
 }
 
 #[derive(Clone)]
@@ -260,7 +259,6 @@ impl SyncManager {
             content_storage,
             service_credentials_repo,
             folder_cache: LruFolderCache::new(10_000), // Cache up to 10,000 folder metadata entries
-            ai_client,
         })
     }
 
