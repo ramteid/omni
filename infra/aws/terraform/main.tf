@@ -90,6 +90,17 @@ module "database" {
   service_discovery_namespace_id = aws_service_discovery_private_dns_namespace.main.id
 }
 
+# Attach ParadeDB capacity provider to cluster (only when using ParadeDB)
+resource "aws_ecs_cluster_capacity_providers" "main" {
+  count = var.use_rds ? 0 : 1
+
+  cluster_name = aws_ecs_cluster.main.name
+
+  capacity_providers = [module.database.paradedb_capacity_provider_name]
+
+  depends_on = [module.database]
+}
+
 module "cache" {
   source = "./modules/cache"
 

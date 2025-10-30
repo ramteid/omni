@@ -22,3 +22,8 @@ output "arn" {
   description = "Database ARN (RDS only)"
   value       = var.use_rds ? aws_db_instance.postgresql[0].arn : null
 }
+
+output "paradedb_capacity_provider_name" {
+  description = "ParadeDB capacity provider name"
+  value       = var.use_rds ? null : aws_ecs_capacity_provider.paradedb[0].name
+}

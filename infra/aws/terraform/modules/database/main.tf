@@ -319,6 +319,26 @@ resource "aws_iam_role_policy" "paradedb_secrets" {
   })
 }
 
+# IAM role for ParadeDB ECS task (runtime role)
+resource "aws_iam_role" "paradedb_task" {
+  count = var.use_rds ? 0 : 1
+
+  name = "omni-${var.customer_name}-paradedb-task-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+    }]
+  })
+
+  tags = local.common_tags
+}
+
 # ECS Task Definition for ParadeDB
 resource "aws_ecs_task_definition" "paradedb" {
   count = var.use_rds ? 0 : 1
@@ -329,6 +349,7 @@ resource "aws_ecs_task_definition" "paradedb" {
   cpu                      = "1024"
   memory                   = "2048"
   execution_role_arn       = aws_iam_role.paradedb_task_execution[0].arn
+  task_role_arn            = aws_iam_role.paradedb_task[0].arn
 
   volume {
     name      = "postgres-data"
@@ -359,7 +380,7 @@ resource "aws_ecs_task_definition" "paradedb" {
 
     secrets = [{
       name      = "POSTGRES_PASSWORD"
-      valueFrom = var.database_password_secret_arn
+      valueFrom = "${var.database_password_secret_arn}:password::"
     }]
 
     mountPoints = [{
@@ -420,7 +441,6 @@ resource "aws_ecs_service" "paradedb" {
   cluster         = var.ecs_cluster_name
   task_definition = aws_ecs_task_definition.paradedb[0].arn
   desired_count   = 1
-  launch_type     = "EC2"
 
   network_configuration {
     subnets          = var.subnet_ids

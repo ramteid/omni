@@ -1,5 +1,5 @@
 locals {
-  database_url = "postgresql://${var.database_username}@${var.database_endpoint}:${var.database_port}/${var.database_name}?sslmode=require"
+  database_url = "postgresql://${var.database_username}@${var.database_endpoint}:${var.database_port}/${var.database_name}?sslmode=disable"
   redis_url    = "redis://${var.redis_endpoint}:${var.redis_port}"
 
   common_environment = [
@@ -7,7 +7,7 @@ locals {
     { name = "DATABASE_PORT", value = tostring(var.database_port) },
     { name = "DATABASE_NAME", value = var.database_name },
     { name = "DATABASE_USERNAME", value = var.database_username },
-    { name = "DATABASE_SSL", value = "true" },
+    { name = "DATABASE_SSL", value = "false" },
     { name = "REDIS_URL", value = local.redis_url },
     { name = "DB_MAX_CONNECTIONS", value = "10" },
     { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "30" },
