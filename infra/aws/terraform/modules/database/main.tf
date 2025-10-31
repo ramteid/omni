@@ -138,6 +138,13 @@ resource "aws_iam_role_policy_attachment" "paradedb_ecs_instance" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
 }
 
+resource "aws_iam_role_policy_attachment" "paradedb_ssm" {
+  count = var.use_rds ? 0 : 1
+
+  role       = aws_iam_role.paradedb_instance[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 resource "aws_iam_instance_profile" "paradedb" {
   count = var.use_rds ? 0 : 1
 
