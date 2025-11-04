@@ -1,11 +1,9 @@
 <div align="center">
 
-<!-- <img height="100" src="https://github.com/user-attachments/assets/db27a7ed-375b-4715-b43e-e80f52b4a305#gh-light-mode-only" alt="Omni">
-<img height="100" src="https://github.com/user-attachments/assets/1c2e1f84-a6b1-4877-9ba2-3b030f0b2d8e#gh-dark-mode-only" alt="Omni"> -->
+<img width="64" height="64" alt="omni-logo-256" src="https://github.com/user-attachments/assets/981ef763-41d5-4ae1-9cf8-a97d2e601c81#gh-light-mode-only" />
+<img width="64" height="64" alt="omni-logo-dark-256" src="https://github.com/user-attachments/assets/5d3fb1c2-ced0-433a-86a1-8b4e6005fb4f#gh-dark-mode-only" />
 
 **The Open-Source Enterprise AI Search Platform**
-
-*A self-hosted alternative to Glean*
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
