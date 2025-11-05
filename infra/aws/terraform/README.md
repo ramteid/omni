@@ -95,10 +95,6 @@ custom_domain = "demo.getomni.co"
 region      = "us-east-1"
 environment = "production"
 
-# Configure Google OAuth
-google_client_id     = "your-client-id.apps.googleusercontent.com"
-google_client_secret = "your-client-secret"
-
 # Configure email
 resend_api_key = "re_your_api_key"
 ```
@@ -191,8 +187,6 @@ terraform/
 - `alb_deletion_protection`: Enable deletion protection (default: `false`)
 
 #### Application
-- `google_client_id`: Google OAuth client ID
-- `google_client_secret`: Google OAuth client secret
 - `resend_api_key`: Resend API key for emails
 
 See `variables.tf` for the complete list.

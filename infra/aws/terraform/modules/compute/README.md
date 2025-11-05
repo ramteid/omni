@@ -102,8 +102,6 @@ module "compute" {
 | encryption_key_arn | Encryption key secret ARN | string | - | yes |
 | encryption_salt_arn | Encryption salt secret ARN | string | - | yes |
 | session_secret_arn | Session secret ARN | string | - | yes |
-| google_client_id | Google OAuth client ID | string | "CONFIGURE_GOOGLE_CLIENT_ID" | no |
-| google_client_secret | Google OAuth client secret | string | "CONFIGURE_GOOGLE_CLIENT_SECRET" | no |
 | resend_api_key | Resend API key | string | "CONFIGURE_RESEND_API_KEY" | no |
 
 ## Outputs

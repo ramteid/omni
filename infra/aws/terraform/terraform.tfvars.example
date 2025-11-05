@@ -34,9 +34,7 @@ alb_deletion_protection = false
 log_retention_days = 30
 
 # Optional: Application Configuration
-google_client_id     = "your-google-client-id"
-google_client_secret = "your-google-client-secret"
-resend_api_key       = "your-resend-api-key"
+resend_api_key = "your-resend-api-key"
 
 # Optional: Networking Configuration
 vpc_cidr = "10.0.0.0/16"

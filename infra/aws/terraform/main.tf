@@ -164,9 +164,7 @@ module "compute" {
   encryption_salt_arn   = module.secrets.encryption_salt_arn
   session_secret_arn    = module.secrets.session_secret_arn
 
-  google_client_id     = var.google_client_id
-  google_client_secret = var.google_client_secret
-  resend_api_key       = var.resend_api_key
+  resend_api_key = var.resend_api_key
 
   # Storage resources for S3 and batch inference
   content_bucket_arn       = module.storage.content_bucket_arn

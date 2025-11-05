@@ -133,19 +133,6 @@ variable "log_retention_days" {
 }
 
 # Application Configuration
-variable "google_client_id" {
-  description = "Google OAuth client ID"
-  type        = string
-  default     = "CONFIGURE_GOOGLE_CLIENT_ID"
-}
-
-variable "google_client_secret" {
-  description = "Google OAuth client secret"
-  type        = string
-  default     = "CONFIGURE_GOOGLE_CLIENT_SECRET"
-  sensitive   = true
-}
-
 variable "resend_api_key" {
   description = "Resend API key for emails"
   type        = string

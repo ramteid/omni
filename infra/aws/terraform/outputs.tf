@@ -57,8 +57,6 @@ output "next_steps" {
 
     🔐 Configure integrations:
        Update these environment variables in terraform.tfvars:
-       - google_client_id
-       - google_client_secret
        - resend_api_key
 
     ${var.ssl_certificate_arn == "" ? "🔒 Setup HTTPS:\n       1. Request certificate in ACM\n       2. Add ssl_certificate_arn to terraform.tfvars\n       3. Run terraform apply\n       4. Update DNS to point to ALB" : ""}
