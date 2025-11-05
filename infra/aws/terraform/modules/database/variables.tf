@@ -9,60 +9,8 @@ variable "environment" {
   default     = "production"
 }
 
-variable "use_rds" {
-  description = "Use AWS RDS PostgreSQL instead of self-hosted ParadeDB"
-  type        = bool
-  default     = false
-}
-
 # ============================================================================
-# RDS-specific variables
-# ============================================================================
-
-variable "instance_class" {
-  description = "RDS instance type"
-  type        = string
-  default     = "db.t3.micro"
-}
-
-variable "allocated_storage" {
-  description = "Allocated storage in GB"
-  type        = number
-  default     = 20
-}
-
-variable "backup_retention_period" {
-  description = "Backup retention period in days"
-  type        = number
-  default     = 7
-}
-
-variable "multi_az" {
-  description = "Enable Multi-AZ deployment"
-  type        = bool
-  default     = false
-}
-
-variable "deletion_protection" {
-  description = "Enable deletion protection"
-  type        = bool
-  default     = false
-}
-
-variable "skip_final_snapshot" {
-  description = "Skip final DB snapshot on deletion"
-  type        = bool
-  default     = false
-}
-
-variable "security_group_id" {
-  description = "Security group ID for RDS database"
-  type        = string
-  default     = ""
-}
-
-# ============================================================================
-# ParadeDB-specific variables
+# ParadeDB Configuration
 # ============================================================================
 
 variable "paradedb_instance_type" {
@@ -119,7 +67,7 @@ variable "region" {
 }
 
 # ============================================================================
-# Common variables (used by both RDS and ParadeDB)
+# Database Configuration
 # ============================================================================
 
 variable "database_name" {
@@ -132,13 +80,6 @@ variable "database_username" {
   description = "PostgreSQL master username"
   type        = string
   default     = "omni"
-}
-
-variable "database_password" {
-  description = "PostgreSQL master password (only used for RDS)"
-  type        = string
-  sensitive   = true
-  default     = ""
 }
 
 variable "subnet_ids" {

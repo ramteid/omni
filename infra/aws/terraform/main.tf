@@ -61,25 +61,14 @@ module "database" {
 
   customer_name = var.customer_name
   environment   = var.environment
-  use_rds       = var.use_rds
 
-  # Common database variables
+  # Database variables
   database_name     = var.database_name
   database_username = var.database_username
-  database_password = module.secrets.database_password
   subnet_ids        = module.networking.private_subnet_ids
   region            = var.region
 
-  # RDS-specific variables
-  instance_class          = var.db_instance_class
-  allocated_storage       = var.db_allocated_storage
-  security_group_id       = module.networking.database_security_group_id
-  backup_retention_period = var.db_backup_retention_period
-  multi_az                = var.db_multi_az
-  deletion_protection     = var.db_deletion_protection
-  skip_final_snapshot     = var.skip_final_snapshot
-
-  # ParadeDB-specific variables
+  # ParadeDB configuration
   paradedb_instance_type         = var.paradedb_instance_type
   paradedb_volume_size           = var.paradedb_volume_size
   paradedb_container_image       = var.paradedb_container_image
@@ -90,10 +79,8 @@ module "database" {
   service_discovery_namespace_id = aws_service_discovery_private_dns_namespace.main.id
 }
 
-# Attach ParadeDB capacity provider to cluster (only when using ParadeDB)
+# Attach ParadeDB capacity provider to cluster
 resource "aws_ecs_cluster_capacity_providers" "main" {
-  count = var.use_rds ? 0 : 1
-
   cluster_name = aws_ecs_cluster.main.name
 
   capacity_providers = [module.database.paradedb_capacity_provider_name]

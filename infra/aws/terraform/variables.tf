@@ -39,12 +39,6 @@ variable "environment" {
 }
 
 # Database Configuration
-variable "use_rds" {
-  description = "Use AWS RDS PostgreSQL instead of self-hosted ParadeDB"
-  type        = bool
-  default     = false
-}
-
 variable "database_name" {
   description = "PostgreSQL database name"
   type        = string
@@ -57,44 +51,7 @@ variable "database_username" {
   default     = "omni"
 }
 
-# RDS-specific variables
-variable "db_instance_class" {
-  description = "RDS instance type"
-  type        = string
-  default     = "db.t3.micro"
-}
-
-variable "db_allocated_storage" {
-  description = "Allocated storage in GB for RDS"
-  type        = number
-  default     = 20
-}
-
-variable "db_backup_retention_period" {
-  description = "Backup retention period in days"
-  type        = number
-  default     = 7
-}
-
-variable "db_multi_az" {
-  description = "Enable Multi-AZ deployment for RDS"
-  type        = bool
-  default     = false
-}
-
-variable "db_deletion_protection" {
-  description = "Enable deletion protection for RDS"
-  type        = bool
-  default     = false
-}
-
-variable "skip_final_snapshot" {
-  description = "Skip final DB snapshot on deletion (true for dev, false for production)"
-  type        = bool
-  default     = false
-}
-
-# ParadeDB-specific variables
+# ParadeDB Configuration
 variable "paradedb_instance_type" {
   description = "EC2 instance type for ParadeDB"
   type        = string

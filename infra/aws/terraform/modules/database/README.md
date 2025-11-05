@@ -1,15 +1,17 @@
 # Database Module
 
-This module creates an RDS PostgreSQL instance with pgvector support for Omni.
+This module creates a ParadeDB instance running on ECS for Omni.
 
 ## Resources Created
 
-- RDS DB Subnet Group
-- RDS PostgreSQL 17.2 Instance
-  - pgvector extension support
-  - Encrypted storage (gp3)
-  - Automatic backups
-  - CloudWatch Logs integration
+- EC2 Auto Scaling Group for ParadeDB instances
+- ECS Task Definition and Service for ParadeDB container
+- ECS Capacity Provider for ParadeDB
+- Security Group for ParadeDB
+- IAM roles and policies for EC2 instances and ECS tasks
+- CloudWatch Log Group for database logs
+- Service Discovery entry for database DNS resolution
+- EBS volumes for persistent PostgreSQL data
 
 ## Usage
 
@@ -19,15 +21,22 @@ module "database" {
 
   customer_name     = "acme-corp"
   environment       = "production"
-  instance_class    = "db.t3.micro"
   database_name     = "omni"
   database_username = "omni"
-  database_password = module.secrets.database_password
 
-  subnet_ids        = module.networking.private_subnet_ids
-  security_group_id = module.networking.database_security_group_id
+  # ParadeDB configuration
+  paradedb_instance_type   = "t3.small"
+  paradedb_volume_size     = 50
+  paradedb_container_image = "paradedb/paradedb:0.18.15-pg17"
 
-  skip_final_snapshot = false
+  # Infrastructure dependencies
+  vpc_id                         = module.networking.vpc_id
+  subnet_ids                     = module.networking.private_subnet_ids
+  ecs_security_group_id          = module.networking.ecs_security_group_id
+  ecs_cluster_name               = aws_ecs_cluster.main.name
+  service_discovery_namespace_id = aws_service_discovery_private_dns_namespace.main.id
+  database_password_secret_arn   = module.secrets.database_password_arn
+  region                         = var.region
 }
 ```
 
@@ -37,93 +46,141 @@ module "database" {
 |------|-------------|------|---------|----------|
 | customer_name | Customer name for resource naming | string | - | yes |
 | environment | Environment (production, staging, development) | string | "production" | no |
-| instance_class | RDS instance type | string | "db.t3.micro" | no |
-| allocated_storage | Allocated storage in GB | number | 20 | no |
 | database_name | PostgreSQL database name | string | "omni" | no |
 | database_username | PostgreSQL master username | string | "omni" | no |
-| database_password | PostgreSQL master password | string | - | yes |
-| subnet_ids | List of subnet IDs for DB subnet group | list(string) | - | yes |
-| security_group_id | Security group ID for database | string | - | yes |
-| backup_retention_period | Backup retention period in days | number | 7 | no |
-| multi_az | Enable Multi-AZ deployment | bool | false | no |
-| deletion_protection | Enable deletion protection | bool | false | no |
-| skip_final_snapshot | Skip final DB snapshot on deletion | bool | false | no |
+| paradedb_instance_type | EC2 instance type for ParadeDB | string | "t3.small" | no |
+| paradedb_volume_size | EBS volume size in GB for ParadeDB data | number | 50 | no |
+| paradedb_container_image | Docker image for ParadeDB | string | "paradedb/paradedb:0.18.15-pg17" | no |
+| vpc_id | VPC ID for ParadeDB security group | string | - | yes |
+| ecs_security_group_id | ECS security group ID to allow connections to ParadeDB | string | - | yes |
+| ecs_cluster_name | ECS cluster name for ParadeDB service | string | - | yes |
+| service_discovery_namespace_id | Service discovery namespace ID for ParadeDB | string | - | yes |
+| database_password_secret_arn | ARN of the database password secret in Secrets Manager | string | - | yes |
+| region | AWS region | string | - | yes |
+| subnet_ids | List of subnet IDs for ParadeDB deployment | list(string) | - | yes |
 
 ## Outputs
 
 | Name | Description |
 |------|-------------|
-| endpoint | Database endpoint address |
-| port | Database port |
+| endpoint | ParadeDB endpoint address (via service discovery) |
+| port | Database port (5432) |
 | database_name | Database name |
-| instance_id | Database instance ID |
-| arn | Database ARN |
+| paradedb_capacity_provider_name | ParadeDB ECS capacity provider name |
 
-## PostgreSQL Configuration
+## ParadeDB Configuration
 
 ### Engine Version
-- PostgreSQL 17.2
+- ParadeDB 0.18.15 (based on PostgreSQL 17)
+- Full-text search extensions built-in
+- pgvector extension for semantic search
+
+### Infrastructure
+- Runs as an ECS service on dedicated EC2 instances
+- Auto Scaling Group maintains exactly one instance
+- Persistent EBS volume for database data (survives instance replacement)
+- Private subnet deployment only
+- Service discovery for DNS resolution (`paradedb.omni-{customer}.local`)
 
 ### Storage
 - Type: gp3 (General Purpose SSD)
-- Default size: 20 GB
+- Default size: 50 GB (configurable)
 - Encrypted at rest
-
-### Backups
-- Retention: 7 days (configurable)
-- Backup window: 03:00-04:00 UTC
-- Maintenance window: Sunday 04:00-05:00 UTC
-
-### High Availability
-- Single-AZ by default (cost optimization)
-- Multi-AZ can be enabled for production workloads
-
-### Monitoring
-- CloudWatch Logs: postgresql, upgrade
-- Enhanced monitoring available
+- Separate data volume mounted at `/var/lib/postgresql/data`
+- Root volume: 30 GB for OS and container runtime
 
 ### Security
-- SSL/TLS required for connections
-- Encryption at rest enabled
-- Private subnet deployment only
-- Security group restricts access to ECS services
+- Security group restricts access to ECS services only
+- Password stored in AWS Secrets Manager
+- Private subnet deployment
+- IAM roles for EC2 instance and ECS tasks
+- SSL/TLS support for connections
 
-## pgvector Extension
+### Monitoring
+- CloudWatch Logs: `/ecs/omni-{customer}/paradedb`
+- Log retention: 7 days
+- ECS Exec enabled for debugging
+- Container health checks via pg_isready
 
-After database creation, connect and enable pgvector:
+## Scaling
 
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
+ParadeDB runs on a single EC2 instance managed by an Auto Scaling Group for high availability.
 
-This is handled automatically by the migrations module.
+### Vertical Scaling
+To increase database capacity:
+
+1. Update `paradedb_instance_type` (e.g., from `t3.small` to `t3.medium`)
+2. Run `terraform apply`
+3. The Auto Scaling Group will replace the instance with minimal downtime
+4. Data persists on the EBS volume across instance replacements
+
+### Storage Scaling
+To increase storage:
+
+1. Update `paradedb_volume_size`
+2. Run `terraform apply`
+3. Note: EBS volumes can only be increased, not decreased
 
 ## Cost Optimization
 
 ### Development/Staging
 ```hcl
-instance_class      = "db.t3.micro"
-multi_az            = false
-skip_final_snapshot = true
+paradedb_instance_type = "t3.small"
+paradedb_volume_size   = 20
 ```
 
 ### Production
 ```hcl
-instance_class      = "db.t3.small"  # or larger
-multi_az            = true
-skip_final_snapshot = false
-deletion_protection = true
+paradedb_instance_type = "t3.medium"  # or larger
+paradedb_volume_size   = 100
 ```
 
-## Scaling
+## High Availability
 
-To resize the database:
+- Auto Scaling Group ensures instance is automatically replaced if it fails
+- EBS volume persists data across instance replacements
+- Service Discovery automatically updates DNS when instance is replaced
+- Health checks ensure traffic only routes to healthy instances
 
-1. Update `instance_class` or `allocated_storage`
-2. Run `terraform plan` to preview changes
-3. Run `terraform apply`
-4. Terraform will schedule the modification during the maintenance window
+## Backup and Recovery
 
-## Final Snapshots
+Currently, backups are handled at the EBS volume level. Consider:
+- EBS snapshots for point-in-time recovery
+- Application-level backups using `pg_dump`
+- Cross-region replication for disaster recovery
 
-When `skip_final_snapshot = false`, a final snapshot is created on deletion with a timestamp-based identifier. This snapshot can be used to restore the database if needed.
+## Troubleshooting
+
+### Connecting to the database
+```bash
+# Via ECS Exec
+aws ecs execute-command \
+  --cluster omni-{customer}-cluster \
+  --task {task-id} \
+  --container paradedb \
+  --interactive \
+  --command "/bin/bash"
+
+# Then inside container
+psql -U omni -d omni
+```
+
+### Viewing logs
+```bash
+aws logs tail /ecs/omni-{customer}/paradedb --follow
+```
+
+### Checking database health
+The ECS task definition includes a health check that runs:
+```bash
+pg_isready -U omni -d omni
+```
+
+## Why ParadeDB?
+
+ParadeDB extends PostgreSQL with:
+- **Full-text search**: BM25 ranking built-in, no need for Elasticsearch
+- **Hybrid search**: Combine keyword and semantic search
+- **pgvector**: Native vector search for embeddings
+- **Cost-effective**: Single database for all search needs
+- **PostgreSQL compatibility**: Use standard PostgreSQL tools and clients

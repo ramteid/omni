@@ -8,66 +8,11 @@ locals {
 }
 
 # ============================================================================
-# RDS PostgreSQL Resources (when use_rds = true)
-# ============================================================================
-
-resource "aws_db_subnet_group" "main" {
-  count = var.use_rds ? 1 : 0
-
-  name        = "omni-${var.customer_name}-db-subnet-group"
-  description = "Subnet group for RDS database"
-  subnet_ids  = var.subnet_ids
-
-  tags = merge(local.common_tags, {
-    Name = "omni-${var.customer_name}-db-subnet-group"
-  })
-}
-
-resource "aws_db_instance" "postgresql" {
-  count = var.use_rds ? 1 : 0
-
-  identifier     = "omni-${var.customer_name}-postgres"
-  engine         = "postgres"
-  engine_version = "17.4"
-
-  instance_class    = var.instance_class
-  allocated_storage = var.allocated_storage
-  storage_type      = "gp3"
-  storage_encrypted = true
-
-  db_name  = var.database_name
-  username = var.database_username
-  password = var.database_password
-
-  db_subnet_group_name   = aws_db_subnet_group.main[0].name
-  vpc_security_group_ids = [var.security_group_id]
-
-  backup_retention_period = var.backup_retention_period
-  backup_window           = "03:00-04:00"
-  maintenance_window      = "sun:04:00-sun:05:00"
-
-  multi_az               = var.multi_az
-  deletion_protection    = var.deletion_protection
-  skip_final_snapshot    = var.skip_final_snapshot
-  final_snapshot_identifier = var.skip_final_snapshot ? null : "omni-${var.customer_name}-postgres-final-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
-
-  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
-
-  ca_cert_identifier = "rds-ca-rsa2048-g1"
-
-  tags = merge(local.common_tags, {
-    Name = "omni-${var.customer_name}-postgres"
-  })
-}
-
-# ============================================================================
-# ParadeDB on ECS Resources (when use_rds = false)
+# ParadeDB on ECS Resources
 # ============================================================================
 
 # Get latest ECS-optimized AMI
 data "aws_ami" "ecs_optimized" {
-  count = var.use_rds ? 0 : 1
-
   most_recent = true
   owners      = ["amazon"]
 
@@ -84,7 +29,6 @@ data "aws_ami" "ecs_optimized" {
 
 # Security group for ParadeDB
 resource "aws_security_group" "paradedb" {
-  count = var.use_rds ? 0 : 1
 
   name        = "omni-${var.customer_name}-paradedb-sg"
   description = "Security group for ParadeDB database"
@@ -113,8 +57,6 @@ resource "aws_security_group" "paradedb" {
 
 # IAM role for ParadeDB EC2 instance
 resource "aws_iam_role" "paradedb_instance" {
-  count = var.use_rds ? 0 : 1
-
   name = "omni-${var.customer_name}-paradedb-instance-role"
 
   assume_role_policy = jsonencode({
@@ -132,41 +74,33 @@ resource "aws_iam_role" "paradedb_instance" {
 }
 
 resource "aws_iam_role_policy_attachment" "paradedb_ecs_instance" {
-  count = var.use_rds ? 0 : 1
-
-  role       = aws_iam_role.paradedb_instance[0].name
+  role       = aws_iam_role.paradedb_instance.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
 }
 
 resource "aws_iam_role_policy_attachment" "paradedb_ssm" {
-  count = var.use_rds ? 0 : 1
-
-  role       = aws_iam_role.paradedb_instance[0].name
+  role       = aws_iam_role.paradedb_instance.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_instance_profile" "paradedb" {
-  count = var.use_rds ? 0 : 1
-
   name = "omni-${var.customer_name}-paradedb-instance-profile"
-  role = aws_iam_role.paradedb_instance[0].name
+  role = aws_iam_role.paradedb_instance.name
 
   tags = local.common_tags
 }
 
 # Launch template for ParadeDB EC2 instances
 resource "aws_launch_template" "paradedb" {
-  count = var.use_rds ? 0 : 1
-
   name_prefix   = "omni-${var.customer_name}-paradedb-"
-  image_id      = data.aws_ami.ecs_optimized[0].id
+  image_id      = data.aws_ami.ecs_optimized.id
   instance_type = var.paradedb_instance_type
 
   iam_instance_profile {
-    name = aws_iam_instance_profile.paradedb[0].name
+    name = aws_iam_instance_profile.paradedb.name
   }
 
-  vpc_security_group_ids = [aws_security_group.paradedb[0].id]
+  vpc_security_group_ids = [aws_security_group.paradedb.id]
 
   block_device_mappings {
     device_name = "/dev/xvda"
@@ -214,8 +148,6 @@ resource "aws_launch_template" "paradedb" {
 
 # Auto Scaling Group for ParadeDB
 resource "aws_autoscaling_group" "paradedb" {
-  count = var.use_rds ? 0 : 1
-
   name                = "omni-${var.customer_name}-paradedb-asg"
   vpc_zone_identifier = var.subnet_ids
   min_size            = 1
@@ -223,7 +155,7 @@ resource "aws_autoscaling_group" "paradedb" {
   desired_capacity    = 1
 
   launch_template {
-    id      = aws_launch_template.paradedb[0].id
+    id      = aws_launch_template.paradedb.id
     version = "$Latest"
   }
 
@@ -254,12 +186,10 @@ resource "aws_autoscaling_group" "paradedb" {
 
 # ECS Capacity Provider for ParadeDB
 resource "aws_ecs_capacity_provider" "paradedb" {
-  count = var.use_rds ? 0 : 1
-
   name = "omni-${var.customer_name}-paradedb-capacity-provider"
 
   auto_scaling_group_provider {
-    auto_scaling_group_arn         = aws_autoscaling_group.paradedb[0].arn
+    auto_scaling_group_arn         = aws_autoscaling_group.paradedb.arn
     managed_termination_protection = "DISABLED"
 
     managed_scaling {
@@ -273,8 +203,6 @@ resource "aws_ecs_capacity_provider" "paradedb" {
 
 # CloudWatch Log Group for ParadeDB
 resource "aws_cloudwatch_log_group" "paradedb" {
-  count = var.use_rds ? 0 : 1
-
   name              = "/ecs/omni-${var.customer_name}/paradedb"
   retention_in_days = 7
 
@@ -283,8 +211,6 @@ resource "aws_cloudwatch_log_group" "paradedb" {
 
 # IAM role for ParadeDB ECS task execution
 resource "aws_iam_role" "paradedb_task_execution" {
-  count = var.use_rds ? 0 : 1
-
   name = "omni-${var.customer_name}-paradedb-task-execution-role"
 
   assume_role_policy = jsonencode({
@@ -302,17 +228,13 @@ resource "aws_iam_role" "paradedb_task_execution" {
 }
 
 resource "aws_iam_role_policy_attachment" "paradedb_task_execution" {
-  count = var.use_rds ? 0 : 1
-
-  role       = aws_iam_role.paradedb_task_execution[0].name
+  role       = aws_iam_role.paradedb_task_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
 resource "aws_iam_role_policy" "paradedb_secrets" {
-  count = var.use_rds ? 0 : 1
-
   name = "omni-${var.customer_name}-paradedb-secrets-policy"
-  role = aws_iam_role.paradedb_task_execution[0].id
+  role = aws_iam_role.paradedb_task_execution.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -328,8 +250,6 @@ resource "aws_iam_role_policy" "paradedb_secrets" {
 
 # IAM role for ParadeDB ECS task (runtime role)
 resource "aws_iam_role" "paradedb_task" {
-  count = var.use_rds ? 0 : 1
-
   name = "omni-${var.customer_name}-paradedb-task-role"
 
   assume_role_policy = jsonencode({
@@ -348,15 +268,13 @@ resource "aws_iam_role" "paradedb_task" {
 
 # ECS Task Definition for ParadeDB
 resource "aws_ecs_task_definition" "paradedb" {
-  count = var.use_rds ? 0 : 1
-
   family                   = "omni-${var.customer_name}-paradedb"
   network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
   cpu                      = "1024"
   memory                   = "2048"
-  execution_role_arn       = aws_iam_role.paradedb_task_execution[0].arn
-  task_role_arn            = aws_iam_role.paradedb_task[0].arn
+  execution_role_arn       = aws_iam_role.paradedb_task_execution.arn
+  task_role_arn            = aws_iam_role.paradedb_task.arn
 
   volume {
     name      = "postgres-data"
@@ -410,7 +328,7 @@ resource "aws_ecs_task_definition" "paradedb" {
     logConfiguration = {
       logDriver = "awslogs"
       options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.paradedb[0].name
+        "awslogs-group"         = aws_cloudwatch_log_group.paradedb.name
         "awslogs-region"        = var.region
         "awslogs-stream-prefix" = "paradedb"
       }
@@ -422,8 +340,6 @@ resource "aws_ecs_task_definition" "paradedb" {
 
 # Service Discovery for ParadeDB
 resource "aws_service_discovery_service" "paradedb" {
-  count = var.use_rds ? 0 : 1
-
   name = "paradedb"
 
   dns_config {
@@ -442,21 +358,19 @@ resource "aws_service_discovery_service" "paradedb" {
 
 # ECS Service for ParadeDB
 resource "aws_ecs_service" "paradedb" {
-  count = var.use_rds ? 0 : 1
-
   name            = "omni-${var.customer_name}-paradedb"
   cluster         = var.ecs_cluster_name
-  task_definition = aws_ecs_task_definition.paradedb[0].arn
+  task_definition = aws_ecs_task_definition.paradedb.arn
   desired_count   = 1
 
   network_configuration {
     subnets          = var.subnet_ids
-    security_groups  = [aws_security_group.paradedb[0].id]
+    security_groups  = [aws_security_group.paradedb.id]
     assign_public_ip = false
   }
 
   service_registries {
-    registry_arn = aws_service_discovery_service.paradedb[0].arn
+    registry_arn = aws_service_discovery_service.paradedb.arn
   }
 
   # Ensure only one task per instance
@@ -466,7 +380,7 @@ resource "aws_ecs_service" "paradedb" {
 
   # Ensure task runs on instances with the right capacity provider
   capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.paradedb[0].name
+    capacity_provider = aws_ecs_capacity_provider.paradedb.name
     weight            = 100
     base              = 1
   }
