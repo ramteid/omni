@@ -5,7 +5,7 @@
     import { Textarea } from '$lib/components/ui/textarea'
     import { Checkbox } from '$lib/components/ui/checkbox'
     import * as Collapsible from '$lib/components/ui/collapsible'
-    import { ChevronDown } from 'lucide-svelte'
+    import { ChevronDown } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
 
     interface Props {
