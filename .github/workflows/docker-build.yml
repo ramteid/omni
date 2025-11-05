@@ -12,31 +12,124 @@ env:
   IMAGE_PREFIX: ${{ github.repository }}
 
 jobs:
+  # Detect which services need to be built based on changed files
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      searcher: ${{ steps.filter.outputs.searcher }}
+      indexer: ${{ steps.filter.outputs.indexer }}
+      ai: ${{ steps.filter.outputs.ai }}
+      web: ${{ steps.filter.outputs.web }}
+      migrator: ${{ steps.filter.outputs.migrator }}
+      google-connector: ${{ steps.filter.outputs.google-connector }}
+      slack-connector: ${{ steps.filter.outputs.slack-connector }}
+      atlassian-connector: ${{ steps.filter.outputs.atlassian-connector }}
+      web-connector: ${{ steps.filter.outputs.web-connector }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check changed files
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            searcher:
+              - 'services/searcher/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/docker-build.yml'
+            indexer:
+              - 'services/indexer/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/docker-build.yml'
+            ai:
+              - 'services/ai/**'
+              - '.github/workflows/docker-build.yml'
+            web:
+              - 'web/**'
+              - '.github/workflows/docker-build.yml'
+            migrator:
+              - 'services/migrations/**'
+              - '.github/workflows/docker-build.yml'
+            google-connector:
+              - 'connectors/google/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/docker-build.yml'
+            slack-connector:
+              - 'connectors/slack/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/docker-build.yml'
+            atlassian-connector:
+              - 'connectors/atlassian/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/docker-build.yml'
+            web-connector:
+              - 'connectors/web/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/docker-build.yml'
+
+  # Build and push Docker images
   build-and-push:
+    needs: detect-changes
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    
+
     strategy:
       matrix:
-        service:
+        include:
           - name: omni-searcher
             context: .
             dockerfile: services/searcher/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.searcher }}
           - name: omni-indexer
             context: .
             dockerfile: services/indexer/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.indexer }}
           - name: omni-ai
             context: services/ai
+            dockerfile: services/ai/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.ai }}
           - name: omni-web
             context: web
+            dockerfile: web/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.web }}
           - name: omni-migrator
             context: .
             dockerfile: services/migrations/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.migrator }}
           - name: omni-google-connector
             context: .
             dockerfile: connectors/google/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.google-connector }}
+          - name: omni-slack-connector
+            context: .
+            dockerfile: connectors/slack/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.slack-connector }}
+          - name: omni-atlassian-connector
+            context: .
+            dockerfile: connectors/atlassian/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.atlassian-connector }}
+          - name: omni-web-connector
+            context: .
+            dockerfile: connectors/web/Dockerfile
+            changed: ${{ needs.detect-changes.outputs.web-connector }}
+
+    # Only run this job if the service has changes
+    if: matrix.changed == 'true'
 
     steps:
       - name: Checkout repository
@@ -56,7 +149,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service.name }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.name }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -69,12 +162,11 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ${{ matrix.service.context }}
+          context: ${{ matrix.context }}
           platforms: linux/amd64
-          file: ${{ matrix.service.dockerfile }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
