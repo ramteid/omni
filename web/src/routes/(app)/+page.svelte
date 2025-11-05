@@ -7,6 +7,8 @@
     import { Search, Clock, History, Loader2, Send } from '@lucide/svelte'
     import { goto } from '$app/navigation'
     import { cn } from '$lib/utils'
+    import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
+    import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
 
     let { data }: PageProps = $props()
 
@@ -103,7 +105,15 @@
 <div class="container mx-auto px-4">
     <!-- Centered Search Section -->
     <div class="flex min-h-[60vh] flex-col items-center justify-center">
-        <div class="mb-8 text-center">
+        <div class="mb-8 flex flex-col items-center text-center">
+            <img
+                src={omniLogoLight}
+                alt="Omni logo"
+                class="mb-6 h-12 w-12 rounded-lg dark:hidden" />
+            <img
+                src={omniLogoDark}
+                alt="Omni logo"
+                class="mb-6 hidden h-12 w-12 rounded-lg dark:block" />
             <h1 class="text-foreground mb-4 text-4xl font-bold">Welcome to Omni</h1>
             <p class="text-muted-foreground text-lg">
                 Your AI copilot for work. Ask questions, create content, and get things done.
