@@ -1,6 +1,5 @@
 <script lang="ts">
     import '../../app.css'
-    import omniLogo from '$lib/images/icons/omni-logo.png'
 </script>
 
 <div class="from-background to-muted min-h-screen bg-gradient-to-br">
