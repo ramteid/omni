@@ -19,6 +19,7 @@ export const sources = pgTable('sources', {
     sourceType: text('source_type').notNull(),
     config: jsonb('config').notNull().default({}),
     isActive: boolean('is_active').notNull().default(true),
+    isDeleted: boolean('is_deleted').notNull().default(false),
     lastSyncAt: timestamp('last_sync_at', { withTimezone: true, mode: 'date' }),
     syncStatus: text('sync_status').default('pending'),
     syncError: text('sync_error'),

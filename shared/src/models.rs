@@ -57,6 +57,7 @@ pub struct Source {
     pub source_type: SourceType,
     pub config: JsonValue,
     pub is_active: bool,
+    pub is_deleted: bool,
     #[serde(with = "time::serde::iso8601::option")]
     pub last_sync_at: Option<OffsetDateTime>,
     pub sync_status: Option<String>,

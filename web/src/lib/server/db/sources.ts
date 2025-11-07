@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, and } from 'drizzle-orm'
 import { db } from './index'
 import { sources, type Source } from './schema'
 
@@ -16,15 +16,25 @@ export async function getGoogleSources(): Promise<Source[]> {
     return await db
         .select()
         .from(sources)
-        .where(inArray(sources.sourceType, ['google_drive', 'gmail']))
+        .where(
+            and(
+                inArray(sources.sourceType, ['google_drive', 'gmail']),
+                eq(sources.isDeleted, false),
+            ),
+        )
 }
 
 export async function getActiveGoogleSources(): Promise<Source[]> {
     return await db
         .select()
         .from(sources)
-        .where(inArray(sources.sourceType, ['google_drive', 'gmail']))
-        .where(eq(sources.isActive, true))
+        .where(
+            and(
+                inArray(sources.sourceType, ['google_drive', 'gmail']),
+                eq(sources.isActive, true),
+                eq(sources.isDeleted, false),
+            ),
+        )
 }
 
 export async function updateGoogleSources(

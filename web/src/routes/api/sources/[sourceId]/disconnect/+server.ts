@@ -27,12 +27,13 @@ export const POST: RequestHandler = async ({ params, locals }) => {
     // Delete service credentials for this source
     await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, sourceId))
 
-    // Mark source as inactive
+    // Mark source as inactive and deleted
     await db
         .update(sources)
         .set({
             syncStatus: 'pending',
             isActive: false,
+            isDeleted: true,
             updatedAt: new Date(),
         })
         .where(eq(sources.id, sourceId))

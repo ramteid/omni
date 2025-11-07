@@ -14,11 +14,11 @@ impl SourceRepository {
     pub async fn find_by_type(&self, source_type: &str) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, 
+            SELECT id, name, source_type, config, is_active, is_deleted,
                    last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
                    created_at, updated_at, created_by
             FROM sources
-            WHERE source_type = $1
+            WHERE source_type = $1 AND is_deleted = false
             ORDER BY created_at DESC
             "#,
         )
@@ -32,11 +32,11 @@ impl SourceRepository {
     pub async fn find_active_sources(&self) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, 
+            SELECT id, name, source_type, config, is_active, is_deleted,
                    last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
                    created_at, updated_at, created_by
             FROM sources
-            WHERE is_active = true
+            WHERE is_active = true AND is_deleted = false
             ORDER BY created_at DESC
             "#,
         )
@@ -85,11 +85,11 @@ impl SourceRepository {
     ) -> Result<Vec<Source>, DatabaseError> {
         let mut query_builder = sqlx::QueryBuilder::new(
             r#"
-            SELECT id, name, source_type, config, is_active,
+            SELECT id, name, source_type, config, is_active, is_deleted,
                    last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
                    created_at, updated_at, created_by
             FROM sources
-            WHERE is_active = true
+            WHERE is_active = true AND is_deleted = false
             "#,
         );
 
@@ -145,7 +145,7 @@ impl Repository<Source, String> for SourceRepository {
     async fn find_by_id(&self, id: String) -> Result<Option<Source>, DatabaseError> {
         let source = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, 
+            SELECT id, name, source_type, config, is_active, is_deleted,
                    last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
                    created_at, updated_at, created_by
             FROM sources
@@ -162,10 +162,11 @@ impl Repository<Source, String> for SourceRepository {
     async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, 
+            SELECT id, name, source_type, config, is_active, is_deleted,
                    last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
                    created_at, updated_at, created_by
             FROM sources
+            WHERE is_deleted = false
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
             "#,
@@ -183,7 +184,7 @@ impl Repository<Source, String> for SourceRepository {
             r#"
             INSERT INTO sources (id, name, source_type, config, is_active, created_by)
             VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, name, source_type, config, is_active, 
+            RETURNING id, name, source_type, config, is_active, is_deleted,
                       last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
                       created_at, updated_at, created_by
             "#,
@@ -210,9 +211,9 @@ impl Repository<Source, String> for SourceRepository {
         let updated_source = sqlx::query_as::<_, Source>(
             r#"
             UPDATE sources
-            SET name = $2, source_type = $3, config = $4, is_active = $5
+            SET name = $2, source_type = $3, config = $4, is_active = $5, is_deleted = $6
             WHERE id = $1
-            RETURNING id, name, source_type, config, is_active, 
+            RETURNING id, name, source_type, config, is_active, is_deleted,
                       last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
                       created_at, updated_at, created_by
             "#,
@@ -222,6 +223,7 @@ impl Repository<Source, String> for SourceRepository {
         .bind(&source.source_type)
         .bind(&source.config)
         .bind(source.is_active)
+        .bind(source.is_deleted)
         .fetch_optional(&self.pool)
         .await?;
 
