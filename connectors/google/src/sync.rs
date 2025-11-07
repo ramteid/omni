@@ -23,7 +23,7 @@ use shared::models::{
 };
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
-use shared::{AIClient, ObjectStorage, RateLimiter};
+use shared::{AIClient, ObjectStorage, RateLimiter, Repository, SourceRepository};
 
 pub struct SyncManager {
     pool: PgPool,
@@ -34,6 +34,7 @@ pub struct SyncManager {
     event_queue: EventQueue,
     content_storage: Arc<dyn ObjectStorage>,
     service_credentials_repo: ServiceCredentialsRepo,
+    source_repo: SourceRepository,
     folder_cache: LruFolderCache,
 }
 
@@ -248,6 +249,7 @@ impl SyncManager {
         let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
 
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
+        let source_repo = SourceRepository::new(&pool);
 
         Ok(Self {
             pool,
@@ -258,6 +260,7 @@ impl SyncManager {
             event_queue,
             content_storage,
             service_credentials_repo,
+            source_repo,
             folder_cache: LruFolderCache::new(10_000), // Cache up to 10,000 folder metadata entries
         })
     }
@@ -354,19 +357,27 @@ impl SyncManager {
     }
 
     async fn get_active_sources(&self) -> Result<Vec<Source>> {
-        let sources = sqlx::query_as::<_, Source>(
-            "SELECT s.* FROM sources s
-             INNER JOIN service_credentials sc ON s.id = sc.source_id
-             WHERE s.source_type IN ($1, $2)
-             AND s.is_active = true
-             AND sc.provider = 'google'",
-        )
-        .bind(SourceType::GoogleDrive)
-        .bind(SourceType::Gmail)
-        .fetch_all(&self.pool)
-        .await?;
+        let sources = self
+            .source_repo
+            .find_active_by_types(vec![SourceType::GoogleDrive, SourceType::Gmail])
+            .await?;
 
-        Ok(sources)
+        // Filter to only sources that have Google service credentials
+        let mut sources_with_creds = Vec::new();
+        for source in sources {
+            if let Ok(Some(creds)) = self
+                .service_credentials_repo
+                .get_by_source_id(&source.id)
+                .await
+            {
+                // Verify it's a Google credential
+                if creds.provider == ServiceProvider::Google {
+                    sources_with_creds.push(source);
+                }
+            }
+        }
+
+        Ok(sources_with_creds)
     }
 
     async fn sync_source(&self, source: &Source) -> Result<()> {
@@ -1050,25 +1061,27 @@ impl SyncManager {
     pub async fn sync_source_by_id(&self, source_id: String) -> Result<()> {
         info!("Manually triggered sync for source: {}", source_id);
 
-        let source = sqlx::query_as::<_, Source>(
-            "SELECT * FROM sources WHERE id = $1 AND source_type IN ($2, $3)",
-        )
-        .bind(&source_id)
-        .bind(SourceType::GoogleDrive)
-        .bind(SourceType::Gmail)
-        .fetch_optional(&self.pool)
-        .await?;
+        let source = self
+            .source_repo
+            .find_by_id(source_id.clone())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Source {} not found", source_id))?;
 
-        match source {
-            Some(source) => {
-                if !source.is_active {
-                    return Err(anyhow::anyhow!("Source {} is not active", source_id));
-                }
-                // Manual sync always runs regardless of last sync time
-                self.sync_source(&source).await
-            }
-            None => Err(anyhow::anyhow!("Source {} not found", source_id)),
+        // Verify it's a Google source type
+        if source.source_type != SourceType::GoogleDrive && source.source_type != SourceType::Gmail
+        {
+            return Err(anyhow::anyhow!(
+                "Source {} is not a Google Drive or Gmail source",
+                source_id
+            ));
         }
+
+        if !source.is_active {
+            return Err(anyhow::anyhow!("Source {} is not active", source_id));
+        }
+
+        // Manual sync always runs regardless of last sync time
+        self.sync_source(&source).await
     }
 
     async fn get_last_completed_full_sync(&self, source_id: &str) -> Result<Option<SyncRun>> {
@@ -1248,7 +1261,11 @@ impl SyncManager {
                 );
 
                 // Get the source
-                if let Some(source) = self.get_source_by_id(&webhook_channel.source_id).await? {
+                if let Some(source) = self
+                    .source_repo
+                    .find_by_id(webhook_channel.source_id.clone())
+                    .await?
+                {
                     if let Err(e) = self.sync_source_incremental(&source).await {
                         error!(
                             "Failed to run incremental sync for source {}: {}",
@@ -1592,15 +1609,6 @@ impl SyncManager {
         .await?;
 
         Ok(webhook_channel)
-    }
-
-    async fn get_source_by_id(&self, source_id: &str) -> Result<Option<Source>> {
-        let source = sqlx::query_as::<_, Source>("SELECT * FROM sources WHERE id = $1")
-            .bind(source_id)
-            .fetch_optional(&self.pool)
-            .await?;
-
-        Ok(source)
     }
 
     async fn delete_webhook_channel_by_channel_id(&self, channel_id: &str) -> Result<()> {
@@ -2236,7 +2244,11 @@ impl SyncManager {
                 );
 
                 // Get the source for this sync run
-                if let Some(source) = self.get_source_by_id(&sync_run.source_id).await? {
+                if let Some(source) = self
+                    .source_repo
+                    .find_by_id(sync_run.source_id.clone())
+                    .await?
+                {
                     if source.is_active {
                         // Continue the sync using the existing sync run ID
                         let result = match source.source_type {

@@ -71,15 +71,6 @@ pub struct SlackConnectorConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct AtlassianConnectorConfig {
-    pub base: ConnectorConfig,
-    pub database: DatabaseConfig,
-    pub base_url: String,
-    pub user_email: String,
-    pub api_token: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct FilesystemConnectorConfig {
     pub database: DatabaseConfig,
 }
@@ -406,43 +397,6 @@ impl SlackConnectorConfig {
             base,
             database,
             bot_token,
-        }
-    }
-}
-
-impl AtlassianConnectorConfig {
-    pub fn from_env() -> Self {
-        let base = ConnectorConfig::from_env();
-        let database = DatabaseConfig::from_env();
-
-        let base_url = get_required_env("ATLASSIAN_BASE_URL");
-        let base_url = validate_url(&base_url, "ATLASSIAN_BASE_URL");
-        if !base_url.contains("atlassian.net") && !base_url.contains("atlassian.com") {
-            eprintln!("ERROR: ATLASSIAN_BASE_URL should be your Atlassian instance URL");
-            eprintln!("Example: https://your-company.atlassian.net");
-            process::exit(1);
-        }
-
-        let user_email = get_required_env("ATLASSIAN_USER_EMAIL");
-        if user_email.trim().is_empty() || !user_email.contains('@') {
-            eprintln!("ERROR: ATLASSIAN_USER_EMAIL must be set to a valid email address");
-            eprintln!("This should be the email of the service account user");
-            process::exit(1);
-        }
-
-        let api_token = get_required_env("ATLASSIAN_API_TOKEN");
-        if api_token.trim().is_empty() {
-            eprintln!("ERROR: ATLASSIAN_API_TOKEN must be set to a valid Atlassian API token");
-            eprintln!("Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens");
-            process::exit(1);
-        }
-
-        Self {
-            base,
-            database,
-            base_url,
-            user_email,
-            api_token,
         }
     }
 }

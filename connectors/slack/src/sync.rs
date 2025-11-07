@@ -3,6 +3,7 @@ use redis::{AsyncCommands, Client as RedisClient};
 use shared::models::{Source, SourceType};
 use shared::queue::EventQueue;
 use shared::ObjectStorage;
+use shared::{Repository, SourceRepository};
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use crate::content::ContentProcessor;
 
 pub struct SyncManager {
     pool: PgPool,
+    source_repo: SourceRepository,
     redis_client: RedisClient,
     auth_manager: AuthManager,
     slack_client: SlackClient,
@@ -99,9 +101,11 @@ impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
+        let source_repo = SourceRepository::new(&pool);
 
         Ok(Self {
             pool,
+            source_repo,
             redis_client,
             auth_manager: AuthManager::new(),
             slack_client: SlackClient::new(),
@@ -126,18 +130,28 @@ impl SyncManager {
     }
 
     async fn get_active_sources(&self) -> Result<Vec<Source>> {
-        let sources = sqlx::query_as::<_, Source>(
-            "SELECT s.* FROM sources s
-             INNER JOIN oauth_credentials oc ON s.id = oc.source_id
-             WHERE s.source_type = $1 
-             AND s.is_active = true 
-             AND oc.provider = 'slack'",
-        )
-        .bind(SourceType::Slack)
-        .fetch_all(&self.pool)
-        .await?;
+        let sources = self
+            .source_repo
+            .find_active_by_types(vec![SourceType::Slack])
+            .await?;
 
-        Ok(sources)
+        // Filter to only sources that have Slack OAuth credentials
+        let mut sources_with_creds = Vec::new();
+        for source in sources {
+            // Check if OAuth credentials exist for this source
+            let has_creds = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM oauth_credentials WHERE source_id = $1 AND provider = 'slack')"
+            )
+            .bind(&source.id)
+            .fetch_one(&self.pool)
+            .await?;
+
+            if has_creds {
+                sources_with_creds.push(source);
+            }
+        }
+
+        Ok(sources_with_creds)
     }
 
     async fn sync_source(&self, source: &Source) -> Result<()> {
@@ -414,13 +428,10 @@ impl SyncManager {
     }
 
     async fn update_source_status(&self, source_id: &str, status: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE sources SET sync_status = $1, last_sync_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
-        )
-        .bind(status)
-        .bind(source_id)
-        .execute(&self.pool)
-        .await?;
+        let now = chrono::Utc::now();
+        self.source_repo
+            .update_sync_status(source_id, status, Some(now), None)
+            .await?;
 
         Ok(())
     }
@@ -428,12 +439,11 @@ impl SyncManager {
     pub async fn sync_source_by_id(&self, source_id: String) -> Result<()> {
         info!("Manually triggered sync for source: {}", source_id);
 
-        let source =
-            sqlx::query_as::<_, Source>("SELECT * FROM sources WHERE id = $1 AND source_type = $2")
-                .bind(&source_id)
-                .bind(SourceType::Slack)
-                .fetch_optional(&self.pool)
-                .await?;
+        let source = self
+            .source_repo
+            .find_by_id(source_id.clone())
+            .await?
+            .filter(|s| s.source_type == SourceType::Slack);
 
         match source {
             Some(source) => {

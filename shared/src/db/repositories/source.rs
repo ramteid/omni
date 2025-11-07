@@ -64,7 +64,7 @@ impl SourceRepository {
     ) -> Result<(), DatabaseError> {
         sqlx::query(
             r#"
-            UPDATE sources 
+            UPDATE sources
             SET user_filter_mode = $2, user_whitelist = $3, user_blacklist = $4, sync_status = 'pending', updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
             "#
@@ -73,6 +73,66 @@ impl SourceRepository {
         .bind(user_filter_mode)
         .bind(user_whitelist)
         .bind(user_blacklist)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn find_active_by_types(
+        &self,
+        source_types: Vec<crate::models::SourceType>,
+    ) -> Result<Vec<Source>, DatabaseError> {
+        let mut query_builder = sqlx::QueryBuilder::new(
+            r#"
+            SELECT id, name, source_type, config, is_active,
+                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
+                   created_at, updated_at, created_by
+            FROM sources
+            WHERE is_active = true
+            "#,
+        );
+
+        if !source_types.is_empty() {
+            query_builder.push(" AND source_type IN (");
+            let mut separated = query_builder.separated(", ");
+            for source_type in source_types {
+                separated.push_bind(source_type);
+            }
+            query_builder.push(")");
+        }
+
+        query_builder.push(" ORDER BY created_at DESC");
+
+        let sources = query_builder
+            .build_query_as::<Source>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(sources)
+    }
+
+    pub async fn update_sync_status(
+        &self,
+        id: &str,
+        status: &str,
+        last_sync_at: Option<chrono::DateTime<chrono::Utc>>,
+        sync_error: Option<String>,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE sources SET
+                sync_status = $1,
+                last_sync_at = COALESCE($2, last_sync_at),
+                sync_error = $3,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $4
+            "#,
+        )
+        .bind(status)
+        .bind(last_sync_at)
+        .bind(sync_error)
+        .bind(id)
         .execute(&self.pool)
         .await?;
 

@@ -2,7 +2,7 @@ use anyhow::Result;
 use dotenvy::dotenv;
 use shared::{
     telemetry::{self, TelemetryConfig},
-    AtlassianConnectorConfig, DatabasePool,
+    DatabasePool,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -12,10 +12,13 @@ use tracing::{error, info};
 mod api;
 mod auth;
 mod client;
+mod config;
 mod confluence;
 mod jira;
 mod models;
 mod sync;
+
+use config::AtlassianConnectorConfig;
 
 use api::{create_router, ApiState};
 use sync::SyncManager;

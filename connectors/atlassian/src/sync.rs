@@ -3,18 +3,17 @@ use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::models::{Source, SourceType};
 use shared::queue::EventQueue;
-use shared::ObjectStorage;
-use sqlx::{PgPool, Row};
+use shared::{Repository, SourceRepository};
+use sqlx::PgPool;
 use std::collections::HashSet;
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 use crate::auth::{AtlassianCredentials, AuthManager};
 use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
 
 pub struct SyncManager {
-    pool: PgPool,
+    source_repo: SourceRepository,
     redis_client: RedisClient,
     auth_manager: AuthManager,
     confluence_processor: ConfluenceProcessor,
@@ -183,9 +182,10 @@ impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
+        let source_repo = SourceRepository::new(&pool);
 
         Ok(Self {
-            pool,
+            source_repo,
             redis_client,
             auth_manager: AuthManager::new(),
             confluence_processor: ConfluenceProcessor::new(
@@ -205,7 +205,8 @@ impl SyncManager {
         for source in sources {
             if let Err(e) = self.sync_source(&source).await {
                 error!("Failed to sync source {}: {}", source.id, e);
-                self.update_source_status(&source.id, "failed").await?;
+                self.update_source_status(&source.id, "failed", None, Some(e.to_string()))
+                    .await?;
             }
         }
 
@@ -215,15 +216,18 @@ impl SyncManager {
     async fn sync_source(&mut self, source: &Source) -> Result<()> {
         info!("Starting sync for Atlassian source: {}", source.name);
 
-        let config = self.get_source_config(&source.id).await?;
-        let mut credentials = self.get_or_validate_credentials(&config).await?;
+        let (base_url, user_email, api_token) = self.get_source_config(&source.id).await?;
+        let mut credentials = self
+            .get_or_validate_credentials(&base_url, &user_email, &api_token)
+            .await?;
 
         self.auth_manager
             .ensure_valid_credentials(&mut credentials)
             .await?;
 
         let sync_start = Utc::now();
-        self.update_source_status(&source.id, "syncing").await?;
+        self.update_source_status(&source.id, "syncing", None, None)
+            .await?;
 
         // Determine sync strategy based on last sync time
         let should_do_full_sync = source.last_sync_at.is_none()
@@ -314,14 +318,15 @@ impl SyncManager {
 
         // Update source status
         if total_processed > 0 {
-            self.update_source_success(&source.id, total_processed, sync_start)
+            self.update_source_status(&source.id, "completed", Some(sync_start), None)
                 .await?;
             info!(
                 "Successfully synced {} documents from source: {}",
                 total_processed, source.name
             );
         } else {
-            self.update_source_status(&source.id, "completed").await?;
+            self.update_source_status(&source.id, "completed", Some(sync_start), None)
+                .await?;
             info!(
                 "Sync completed with no new documents for source: {}",
                 source.name
@@ -332,40 +337,37 @@ impl SyncManager {
     }
 
     async fn get_active_sources(&self) -> Result<Vec<Source>> {
-        let sources = sqlx::query_as::<_, Source>(
-            "SELECT s.* FROM sources s
-             WHERE (s.source_type = $1 OR s.source_type = $2)
-             AND s.is_active = true",
-        )
-        .bind(SourceType::Confluence)
-        .bind(SourceType::Jira)
-        .fetch_all(&self.pool)
-        .await?;
+        let sources = self
+            .source_repo
+            .find_active_by_types(vec![SourceType::Confluence, SourceType::Jira])
+            .await?;
 
         Ok(sources)
     }
 
     async fn get_source_config(&self, source_id: &str) -> Result<(String, String, String)> {
-        let row = sqlx::query("SELECT config FROM sources WHERE id = $1")
-            .bind(source_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let source = self
+            .source_repo
+            .find_by_id(source_id.to_string())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Source not found: {}", source_id))?;
 
-        let config: serde_json::Value = row.try_get("config")?;
-
-        let base_url = config
+        let base_url = source
+            .config
             .get("base_url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing base_url in source config"))?
             .to_string();
 
-        let user_email = config
+        let user_email = source
+            .config
             .get("user_email")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing user_email in source config"))?
             .to_string();
 
-        let api_token = config
+        let api_token = source
+            .config
             .get("api_token")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing api_token in source config"))?
@@ -376,49 +378,27 @@ impl SyncManager {
 
     async fn get_or_validate_credentials(
         &self,
-        config: &(String, String, String),
+        base_url: &str,
+        user_email: &str,
+        api_token: &str,
     ) -> Result<AtlassianCredentials> {
-        let (base_url, user_email, api_token) = config;
-
         // Always validate credentials to ensure they're working
         self.auth_manager
             .validate_credentials(base_url, user_email, api_token)
             .await
     }
 
-    async fn update_source_status(&self, source_id: &str, status: &str) -> Result<()> {
-        sqlx::query("UPDATE sources SET sync_status = $1, updated_at = NOW() WHERE id = $2")
-            .bind(status)
-            .bind(source_id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
-    async fn update_source_success(
+    async fn update_source_status(
         &self,
         source_id: &str,
-        document_count: u32,
-        sync_time: DateTime<Utc>,
+        status: &str,
+        last_sync_at: Option<DateTime<Utc>>,
+        sync_error: Option<String>,
     ) -> Result<()> {
-        sqlx::query(
-            "UPDATE sources SET 
-             sync_status = 'completed', 
-             last_sync_at = $1, 
-             sync_error = NULL,
-             updated_at = NOW() 
-             WHERE id = $2",
-        )
-        .bind(sync_time)
-        .bind(source_id)
-        .execute(&self.pool)
-        .await?;
+        self.source_repo
+            .update_sync_status(source_id, status, last_sync_at, sync_error)
+            .await?;
 
-        info!(
-            "Updated source {} with {} documents at {}",
-            source_id, document_count, sync_time
-        );
         Ok(())
     }
 
@@ -426,7 +406,10 @@ impl SyncManager {
         &self,
         config: &(String, String, String),
     ) -> Result<(Vec<String>, Vec<String>)> {
-        let credentials = self.get_or_validate_credentials(config).await?;
+        let (base_url, user_email, api_token) = config;
+        let credentials = self
+            .get_or_validate_credentials(base_url, user_email, api_token)
+            .await?;
 
         let jira_projects = self
             .auth_manager
