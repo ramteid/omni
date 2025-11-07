@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="jira-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2684FF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0052CC;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <path d="M47.2,23.2L24.9,0.8L14.3,11.4L2,23.7c-0.7,0.7-0.7,1.9,0,2.6c0,0,0,0,0,0l10.3,10.3L22.9,47.2c0.7,0.7,1.9,0.7,2.6,0c0,0,0,0,0,0L47.2,25.5c0.7-0.7,0.7-1.9,0-2.6C47.2,22.9,47.2,23.2,47.2,23.2z M24,31.8l-6.8-6.8l6.8-6.8l6.8,6.8L24,31.8z" fill="url(#jira-gradient)"/>
+</svg>

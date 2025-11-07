@@ -20,6 +20,8 @@
     import googleLogo from '$lib/images/icons/google.svg'
     import slackLogo from '$lib/images/icons/slack.svg'
     import atlassianLogo from '$lib/images/icons/atlassian.svg'
+    import confluenceLogo from '$lib/images/icons/confluence.svg'
+    import jiraLogo from '$lib/images/icons/jira.svg'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
     import gmailLogo from '$lib/images/icons/gmail.svg'
     import WebConnectorSetup from '$lib/components/web-connector-setup.svelte'
@@ -145,13 +147,22 @@
                 }
                 authType = AuthType.JWT
             } else if (selectedIntegration.id === 'atlassian') {
-                if (!principalEmail.trim() || !apiToken.trim()) {
-                    throw new Error('Email and API token are required')
+                if (!principalEmail.trim()) {
+                    throw new Error('Email is required')
+                }
+
+                if (!apiToken.trim()) {
+                    throw new Error('API token is required')
+                }
+
+                if (!domain.trim()) {
+                    throw new Error('Atlassian domain is required')
                 }
 
                 credentials = { api_key: apiToken }
-                config = {}
+                config = { base_url: domain }
                 authType = AuthType.API_KEY
+                provider = 'atlassian'
             } else if (selectedIntegration.id === 'slack') {
                 if (!apiToken.trim()) {
                     throw new Error('Bot token is required')
@@ -232,6 +243,76 @@
 
                 if (!gmailCredentialsResponse.ok) {
                     throw new Error('Failed to create Gmail service credentials')
+                }
+            } else if (selectedIntegration.id === 'atlassian') {
+                // Create Confluence source
+                const confluenceSourceResponse = await fetch('/api/sources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: 'Confluence',
+                        sourceType: 'confluence',
+                        config: {},
+                    }),
+                })
+
+                if (!confluenceSourceResponse.ok) {
+                    throw new Error('Failed to create Confluence source')
+                }
+
+                const confluenceSource = await confluenceSourceResponse.json()
+
+                // Create service credentials for Confluence source
+                const confluenceCredentialsResponse = await fetch('/api/service-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sourceId: confluenceSource.id,
+                        provider: provider,
+                        authType: authType,
+                        principalEmail: principalEmail || null,
+                        credentials: credentials,
+                        config: config,
+                    }),
+                })
+
+                if (!confluenceCredentialsResponse.ok) {
+                    throw new Error('Failed to create Confluence service credentials')
+                }
+
+                // Create JIRA source
+                const jiraSourceResponse = await fetch('/api/sources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: 'JIRA',
+                        sourceType: 'jira',
+                        config: {},
+                    }),
+                })
+
+                if (!jiraSourceResponse.ok) {
+                    throw new Error('Failed to create JIRA source')
+                }
+
+                const jiraSource = await jiraSourceResponse.json()
+
+                // Create service credentials for JIRA source (same credentials as Confluence)
+                const jiraCredentialsResponse = await fetch('/api/service-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sourceId: jiraSource.id,
+                        provider: provider,
+                        authType: authType,
+                        principalEmail: principalEmail || null,
+                        credentials: credentials,
+                        config: config,
+                    }),
+                })
+
+                if (!jiraCredentialsResponse.ok) {
+                    throw new Error('Failed to create JIRA service credentials')
                 }
             } else {
                 // For non-Google integrations, create single source as before
@@ -597,6 +678,146 @@
                                     {/if}
                                 </div>
                             </div>
+                        {:else if integration.id === 'atlassian'}
+                            {@const confluenceSource = data.connectedSources.find(
+                                (source) => source.sourceType === 'confluence',
+                            )}
+                            {@const jiraSource = data.connectedSources.find(
+                                (source) => source.sourceType === 'jira',
+                            )}
+                            <div class="w-full space-y-4">
+                                <!-- Integration Actions -->
+                                <div class="flex gap-2">
+                                    <AlertDialog.Root>
+                                        <AlertDialog.Trigger
+                                            class={buttonVariants({
+                                                variant: 'destructive',
+                                                size: 'sm',
+                                            })}
+                                            disabled={!!disconnectingSourceId}>
+                                            {disconnectingSourceId
+                                                ? 'Disconnecting...'
+                                                : 'Disconnect'}
+                                        </AlertDialog.Trigger>
+                                        <AlertDialog.Content>
+                                            <AlertDialog.Header>
+                                                <AlertDialog.Title
+                                                    >Disconnect Atlassian?</AlertDialog.Title>
+                                                <AlertDialog.Description>
+                                                    This will disconnect both Confluence and JIRA
+                                                    sources and remove access credentials. Existing
+                                                    indexed documents will remain searchable.
+                                                </AlertDialog.Description>
+                                            </AlertDialog.Header>
+                                            <AlertDialog.Footer>
+                                                <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+                                                <AlertDialog.Action
+                                                    onclick={() => {
+                                                        if (confluenceSource)
+                                                            disconnectSource(confluenceSource.id)
+                                                        if (jiraSource)
+                                                            disconnectSource(jiraSource.id)
+                                                    }}>
+                                                    Disconnect
+                                                </AlertDialog.Action>
+                                            </AlertDialog.Footer>
+                                        </AlertDialog.Content>
+                                    </AlertDialog.Root>
+                                </div>
+
+                                <!-- Connected Apps -->
+                                <div class="space-y-2">
+                                    <div class="text-muted-foreground text-sm font-medium">
+                                        Apps
+                                    </div>
+
+                                    <!-- Confluence App -->
+                                    {#if confluenceSource}
+                                        {@const confluenceSync = getLatestSyncForSource(
+                                            confluenceSource.id,
+                                        )}
+                                        <div
+                                            class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5">
+                                            <div class="flex items-center gap-3">
+                                                <img
+                                                    src={confluenceLogo}
+                                                    alt="Confluence"
+                                                    class="h-5 w-5" />
+                                                <div class="flex items-center gap-2">
+                                                    <span class="text-sm font-medium"
+                                                        >Confluence</span>
+                                                    {#if confluenceSource.isActive}
+                                                        <span
+                                                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                                                            Active
+                                                        </span>
+                                                    {:else}
+                                                        <span
+                                                            class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300">
+                                                            Inactive
+                                                        </span>
+                                                    {/if}
+                                                    {#if confluenceSync && confluenceSync.status === 'running'}
+                                                        <span
+                                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(confluenceSync.status)}`}>
+                                                            Syncing
+                                                        </span>
+                                                    {/if}
+                                                </div>
+                                            </div>
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onclick={() => syncSource(confluenceSource.id)}
+                                                disabled={syncingSourceId === confluenceSource.id}>
+                                                {syncingSourceId === confluenceSource.id
+                                                    ? 'Syncing...'
+                                                    : 'Sync Now'}
+                                            </Button>
+                                        </div>
+                                    {/if}
+
+                                    <!-- JIRA App -->
+                                    {#if jiraSource}
+                                        {@const jiraSync = getLatestSyncForSource(jiraSource.id)}
+                                        <div
+                                            class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5">
+                                            <div class="flex items-center gap-3">
+                                                <img src={jiraLogo} alt="JIRA" class="h-5 w-5" />
+                                                <div class="flex items-center gap-2">
+                                                    <span class="text-sm font-medium">JIRA</span>
+                                                    {#if jiraSource.isActive}
+                                                        <span
+                                                            class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                                                            Active
+                                                        </span>
+                                                    {:else}
+                                                        <span
+                                                            class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300">
+                                                            Inactive
+                                                        </span>
+                                                    {/if}
+                                                    {#if jiraSync && jiraSync.status === 'running'}
+                                                        <span
+                                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(jiraSync.status)}`}>
+                                                            Syncing
+                                                        </span>
+                                                    {/if}
+                                                </div>
+                                            </div>
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onclick={() => syncSource(jiraSource.id)}
+                                                disabled={syncingSourceId === jiraSource.id}>
+                                                {syncingSourceId === jiraSource.id
+                                                    ? 'Syncing...'
+                                                    : 'Sync Now'}
+                                            </Button>
+                                        </div>
+                                    {/if}
+                                </div>
+                            </div>
                         {:else}
                             {@const latestSync = getLatestSyncForSource(connectedSource.id)}
                             <div class="space-y-3">
@@ -821,6 +1042,19 @@
                             href="https://id.atlassian.com/manage-profile/security/api-tokens"
                             target="_blank"
                             class="text-blue-600 hover:underline">id.atlassian.com</a>
+                    </p>
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="domain">Atlassian Domain</Label>
+                    <Input
+                        id="domain"
+                        bind:value={domain}
+                        placeholder="company.atlassian.net"
+                        type="text"
+                        required />
+                    <p class="text-muted-foreground text-sm">
+                        Your Atlassian site domain (e.g., company.atlassian.net)
                     </p>
                 </div>
             {:else if selectedIntegration?.id === 'slack'}
