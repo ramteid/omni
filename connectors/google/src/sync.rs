@@ -16,7 +16,7 @@ use crate::gmail::{GmailClient, MessageFormat};
 use crate::models::{
     GmailThread, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
-use shared::db::repositories::ServiceCredentialsRepo;
+use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
     ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
     SyncType, WebhookChannel as DatabaseWebhookChannel,
@@ -35,6 +35,7 @@ pub struct SyncManager {
     content_storage: Arc<dyn ObjectStorage>,
     service_credentials_repo: ServiceCredentialsRepo,
     source_repo: SourceRepository,
+    sync_run_repo: SyncRunRepository,
     folder_cache: LruFolderCache,
 }
 
@@ -250,6 +251,7 @@ impl SyncManager {
 
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
         let source_repo = SourceRepository::new(&pool);
+        let sync_run_repo = SyncRunRepository::new(&pool);
 
         Ok(Self {
             pool,
@@ -261,6 +263,7 @@ impl SyncManager {
             content_storage,
             service_credentials_repo,
             source_repo,
+            sync_run_repo,
             folder_cache: LruFolderCache::new(10_000), // Cache up to 10,000 folder metadata entries
         })
     }
@@ -405,7 +408,10 @@ impl SyncManager {
         }
 
         // Create a sync run record
-        let sync_run = self.create_sync_run(&source.id, SyncType::Full).await?;
+        let sync_run = self
+            .sync_run_repo
+            .create(&source.id, SyncType::Full)
+            .await?;
 
         let result = match source.source_type {
             SourceType::GoogleDrive => self.sync_drive_source_internal(source, &sync_run).await,
@@ -421,15 +427,13 @@ impl SyncManager {
         // Update sync run based on result
         match &result {
             Ok((files_processed, files_updated)) => {
-                self.update_sync_run_completed(
-                    &sync_run.id,
-                    *files_processed as i32,
-                    *files_updated as i32,
-                )
-                .await?;
+                self.sync_run_repo
+                    .mark_completed(&sync_run.id, *files_processed as i32, *files_updated as i32)
+                    .await?;
             }
             Err(e) => {
-                self.update_sync_run_failed(&sync_run.id, &e.to_string())
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
                     .await?;
             }
         }
@@ -1085,100 +1089,10 @@ impl SyncManager {
     }
 
     async fn get_last_completed_full_sync(&self, source_id: &str) -> Result<Option<SyncRun>> {
-        let sync_run = sqlx::query_as::<_, SyncRun>(
-            "SELECT * FROM sync_runs
-             WHERE source_id = $1
-             AND sync_type = $2
-             AND status = $3
-             ORDER BY completed_at DESC
-             LIMIT 1",
-        )
-        .bind(source_id)
-        .bind(SyncType::Full)
-        .bind(SyncStatus::Completed)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(sync_run)
-    }
-
-    async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> Result<SyncRun> {
-        let id = generate_ulid();
-        let now = OffsetDateTime::now_utc();
-
-        sqlx::query(
-            "INSERT INTO sync_runs (id, source_id, sync_type, status)
-             VALUES ($1, $2, $3, $4)",
-        )
-        .bind(&id)
-        .bind(source_id)
-        .bind(sync_type)
-        .bind(SyncStatus::Running)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(SyncRun {
-            id,
-            source_id: source_id.to_string(),
-            sync_type,
-            status: SyncStatus::Running,
-            created_at: now,
-            updated_at: now,
-            started_at: None,
-            completed_at: None,
-            documents_processed: 0,
-            documents_updated: 0,
-            error_message: None,
-        })
-    }
-
-    async fn update_sync_run_completed(
-        &self,
-        sync_run_id: &str,
-        files_processed: i32,
-        files_updated: i32,
-    ) -> Result<()> {
-        sqlx::query(
-            "UPDATE sync_runs
-             SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                 documents_processed = $2, documents_updated = $3,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = $4",
-        )
-        .bind(SyncStatus::Completed)
-        .bind(files_processed)
-        .bind(files_updated)
-        .bind(sync_run_id)
-        .execute(&self.pool)
-        .await?;
-
-        // Notify listeners about sync run completion
-        sqlx::query("NOTIFY sync_run_update")
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
-    async fn update_sync_run_failed(&self, sync_run_id: &str, error: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE sync_runs
-             SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                 error_message = $2, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $3",
-        )
-        .bind(SyncStatus::Failed)
-        .bind(error)
-        .bind(sync_run_id)
-        .execute(&self.pool)
-        .await?;
-
-        // Notify listeners about sync run failure
-        sqlx::query("NOTIFY sync_run_update")
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
+        Ok(self
+            .sync_run_repo
+            .get_last_completed_for_source(source_id, SyncType::Full)
+            .await?)
     }
 
     pub async fn should_run_full_sync(&self, source_id: &str) -> Result<bool> {
@@ -1412,7 +1326,8 @@ impl SyncManager {
 
         // Create a sync run record for incremental sync
         let sync_run = self
-            .create_sync_run(&source.id, SyncType::Incremental)
+            .sync_run_repo
+            .create(&source.id, SyncType::Incremental)
             .await?;
 
         // Create storage prefix from sync_run
@@ -1533,12 +1448,9 @@ impl SyncManager {
                     }
                 }
 
-                self.update_sync_run_completed(
-                    &sync_run.id,
-                    processed_count as i32,
-                    updated_count as i32,
-                )
-                .await?;
+                self.sync_run_repo
+                    .mark_completed(&sync_run.id, processed_count as i32, updated_count as i32)
+                    .await?;
                 info!(
                     "Incremental sync completed for source {}: {} changes processed, {} updated",
                     source.id, processed_count, updated_count
@@ -1546,7 +1458,8 @@ impl SyncManager {
             }
             Err(e) => {
                 error!("Failed to list changes for source {}: {}", source.id, e);
-                self.update_sync_run_failed(&sync_run.id, &e.to_string())
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
                     .await?;
             }
         }
@@ -1738,30 +1651,13 @@ impl SyncManager {
     }
 
     pub async fn get_running_sync_for_source(&self, source_id: &str) -> Result<Option<SyncRun>> {
-        let running_sync = sqlx::query_as::<_, SyncRun>(
-            "SELECT * FROM sync_runs
-             WHERE source_id = $1
-             AND status = $2
-             ORDER BY started_at DESC
-             LIMIT 1",
-        )
-        .bind(source_id)
-        .bind(SyncStatus::Running)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(running_sync)
+        Ok(self.sync_run_repo.get_running_for_source(source_id).await?)
     }
 
     pub async fn recover_interrupted_syncs(&self) -> Result<()> {
         info!("Checking for interrupted running syncs from previous connector instance");
 
-        let running_syncs = sqlx::query_as::<_, SyncRun>(
-            "SELECT * FROM sync_runs WHERE status = $1 ORDER BY started_at ASC",
-        )
-        .bind(SyncStatus::Running)
-        .fetch_all(&self.pool)
-        .await?;
+        let running_syncs = self.sync_run_repo.find_all_running().await?;
 
         if running_syncs.is_empty() {
             info!("No interrupted running syncs found");
@@ -1781,17 +1677,10 @@ impl SyncManager {
 
             let error_message = "Sync interrupted by connector restart";
 
-            if let Err(e) = sqlx::query(
-                "UPDATE sync_runs
-                 SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                     error_message = $2, updated_at = CURRENT_TIMESTAMP
-                 WHERE id = $3",
-            )
-            .bind(SyncStatus::Failed)
-            .bind(error_message)
-            .bind(&sync_run.id)
-            .execute(&self.pool)
-            .await
+            if let Err(e) = self
+                .sync_run_repo
+                .mark_failed(&sync_run.id, error_message)
+                .await
             {
                 error!(
                     "Failed to mark interrupted sync {} as failed: {}",
@@ -2267,24 +2156,27 @@ impl SyncManager {
                         // Update sync run based on result
                         match result {
                             Ok((files_processed, files_updated)) => {
-                                self.update_sync_run_completed(
-                                    &sync_run.id,
-                                    files_processed as i32,
-                                    files_updated as i32,
-                                )
-                                .await?;
+                                self.sync_run_repo
+                                    .mark_completed(
+                                        &sync_run.id,
+                                        files_processed as i32,
+                                        files_updated as i32,
+                                    )
+                                    .await?;
                                 info!("Successfully continued and completed sync {}", sync_run.id);
                             }
                             Err(e) => {
                                 error!("Failed to continue sync {}: {}", sync_run.id, e);
-                                self.update_sync_run_failed(&sync_run.id, &e.to_string())
+                                self.sync_run_repo
+                                    .mark_failed(&sync_run.id, &e.to_string())
                                     .await?;
                                 self.update_source_status(&source.id, "failed").await?;
                             }
                         }
                     } else {
                         info!("Source {} is not active, marking sync as failed", source.id);
-                        self.update_sync_run_failed(&sync_run.id, "Source is not active")
+                        self.sync_run_repo
+                            .mark_failed(&sync_run.id, "Source is not active")
                             .await?;
                     }
                 } else {
@@ -2292,7 +2184,8 @@ impl SyncManager {
                         "Source {} not found for sync run {}, marking as failed",
                         sync_run.source_id, sync_run.id
                     );
-                    self.update_sync_run_failed(&sync_run.id, "Source not found")
+                    self.sync_run_repo
+                        .mark_failed(&sync_run.id, "Source not found")
                         .await?;
                 }
             }

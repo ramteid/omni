@@ -90,6 +90,16 @@ services:
     profiles:
       - production
 
+  web-connector:
+    build:
+      context: ../
+      dockerfile: connectors/web/Dockerfile
+      args:
+        BUILD_MODE: debug
+    environment:
+      <<: *dev-database-url
+      RUST_BACKTRACE: full
+
   vllm:
     profiles:
       - production
@@ -97,4 +107,4 @@ services:
   caddy:
     profiles:
       - production
-  
+

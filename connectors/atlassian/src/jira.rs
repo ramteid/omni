@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use shared::models::ConnectorEvent;
+use shared::db::repositories::SyncRunRepository;
+use shared::models::{ConnectorEvent, SyncType};
 use shared::queue::EventQueue;
 use shared::ObjectStorage;
 use std::sync::Arc;
@@ -14,14 +15,20 @@ pub struct JiraProcessor {
     client: AtlassianClient,
     event_queue: EventQueue,
     content_storage: Arc<dyn ObjectStorage>,
+    sync_run_repo: SyncRunRepository,
 }
 
 impl JiraProcessor {
-    pub fn new(event_queue: EventQueue, content_storage: Arc<dyn ObjectStorage>) -> Self {
+    pub fn new(
+        event_queue: EventQueue,
+        content_storage: Arc<dyn ObjectStorage>,
+        sync_run_repo: SyncRunRepository,
+    ) -> Self {
         Self {
             client: AtlassianClient::new(),
             event_queue,
             content_storage,
+            sync_run_repo,
         }
     }
 

@@ -1,7 +1,7 @@
 use crate::AppState;
 use anyhow::{Context, Result};
 use futures::future::join_all;
-use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
+use shared::db::repositories::{DocumentRepository, EmbeddingRepository, SyncRunRepository};
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
     ConnectorEvent, ConnectorEventQueueItem, Document, DocumentMetadata, DocumentPermissions,
@@ -75,6 +75,7 @@ pub struct QueueProcessor {
     pub state: AppState,
     pub event_queue: EventQueue,
     pub embedding_queue: EmbeddingQueue,
+    pub sync_run_repo: SyncRunRepository,
     pub batch_size: i32,
     pub parallelism: usize,
     semaphore: Arc<Semaphore>,
@@ -85,6 +86,7 @@ impl QueueProcessor {
     pub fn new(state: AppState) -> Self {
         let event_queue = EventQueue::new(state.db_pool.pool().clone());
         let embedding_queue = EmbeddingQueue::new(state.db_pool.pool().clone());
+        let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
         let parallelism = (num_cpus::get() / 2).max(1); // Half the CPU cores, minimum 1
         let semaphore = Arc::new(Semaphore::new(parallelism));
         let processing_mutex = Arc::new(Mutex::new(()));
@@ -92,6 +94,7 @@ impl QueueProcessor {
             state,
             event_queue,
             embedding_queue,
+            sync_run_repo,
             batch_size: 32,
             parallelism,
             semaphore,
@@ -826,21 +829,7 @@ impl QueueProcessor {
     }
 
     async fn increment_sync_run_progress(&self, sync_run_id: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE sync_runs 
-             SET documents_processed = documents_processed + 1, 
-                 updated_at = CURRENT_TIMESTAMP 
-             WHERE id = $1",
-        )
-        .bind(sync_run_id)
-        .execute(self.state.db_pool.pool())
-        .await?;
-
-        // Notify listeners about sync run progress update
-        sqlx::query("NOTIFY sync_run_update")
-            .execute(self.state.db_pool.pool())
-            .await?;
-
+        self.sync_run_repo.increment_progress(sync_run_id).await?;
         Ok(())
     }
     // Fallback method for individual processing when batch operations fail
@@ -916,11 +905,16 @@ impl QueueProcessor {
 // Context for processing individual events concurrently
 struct ProcessorContext {
     state: AppState,
+    sync_run_repo: SyncRunRepository,
 }
 
 impl ProcessorContext {
     fn new(state: AppState) -> Self {
-        Self { state }
+        let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+        Self {
+            state,
+            sync_run_repo,
+        }
     }
 
     async fn process_event(&self, payload: &serde_json::Value) -> Result<()> {
@@ -1187,21 +1181,7 @@ impl ProcessorContext {
     }
 
     async fn increment_sync_run_progress(&self, sync_run_id: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE sync_runs 
-             SET documents_processed = documents_processed + 1, 
-                 updated_at = CURRENT_TIMESTAMP 
-             WHERE id = $1",
-        )
-        .bind(sync_run_id)
-        .execute(self.state.db_pool.pool())
-        .await?;
-
-        // Notify listeners about sync run progress update
-        sqlx::query("NOTIFY sync_run_update")
-            .execute(self.state.db_pool.pool())
-            .await?;
-
+        self.sync_run_repo.increment_progress(sync_run_id).await?;
         Ok(())
     }
 }

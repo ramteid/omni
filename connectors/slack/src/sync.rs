@@ -1,6 +1,7 @@
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::models::{Source, SourceType};
+use shared::db::repositories::SyncRunRepository;
+use shared::models::{Source, SourceType, SyncType};
 use shared::queue::EventQueue;
 use shared::ObjectStorage;
 use shared::{Repository, SourceRepository};
@@ -16,6 +17,7 @@ use crate::content::ContentProcessor;
 pub struct SyncManager {
     pool: PgPool,
     source_repo: SourceRepository,
+    sync_run_repo: SyncRunRepository,
     redis_client: RedisClient,
     auth_manager: AuthManager,
     slack_client: SlackClient,
@@ -102,10 +104,12 @@ impl SyncManager {
         let event_queue = EventQueue::new(pool.clone());
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
         let source_repo = SourceRepository::new(&pool);
+        let sync_run_repo = SyncRunRepository::new(&pool);
 
         Ok(Self {
             pool,
             source_repo,
+            sync_run_repo,
             redis_client,
             auth_manager: AuthManager::new(),
             slack_client: SlackClient::new(),
@@ -157,68 +161,93 @@ impl SyncManager {
     async fn sync_source(&self, source: &Source) -> Result<()> {
         info!("Syncing source: {} ({})", source.name, source.id);
 
-        let bot_token = self.get_bot_token(&source.id).await?;
-        let mut creds = self.auth_manager.validate_bot_token(&bot_token).await?;
-
-        self.auth_manager
-            .ensure_valid_credentials(&mut creds)
+        let sync_run = self
+            .sync_run_repo
+            .create(&source.id, SyncType::Full)
             .await?;
 
-        let sync_state = SyncState::new(self.redis_client.clone());
-        let mut content_processor = ContentProcessor::new();
+        let result: Result<()> = async {
+            let bot_token = self.get_bot_token(&source.id).await?;
+            let mut creds = self.auth_manager.validate_bot_token(&bot_token).await?;
 
-        // First, fetch all users for name resolution
-        self.fetch_all_users(&creds.bot_token, &mut content_processor)
-            .await?;
+            self.auth_manager
+                .ensure_valid_credentials(&mut creds)
+                .await?;
 
-        // Get all accessible channels
-        let channels = self.fetch_all_channels(&creds.bot_token).await?;
-        let _current_channels: HashSet<String> = channels.iter().map(|c| c.id.clone()).collect();
+            let sync_state = SyncState::new(self.redis_client.clone());
+            let mut content_processor = ContentProcessor::new();
 
-        // Track sync progress
-        let mut processed_channels = 0;
-        let mut total_message_groups = 0;
-        let mut total_files = 0;
+            // First, fetch all users for name resolution
+            self.fetch_all_users(&creds.bot_token, &mut content_processor)
+                .await?;
 
-        for channel in channels {
-            // Only sync channels where the bot is a member
-            if !channel.is_member {
-                debug!("Skipping channel {} - bot is not a member", channel.name);
-                continue;
+            // Get all accessible channels
+            let channels = self.fetch_all_channels(&creds.bot_token).await?;
+            let _current_channels: HashSet<String> =
+                channels.iter().map(|c| c.id.clone()).collect();
+
+            // Track sync progress
+            let mut processed_channels = 0;
+            let mut total_message_groups = 0;
+            let mut total_files = 0;
+
+            for channel in channels {
+                // Only sync channels where the bot is a member
+                if !channel.is_member {
+                    debug!("Skipping channel {} - bot is not a member", channel.name);
+                    continue;
+                }
+
+                match self
+                    .sync_channel(
+                        &source.id,
+                        &sync_run.id,
+                        &channel,
+                        &creds.bot_token,
+                        &sync_state,
+                        &content_processor,
+                    )
+                    .await
+                {
+                    Ok((message_groups, files)) => {
+                        processed_channels += 1;
+                        total_message_groups += message_groups;
+                        total_files += files;
+                        debug!(
+                            "Synced channel {}: {} message groups, {} files",
+                            channel.name, message_groups, files
+                        );
+                    }
+                    Err(e) => {
+                        warn!("Failed to sync channel {}: {}", channel.name, e);
+                    }
+                }
             }
 
-            match self
-                .sync_channel(
-                    &source.id,
-                    &channel,
-                    &creds.bot_token,
-                    &sync_state,
-                    &content_processor,
-                )
-                .await
-            {
-                Ok((message_groups, files)) => {
-                    processed_channels += 1;
-                    total_message_groups += message_groups;
-                    total_files += files;
-                    debug!(
-                        "Synced channel {}: {} message groups, {} files",
-                        channel.name, message_groups, files
-                    );
-                }
-                Err(e) => {
-                    warn!("Failed to sync channel {}: {}", channel.name, e);
-                }
+            info!(
+                "Sync completed for source {}: {} channels processed, {} message groups, {} files",
+                source.id, processed_channels, total_message_groups, total_files
+            );
+
+            self.update_source_status(&source.id, "completed").await?;
+            Ok(())
+        }
+        .await;
+
+        match &result {
+            Ok(_) => {
+                self.sync_run_repo
+                    .mark_completed(&sync_run.id, 0, 0)
+                    .await?;
+            }
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?;
             }
         }
 
-        info!(
-            "Sync completed for source {}: {} channels processed, {} message groups, {} files",
-            source.id, processed_channels, total_message_groups, total_files
-        );
-
-        self.update_source_status(&source.id, "completed").await?;
-        Ok(())
+        result
     }
 
     async fn fetch_all_users(
@@ -277,6 +306,7 @@ impl SyncManager {
     async fn sync_channel(
         &self,
         source_id: &str,
+        sync_run_id: &str,
         channel: &crate::models::SlackChannel,
         token: &str,
         sync_state: &SyncState,
@@ -338,9 +368,6 @@ impl SyncManager {
 
         // Publish message groups
         for group in message_groups {
-            // TODO: Add proper sync_run_id when sync runs are implemented for Slack
-            let placeholder_sync_run_id = shared::utils::generate_ulid();
-
             // Store content in LOB and get OID
             let content_id = match self
                 .content_storage
@@ -358,7 +385,7 @@ impl SyncManager {
             };
 
             let event = group.to_connector_event(
-                placeholder_sync_run_id,
+                sync_run_id.to_string(),
                 source_id.to_string(),
                 content_id,
             );
@@ -373,9 +400,6 @@ impl SyncManager {
         for file in files {
             match self.slack_client.download_file(token, file).await {
                 Ok(content) if !content.is_empty() => {
-                    // TODO: Add proper sync_run_id when sync runs are implemented for Slack
-                    let placeholder_sync_run_id = shared::utils::generate_ulid();
-
                     // Store content in LOB and get OID
                     let content_id = match self.content_storage.store_text(&content, None).await {
                         Ok(oid) => oid,
@@ -389,7 +413,7 @@ impl SyncManager {
                     };
 
                     let event = file.to_connector_event(
-                        placeholder_sync_run_id,
+                        sync_run_id.to_string(),
                         source_id.to_string(),
                         channel.id.clone(),
                         channel.name.clone(),

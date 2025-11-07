@@ -183,6 +183,7 @@ impl SyncManager {
         let event_queue = EventQueue::new(pool.clone());
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
         let source_repo = SourceRepository::new(&pool);
+        let sync_run_repo = shared::db::repositories::SyncRunRepository::new(&pool);
 
         Ok(Self {
             source_repo,
@@ -191,8 +192,13 @@ impl SyncManager {
             confluence_processor: ConfluenceProcessor::new(
                 event_queue.clone(),
                 content_storage.clone(),
+                sync_run_repo.clone(),
             ),
-            jira_processor: JiraProcessor::new(event_queue.clone(), content_storage.clone()),
+            jira_processor: JiraProcessor::new(
+                event_queue.clone(),
+                content_storage.clone(),
+                sync_run_repo.clone(),
+            ),
             event_queue,
         })
     }

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use shared::models::ConnectorEvent;
+use shared::db::repositories::SyncRunRepository;
+use shared::models::{ConnectorEvent, SyncType};
 use shared::queue::EventQueue;
 use shared::ObjectStorage;
 use std::sync::Arc;
@@ -14,14 +15,20 @@ pub struct ConfluenceProcessor {
     client: AtlassianClient,
     event_queue: EventQueue,
     content_storage: Arc<dyn ObjectStorage>,
+    sync_run_repo: SyncRunRepository,
 }
 
 impl ConfluenceProcessor {
-    pub fn new(event_queue: EventQueue, content_storage: Arc<dyn ObjectStorage>) -> Self {
+    pub fn new(
+        event_queue: EventQueue,
+        content_storage: Arc<dyn ObjectStorage>,
+        sync_run_repo: SyncRunRepository,
+    ) -> Self {
         Self {
             client: AtlassianClient::new(),
             event_queue,
             content_storage,
+            sync_run_repo,
         }
     }
 
@@ -32,39 +39,65 @@ impl ConfluenceProcessor {
     ) -> Result<u32> {
         info!("Starting Confluence spaces sync for source: {}", source_id);
 
-        let spaces = self.get_accessible_spaces(creds).await?;
-        let mut total_pages_processed = 0;
+        let sync_run = self.sync_run_repo.create(source_id, SyncType::Full).await?;
 
-        for space in spaces {
-            let space_key = space
-                .get("key")
-                .and_then(|k| k.as_str())
-                .ok_or_else(|| anyhow!("Space missing key"))?;
+        let result: Result<u32> = async {
+            let spaces = self.get_accessible_spaces(creds).await?;
+            let mut total_pages_processed = 0;
 
-            let space_name = space
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("Unknown Space");
+            for space in spaces {
+                let space_key = space
+                    .get("key")
+                    .and_then(|k| k.as_str())
+                    .ok_or_else(|| anyhow!("Space missing key"))?;
 
-            info!("Syncing Confluence space: {} ({})", space_name, space_key);
+                let space_name = space
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("Unknown Space");
 
-            match self.sync_space_pages(creds, source_id, space_key).await {
-                Ok(pages_count) => {
-                    total_pages_processed += pages_count;
-                    info!("Synced {} pages from space: {}", pages_count, space_key);
+                info!("Syncing Confluence space: {} ({})", space_name, space_key);
+
+                match self
+                    .sync_space_pages(creds, source_id, &sync_run.id, space_key)
+                    .await
+                {
+                    Ok(pages_count) => {
+                        total_pages_processed += pages_count;
+                        info!("Synced {} pages from space: {}", pages_count, space_key);
+                    }
+                    Err(e) => {
+                        error!("Failed to sync space {}: {}", space_key, e);
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to sync space {}: {}", space_key, e);
-                    // Continue with other spaces
-                }
+            }
+
+            info!(
+                "Completed Confluence sync. Total pages processed: {}",
+                total_pages_processed
+            );
+            Ok(total_pages_processed)
+        }
+        .await;
+
+        match &result {
+            Ok(pages_processed) => {
+                self.sync_run_repo
+                    .mark_completed(
+                        &sync_run.id,
+                        *pages_processed as i32,
+                        *pages_processed as i32,
+                    )
+                    .await?;
+            }
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?;
             }
         }
 
-        info!(
-            "Completed Confluence sync. Total pages processed: {}",
-            total_pages_processed
-        );
-        Ok(total_pages_processed)
+        result
     }
 
     pub async fn sync_pages_updated_since(
@@ -79,51 +112,79 @@ impl ConfluenceProcessor {
             since.format("%Y-%m-%d %H:%M:%S")
         );
 
-        let since_str = since.format("%Y-%m-%d %H:%M").to_string();
-        let mut total_pages = 0;
-        let mut start = 0;
-        const PAGE_SIZE: u32 = 50;
+        let sync_run = self
+            .sync_run_repo
+            .create(source_id, SyncType::Incremental)
+            .await?;
 
-        loop {
-            let response = self
-                .client
-                .get_confluence_pages_updated_since(creds, &since_str, PAGE_SIZE, start)
-                .await?;
+        let result: Result<u32> = async {
+            let since_str = since.format("%Y-%m-%d %H:%M").to_string();
+            let mut total_pages = 0;
+            let mut start = 0;
+            const PAGE_SIZE: u32 = 50;
 
-            if response.results.is_empty() {
-                break;
+            loop {
+                let response = self
+                    .client
+                    .get_confluence_pages_updated_since(creds, &since_str, PAGE_SIZE, start)
+                    .await?;
+
+                if response.results.is_empty() {
+                    break;
+                }
+
+                let events = self
+                    .process_pages(response.results, source_id, &sync_run.id, &creds.base_url)
+                    .await?;
+                self.queue_events(events).await?;
+
+                total_pages += response.size as u32;
+                start += PAGE_SIZE;
+
+                debug!(
+                    "Processed {} pages, total so far: {}",
+                    response.size, total_pages
+                );
+
+                // Check if we've reached the end
+                if response.size < PAGE_SIZE as i32 {
+                    break;
+                }
             }
 
-            let events = self
-                .process_pages(response.results, source_id, &creds.base_url)
-                .await?;
-            self.queue_events(events).await?;
-
-            total_pages += response.size as u32;
-            start += PAGE_SIZE;
-
-            debug!(
-                "Processed {} pages, total so far: {}",
-                response.size, total_pages
+            info!(
+                "Completed incremental Confluence sync. Pages processed: {}",
+                total_pages
             );
+            Ok(total_pages)
+        }
+        .await;
 
-            // Check if we've reached the end
-            if response.size < PAGE_SIZE as i32 {
-                break;
+        match &result {
+            Ok(pages_processed) => {
+                self.sync_run_repo
+                    .mark_completed(
+                        &sync_run.id,
+                        *pages_processed as i32,
+                        *pages_processed as i32,
+                    )
+                    .await?;
+            }
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?;
             }
         }
 
-        info!(
-            "Completed incremental Confluence sync. Pages processed: {}",
-            total_pages
-        );
-        Ok(total_pages)
+        result
     }
 
     async fn sync_space_pages(
         &mut self,
         creds: &AtlassianCredentials,
         source_id: &str,
+        sync_run_id: &str,
         space_key: &str,
     ) -> Result<u32> {
         let mut total_pages = 0;
@@ -149,7 +210,7 @@ impl ConfluenceProcessor {
             }
 
             let events = self
-                .process_pages(response.results, source_id, &creds.base_url)
+                .process_pages(response.results, source_id, sync_run_id, &creds.base_url)
                 .await?;
             self.queue_events(events).await?;
 
@@ -211,6 +272,7 @@ impl ConfluenceProcessor {
         &self,
         pages: Vec<ConfluencePage>,
         source_id: &str,
+        sync_run_id: &str,
         base_url: &str,
     ) -> Result<Vec<ConnectorEvent>> {
         let mut events = Vec::new();
@@ -236,9 +298,6 @@ impl ConfluenceProcessor {
                 content.len()
             );
 
-            // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
-            let placeholder_sync_run_id = shared::utils::generate_ulid();
-
             // Store content in LOB and get OID
             let content_id = match self.content_storage.store_text(&content, None).await {
                 Ok(oid) => oid,
@@ -252,7 +311,7 @@ impl ConfluenceProcessor {
             };
 
             let event = page.to_connector_event(
-                placeholder_sync_run_id,
+                sync_run_id.to_string(),
                 source_id.to_string(),
                 base_url,
                 content_id,
