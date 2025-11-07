@@ -219,6 +219,28 @@ impl SyncManager {
         Ok(())
     }
 
+    pub async fn sync_source_by_id(&mut self, source_id: String) -> Result<()> {
+        let source = self
+            .source_repo
+            .find_by_id(source_id.clone())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Source not found: {}", source_id))?;
+
+        if !source.is_active {
+            return Err(anyhow::anyhow!("Source is not active: {}", source_id));
+        }
+
+        let source_type = source.source_type.clone();
+        if source_type != SourceType::Confluence && source_type != SourceType::Jira {
+            return Err(anyhow::anyhow!(
+                "Invalid source type for Atlassian connector: {:?}",
+                source_type
+            ));
+        }
+
+        self.sync_source(&source).await
+    }
+
     async fn sync_source(&mut self, source: &Source) -> Result<()> {
         info!("Starting sync for Atlassian source: {}", source.name);
 

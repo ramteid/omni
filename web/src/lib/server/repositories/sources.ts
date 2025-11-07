@@ -5,10 +5,7 @@ import type { Source } from '$lib/server/db/schema'
 
 export class SourcesRepository {
     async getAll(): Promise<Source[]> {
-        return await db
-            .select()
-            .from(sources)
-            .where(and(eq(sources.isActive, true), eq(sources.isDeleted, false)))
+        return await db.select().from(sources).where(eq(sources.isDeleted, false))
     }
 
     async getById(sourceId: string): Promise<Source | null> {

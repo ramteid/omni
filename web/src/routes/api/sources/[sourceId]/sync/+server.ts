@@ -4,6 +4,7 @@ import { getConfig } from '$lib/server/config'
 import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
 import { eq } from 'drizzle-orm'
+import { logger } from '$lib/server/logger'
 
 export const POST: RequestHandler = async ({ params, fetch }) => {
     const { sourceId } = params
@@ -58,7 +59,10 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
 
         if (!syncResponse.ok) {
             const errorText = await syncResponse.text()
-            console.error(`Sync failed for source ${sourceId}:`, errorText)
+            logger.error(`Sync failed for source ${sourceId}`, {
+                error: errorText,
+                status: syncResponse.status,
+            })
             throw error(500, 'Failed to trigger sync')
         }
 

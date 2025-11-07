@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
@@ -26,8 +26,8 @@ pub struct HealthResponse {
 
 #[derive(Serialize)]
 pub struct SyncResponse {
+    pub success: bool,
     pub message: String,
-    pub sources_synced: usize,
 }
 
 #[derive(Deserialize)]
@@ -53,7 +53,8 @@ pub struct ErrorResponse {
 pub fn create_router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/sync", post(trigger_sync))
+        .route("/sync/:source_id", post(trigger_sync))
+        .route("/sync", post(trigger_full_sync))
         .route("/test-connection", post(test_connection))
         .with_state(state)
 }
@@ -68,28 +69,61 @@ async fn health() -> Json<HealthResponse> {
 
 async fn trigger_sync(
     State(state): State<ApiState>,
-) -> Result<Json<SyncResponse>, (StatusCode, Json<ErrorResponse>)> {
+    Path(source_id): Path<String>,
+) -> Json<SyncResponse> {
+    info!("Received sync request for source: {}", source_id);
+
+    let sync_manager = state.sync_manager.clone();
+    let source_id_clone = source_id.clone();
+
+    tokio::spawn(async move {
+        let mut manager = sync_manager.lock().await;
+        match manager.sync_source_by_id(source_id_clone.clone()).await {
+            Ok(_) => {
+                info!(
+                    "Successfully completed sync for source: {}",
+                    source_id_clone
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Failed to complete sync for source {}: {}",
+                    source_id_clone, e
+                );
+            }
+        }
+    });
+
+    Json(SyncResponse {
+        success: true,
+        message: format!(
+            "Sync triggered successfully for source: {}. Running in background.",
+            source_id
+        ),
+    })
+}
+
+async fn trigger_full_sync(State(state): State<ApiState>) -> Json<SyncResponse> {
     info!("Manual sync triggered via API");
 
-    let mut sync_manager = state.sync_manager.lock().await;
-    match sync_manager.sync_all_sources().await {
-        Ok(()) => {
-            info!("Manual sync completed successfully");
-            Ok(Json(SyncResponse {
-                message: "Sync completed successfully".to_string(),
-                sources_synced: 0, // TODO: Return actual count
-            }))
+    let sync_manager = state.sync_manager.clone();
+
+    tokio::spawn(async move {
+        let mut manager = sync_manager.lock().await;
+        match manager.sync_all_sources().await {
+            Ok(()) => {
+                info!("Manual sync completed successfully");
+            }
+            Err(e) => {
+                error!("Manual sync failed: {}", e);
+            }
         }
-        Err(e) => {
-            error!("Manual sync failed: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Sync failed: {}", e),
-                }),
-            ))
-        }
-    }
+    });
+
+    Json(SyncResponse {
+        success: true,
+        message: "Sync triggered successfully. Running in background.".to_string(),
+    })
 }
 
 async fn test_connection(
