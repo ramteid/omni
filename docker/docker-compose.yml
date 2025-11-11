@@ -264,12 +264,14 @@ services:
     image: omni-atlassian-connector
     container_name: omni-atlassian-connector
     environment:
-      <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
+      <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${ATLASSIAN_CONNECTOR_PORT}
       ATLASSIAN_BASE_URL: ${ATLASSIAN_BASE_URL}
       ATLASSIAN_USER_EMAIL: ${ATLASSIAN_USER_EMAIL}
       ATLASSIAN_API_TOKEN: ${ATLASSIAN_API_TOKEN}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENCRYPTION_SALT: ${ENCRYPTION_SALT}
     networks:
       - omni-network
     depends_on:

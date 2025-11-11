@@ -1,12 +1,13 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::models::{Source, SourceType};
+use shared::db::repositories::ServiceCredentialsRepo;
+use shared::models::{ServiceCredentials, ServiceProvider, Source, SourceType};
 use shared::queue::EventQueue;
 use shared::{Repository, SourceRepository};
 use sqlx::PgPool;
 use std::collections::HashSet;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::auth::{AtlassianCredentials, AuthManager};
 use crate::confluence::ConfluenceProcessor;
@@ -14,11 +15,10 @@ use crate::jira::JiraProcessor;
 
 pub struct SyncManager {
     source_repo: SourceRepository,
-    redis_client: RedisClient,
+    service_credentials_repo: ServiceCredentialsRepo,
     auth_manager: AuthManager,
     confluence_processor: ConfluenceProcessor,
     jira_processor: JiraProcessor,
-    event_queue: EventQueue,
 }
 
 pub struct SyncState {
@@ -176,6 +176,57 @@ impl SyncState {
 
         Ok(project_keys)
     }
+
+    pub fn get_confluence_page_sync_key(
+        &self,
+        source_id: &str,
+        space_id: &str,
+        page_id: &str,
+    ) -> String {
+        if cfg!(test) {
+            format!(
+                "atlassian:confluence:page:test:{}:{}:{}",
+                source_id, space_id, page_id
+            )
+        } else {
+            format!(
+                "atlassian:confluence:page:{}:{}:{}",
+                source_id, space_id, page_id
+            )
+        }
+    }
+
+    pub async fn get_confluence_page_version(
+        &self,
+        source_id: &str,
+        space_id: &str,
+        page_id: &str,
+    ) -> Result<Option<i32>> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = self.get_confluence_page_sync_key(source_id, space_id, page_id);
+
+        let result: Option<String> = conn.get(&key).await?;
+        if let Some(version_str) = result {
+            if let Ok(version) = version_str.parse::<i32>() {
+                return Ok(Some(version));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn set_confluence_page_version(
+        &self,
+        source_id: &str,
+        space_id: &str,
+        page_id: &str,
+        version: i32,
+    ) -> Result<()> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = self.get_confluence_page_sync_key(source_id, space_id, page_id);
+
+        let _: () = conn.set_ex(&key, version, 30 * 24 * 60 * 60).await?; // 30 days expiry
+        Ok(())
+    }
 }
 
 impl SyncManager {
@@ -183,23 +234,24 @@ impl SyncManager {
         let event_queue = EventQueue::new(pool.clone());
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
         let source_repo = SourceRepository::new(&pool);
+        let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
         let sync_run_repo = shared::db::repositories::SyncRunRepository::new(&pool);
 
         Ok(Self {
             source_repo,
-            redis_client,
+            service_credentials_repo,
             auth_manager: AuthManager::new(),
             confluence_processor: ConfluenceProcessor::new(
                 event_queue.clone(),
                 content_storage.clone(),
                 sync_run_repo.clone(),
+                redis_client.clone(),
             ),
             jira_processor: JiraProcessor::new(
                 event_queue.clone(),
                 content_storage.clone(),
                 sync_run_repo.clone(),
             ),
-            event_queue,
         })
     }
 
@@ -210,7 +262,7 @@ impl SyncManager {
 
         for source in sources {
             if let Err(e) = self.sync_source(&source).await {
-                error!("Failed to sync source {}: {}", source.id, e);
+                error!("Failed to sync source {}: {:?}", source.id, e);
                 self.update_source_status(&source.id, "failed", None, Some(e.to_string()))
                     .await?;
             }
@@ -244,10 +296,15 @@ impl SyncManager {
     async fn sync_source(&mut self, source: &Source) -> Result<()> {
         info!("Starting sync for Atlassian source: {}", source.name);
 
-        let (base_url, user_email, api_token) = self.get_source_config(&source.id).await?;
+        let service_creds = self.get_service_credentials(&source.id).await?;
+        let (base_url, user_email, api_token) =
+            self.extract_atlassian_credentials(&service_creds)?;
+
+        debug!("Validating Atlassian credentials...");
         let mut credentials = self
             .get_or_validate_credentials(&base_url, &user_email, &api_token)
             .await?;
+        debug!("Successfully validated Atlassian credentials.");
 
         self.auth_manager
             .ensure_valid_credentials(&mut credentials)
@@ -273,34 +330,37 @@ impl SyncManager {
         if should_do_full_sync {
             info!("Performing full sync for source: {}", source.name);
 
-            // Full sync for Confluence
-            match self
-                .confluence_processor
-                .sync_all_spaces(&credentials, &source.id)
-                .await
-            {
-                Ok(pages_count) => {
-                    total_processed += pages_count;
-                    info!("Full Confluence sync completed: {} pages", pages_count);
+            if source.source_type == SourceType::Confluence {
+                match self
+                    .confluence_processor
+                    .sync_all_spaces(&credentials, &source.id)
+                    .await
+                {
+                    Ok(pages_count) => {
+                        total_processed += pages_count;
+                        info!("Full Confluence sync completed: {} pages", pages_count);
+                    }
+                    Err(e) => {
+                        error!("Full Confluence sync failed: {}", e);
+                    }
                 }
-                Err(e) => {
-                    error!("Full Confluence sync failed: {}", e);
+            } else if source.source_type == SourceType::Jira {
+                match self
+                    .jira_processor
+                    .sync_all_projects(&credentials, &source.id)
+                    .await
+                {
+                    Ok(issues_count) => {
+                        total_processed += issues_count;
+                        info!("Full JIRA sync completed: {} issues", issues_count);
+                    }
+                    Err(e) => {
+                        error!("Full JIRA sync failed: {}", e);
+                    }
                 }
-            }
-
-            // Full sync for JIRA
-            match self
-                .jira_processor
-                .sync_all_projects(&credentials, &source.id)
-                .await
-            {
-                Ok(issues_count) => {
-                    total_processed += issues_count;
-                    info!("Full JIRA sync completed: {} issues", issues_count);
-                }
-                Err(e) => {
-                    error!("Full JIRA sync failed: {}", e);
-                }
+            } else {
+                error!("Unsupported source type: {:?}", source.source_type);
+                return Err(anyhow!("Unsupported source type: {:?}", source.source_type));
             }
         } else {
             info!("Performing incremental sync for source: {}", source.name);
@@ -310,37 +370,41 @@ impl SyncManager {
                 .map(|dt| DateTime::from_timestamp(dt.unix_timestamp(), 0).unwrap_or_default())
                 .unwrap_or_else(|| sync_start - chrono::Duration::days(1));
 
-            // Incremental sync for Confluence
-            match self
-                .confluence_processor
-                .sync_pages_updated_since(&credentials, &source.id, since)
-                .await
-            {
-                Ok(pages_count) => {
-                    total_processed += pages_count;
-                    info!(
-                        "Incremental Confluence sync completed: {} pages",
-                        pages_count
-                    );
+            if source.source_type == SourceType::Confluence {
+                match self
+                    .confluence_processor
+                    .sync_pages_updated_since(&credentials, &source.id, since)
+                    .await
+                {
+                    Ok(pages_count) => {
+                        total_processed += pages_count;
+                        info!(
+                            "Incremental Confluence sync completed: {} pages",
+                            pages_count
+                        );
+                    }
+                    Err(e) => {
+                        error!("Incremental Confluence sync failed: {}", e);
+                    }
                 }
-                Err(e) => {
-                    error!("Incremental Confluence sync failed: {}", e);
+            } else if source.source_type == SourceType::Jira {
+                // Incremental sync for JIRA
+                match self
+                    .jira_processor
+                    .sync_issues_updated_since(&credentials, &source.id, since, None)
+                    .await
+                {
+                    Ok(issues_count) => {
+                        total_processed += issues_count;
+                        info!("Incremental JIRA sync completed: {} issues", issues_count);
+                    }
+                    Err(e) => {
+                        error!("Incremental JIRA sync failed: {}", e);
+                    }
                 }
-            }
-
-            // Incremental sync for JIRA
-            match self
-                .jira_processor
-                .sync_issues_updated_since(&credentials, &source.id, since, None)
-                .await
-            {
-                Ok(issues_count) => {
-                    total_processed += issues_count;
-                    info!("Incremental JIRA sync completed: {} issues", issues_count);
-                }
-                Err(e) => {
-                    error!("Incremental JIRA sync failed: {}", e);
-                }
+            } else {
+                error!("Unsupported source type: {:?}", source.source_type);
+                return Err(anyhow!("Unsupported source type: {:?}", source.source_type));
             }
         }
 
@@ -373,32 +437,48 @@ impl SyncManager {
         Ok(sources)
     }
 
-    async fn get_source_config(&self, source_id: &str) -> Result<(String, String, String)> {
-        let source = self
-            .source_repo
-            .find_by_id(source_id.to_string())
+    async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
+        let creds = self
+            .service_credentials_repo
+            .get_by_source_id(source_id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Source not found: {}", source_id))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Service credentials not found for source {}", source_id)
+            })?;
 
-        let base_url = source
+        if creds.provider != ServiceProvider::Atlassian {
+            return Err(anyhow::anyhow!(
+                "Expected Atlassian credentials for source {}, found {:?}",
+                source_id,
+                creds.provider
+            ));
+        }
+
+        Ok(creds)
+    }
+
+    fn extract_atlassian_credentials(
+        &self,
+        creds: &ServiceCredentials,
+    ) -> Result<(String, String, String)> {
+        let base_url = creds
             .config
             .get("base_url")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing base_url in source config"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing base_url in service credentials config"))?
             .to_string();
 
-        let user_email = source
-            .config
-            .get("user_email")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing user_email in source config"))?
+        let user_email = creds
+            .principal_email
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing principal_email in service credentials"))?
             .to_string();
 
-        let api_token = source
-            .config
+        let api_token = creds
+            .credentials
             .get("api_token")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing api_token in source config"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing api_token in service credentials"))?
             .to_string();
 
         Ok((base_url, user_email, api_token))
@@ -449,9 +529,5 @@ impl SyncManager {
             .await?;
 
         Ok((jira_projects, confluence_spaces))
-    }
-
-    pub fn get_sync_state(&self) -> SyncState {
-        SyncState::new(self.redis_client.clone())
     }
 }

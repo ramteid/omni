@@ -6,7 +6,10 @@ use tokio::time::{sleep, Instant};
 use tracing::{debug, warn};
 
 use crate::auth::AtlassianCredentials;
-use crate::models::{ConfluencePage, ConfluenceSearchResponse, JiraIssue, JiraSearchResponse};
+use crate::models::{
+    ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse, ConfluencePage, ConfluenceSpace,
+    JiraIssue, JiraSearchResponse,
+};
 
 #[derive(Debug, Clone)]
 pub struct RateLimitState {
@@ -184,45 +187,42 @@ impl AtlassianClient {
     pub async fn get_confluence_pages(
         &mut self,
         creds: &AtlassianCredentials,
-        space_key: Option<&str>,
+        space_id: &str,
         limit: u32,
-        start: u32,
-        expand: &[&str],
-    ) -> Result<ConfluenceSearchResponse> {
+        cursor: Option<&str>,
+        body_format: Option<&str>,
+    ) -> Result<ConfluenceGetPagesResponse> {
         let auth_header = creds.get_basic_auth_header();
-        let mut url = format!("{}/wiki/rest/api/content", creds.base_url);
-        let mut params = vec![
-            ("limit", limit.to_string()),
-            ("start", start.to_string()),
-            ("type", "page".to_string()),
-        ];
+        let mut url = format!("{}/wiki/api/v2/spaces/{}/pages", creds.base_url, space_id);
 
-        if let Some(space) = space_key {
-            params.push(("spaceKey", space.to_string()));
+        let mut params = vec![format!("limit={}", limit)];
+
+        if let Some(cursor_val) = cursor {
+            params.push(format!("cursor={}", urlencoding::encode(cursor_val)));
         }
 
-        if !expand.is_empty() {
-            params.push(("expand", expand.join(",")));
+        if let Some(format) = body_format {
+            params.push(format!("body-format={}", format));
         }
 
-        let query_string = params
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, urlencoding::encode(v)))
-            .collect::<Vec<_>>()
-            .join("&");
-        url.push_str(&format!("?{}", query_string));
+        if !params.is_empty() {
+            url.push_str(&format!("?{}", params.join("&")));
+        }
 
-        debug!("Fetching Confluence pages from: {}", url);
+        debug!("Fetching Confluence pages from space {}: {}", space_id, url);
 
         let client = self.client.clone();
-        self.make_request(move || {
-            client
-                .get(&url)
-                .header("Authorization", &auth_header)
-                .header("Accept", "application/json")
-                .header("Content-Type", "application/json")
-        })
-        .await
+        let resp = self
+            .make_request(move || {
+                client
+                    .get(&url)
+                    .header("Authorization", &auth_header)
+                    .header("Accept", "application/json")
+            })
+            .await;
+
+        debug!("Raw get spaces response: {:?}", resp);
+        resp
     }
 
     pub async fn get_confluence_page_by_id(
@@ -256,7 +256,7 @@ impl AtlassianClient {
         since: &str,
         limit: u32,
         start: u32,
-    ) -> Result<ConfluenceSearchResponse> {
+    ) -> Result<ConfluenceGetPagesResponse> {
         let auth_header = creds.get_basic_auth_header();
         let cql = format!("lastModified >= '{}'", since);
         let url = format!(
@@ -387,10 +387,10 @@ impl AtlassianClient {
         creds: &AtlassianCredentials,
         limit: u32,
         start: u32,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<ConfluenceGetSpacesResponse> {
         let auth_header = creds.get_basic_auth_header();
         let url = format!(
-            "{}/wiki/rest/api/space?limit={}&start={}",
+            "{}/wiki/api/v2/spaces?limit={}&start={}",
             creds.base_url, limit, start
         );
 

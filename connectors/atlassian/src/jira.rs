@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorEvent, SyncType};
+use shared::models::{ConnectorEvent, SyncRun, SyncType};
 use shared::queue::EventQueue;
 use shared::ObjectStorage;
 use std::sync::Arc;
@@ -32,6 +32,17 @@ impl JiraProcessor {
         }
     }
 
+    fn get_storage_prefix(sync_run: &SyncRun) -> String {
+        format!(
+            "{}/{}",
+            sync_run
+                .created_at
+                .format(&time::format_description::well_known::Iso8601::DATE)
+                .unwrap_or_else(|_| "unknown-date".to_string()),
+            sync_run.id
+        )
+    }
+
     pub async fn sync_all_projects(
         &mut self,
         creds: &AtlassianCredentials,
@@ -39,7 +50,19 @@ impl JiraProcessor {
     ) -> Result<u32> {
         info!("Starting JIRA projects sync for source: {}", source_id);
 
-        let projects = self.get_accessible_projects(creds).await?;
+        let sync_run = self.sync_run_repo.create(source_id, SyncType::Full).await?;
+        let storage_prefix = Self::get_storage_prefix(&sync_run);
+
+        let projects = match self.get_accessible_projects(creds).await {
+            Ok(p) => p,
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?;
+                return Err(e);
+            }
+        };
+
         let mut total_issues_processed = 0;
 
         for project in projects {
@@ -56,7 +79,7 @@ impl JiraProcessor {
             info!("Syncing JIRA project: {} ({})", project_name, project_key);
 
             match self
-                .sync_project_issues(creds, source_id, project_key)
+                .sync_project_issues(creds, source_id, project_key, &storage_prefix, &sync_run.id)
                 .await
             {
                 Ok(issues_count) => {
@@ -68,10 +91,17 @@ impl JiraProcessor {
                 }
                 Err(e) => {
                     error!("Failed to sync project {}: {}", project_key, e);
-                    // Continue with other projects
                 }
             }
         }
+
+        self.sync_run_repo
+            .mark_completed(
+                &sync_run.id,
+                total_issues_processed as i32,
+                total_issues_processed as i32,
+            )
+            .await?;
 
         info!(
             "Completed JIRA sync. Total issues processed: {}",
@@ -94,46 +124,81 @@ impl JiraProcessor {
             project_key.map_or(String::new(), |p| format!(" (project: {})", p))
         );
 
+        let sync_run = self
+            .sync_run_repo
+            .create(source_id, SyncType::Incremental)
+            .await?;
+        let storage_prefix = Self::get_storage_prefix(&sync_run);
+
         let since_str = since.format("%Y-%m-%d %H:%M").to_string();
         let mut total_issues = 0;
         let mut start_at = 0;
         const PAGE_SIZE: u32 = 50;
 
-        loop {
-            let response = self
-                .client
-                .get_jira_issues_updated_since(creds, &since_str, project_key, PAGE_SIZE, start_at)
-                .await?;
+        let result: Result<u32> = async {
+            loop {
+                let response = self
+                    .client
+                    .get_jira_issues_updated_since(
+                        creds,
+                        &since_str,
+                        project_key,
+                        PAGE_SIZE,
+                        start_at,
+                    )
+                    .await?;
 
-            if response.issues.is_empty() {
-                break;
+                if response.issues.is_empty() {
+                    break;
+                }
+
+                let issues_count = response.issues.len();
+                let events = self
+                    .process_issues(
+                        response.issues,
+                        source_id,
+                        &creds.base_url,
+                        &storage_prefix,
+                        &sync_run.id,
+                    )
+                    .await?;
+                self.queue_events(events).await?;
+
+                total_issues += issues_count as u32;
+                start_at += PAGE_SIZE;
+
+                debug!(
+                    "Processed {} issues, total so far: {}",
+                    issues_count, total_issues
+                );
+
+                if issues_count < PAGE_SIZE as usize {
+                    break;
+                }
             }
 
-            let issues_count = response.issues.len();
-            let events = self
-                .process_issues(response.issues, source_id, &creds.base_url)
-                .await?;
-            self.queue_events(events).await?;
-
-            total_issues += issues_count as u32;
-            start_at += PAGE_SIZE;
-
-            debug!(
-                "Processed {} issues, total so far: {}",
-                issues_count, total_issues
+            info!(
+                "Completed incremental JIRA sync. Issues processed: {}",
+                total_issues
             );
+            Ok(total_issues)
+        }
+        .await;
 
-            // Check if we've reached the end
-            if issues_count < PAGE_SIZE as usize {
-                break;
+        match &result {
+            Ok(count) => {
+                self.sync_run_repo
+                    .mark_completed(&sync_run.id, *count as i32, *count as i32)
+                    .await?
+            }
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?
             }
         }
 
-        info!(
-            "Completed incremental JIRA sync. Issues processed: {}",
-            total_issues
-        );
-        Ok(total_issues)
+        result
     }
 
     async fn sync_project_issues(
@@ -141,12 +206,13 @@ impl JiraProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
         project_key: &str,
+        storage_prefix: &str,
+        sync_run_id: &str,
     ) -> Result<u32> {
         let mut total_issues = 0;
         let mut start_at = 0;
         const PAGE_SIZE: u32 = 50;
 
-        // JQL to get all issues in the project
         let jql = format!("project = {}", project_key);
         let fields = vec![
             "summary",
@@ -177,7 +243,13 @@ impl JiraProcessor {
 
             let issues_count = response.issues.len();
             let events = self
-                .process_issues(response.issues, source_id, &creds.base_url)
+                .process_issues(
+                    response.issues,
+                    source_id,
+                    &creds.base_url,
+                    storage_prefix,
+                    sync_run_id,
+                )
                 .await?;
             self.queue_events(events).await?;
 
@@ -189,7 +261,6 @@ impl JiraProcessor {
                 issues_count, project_key, total_issues
             );
 
-            // Check if we've reached the end
             if issues_count < PAGE_SIZE as usize {
                 break;
             }
@@ -214,6 +285,8 @@ impl JiraProcessor {
         issues: Vec<JiraIssue>,
         source_id: &str,
         base_url: &str,
+        storage_prefix: &str,
+        sync_run_id: &str,
     ) -> Result<Vec<ConnectorEvent>> {
         let mut events = Vec::new();
 
@@ -231,15 +304,15 @@ impl JiraProcessor {
                 content.len()
             );
 
-            // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
-            let placeholder_sync_run_id = shared::utils::generate_ulid();
-
-            // Store content in LOB and get OID
-            let content_id = match self.content_storage.store_text(&content, None).await {
+            let content_id = match self
+                .content_storage
+                .store_text(&content, Some(storage_prefix))
+                .await
+            {
                 Ok(oid) => oid,
                 Err(e) => {
                     error!(
-                        "Failed to store content in LOB storage for Jira issue {}: {}",
+                        "Failed to store content in storage for Jira issue {}: {}",
                         issue.key, e
                     );
                     continue;
@@ -247,7 +320,7 @@ impl JiraProcessor {
             };
 
             let event = issue.to_connector_event(
-                placeholder_sync_run_id,
+                sync_run_id.to_string(),
                 source_id.to_string(),
                 base_url,
                 content_id,
@@ -276,6 +349,12 @@ impl JiraProcessor {
     ) -> Result<()> {
         info!("Syncing single JIRA issue: {}", issue_key);
 
+        let sync_run = self
+            .sync_run_repo
+            .create(source_id, SyncType::Incremental)
+            .await?;
+        let storage_prefix = Self::get_storage_prefix(&sync_run);
+
         let fields = vec![
             "summary",
             "description",
@@ -293,43 +372,57 @@ impl JiraProcessor {
             "components",
         ];
 
-        let issue = self
-            .client
-            .get_jira_issue_by_key(creds, issue_key, &fields)
-            .await?;
+        let result: Result<()> = async {
+            let issue = self
+                .client
+                .get_jira_issue_by_key(creds, issue_key, &fields)
+                .await?;
 
-        let content = issue.to_document_content();
-        if content.trim().is_empty() {
-            warn!("Issue {} has no content, skipping", issue_key);
-            return Ok(());
+            let content = issue.to_document_content();
+            if content.trim().is_empty() {
+                warn!("Issue {} has no content, skipping", issue_key);
+                return Ok(());
+            }
+
+            let content_id = self
+                .content_storage
+                .store_text(&content, Some(&storage_prefix))
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "Failed to store content in storage for Jira issue {}: {}",
+                        issue.key,
+                        e
+                    )
+                })?;
+
+            let event = issue.to_connector_event(
+                sync_run.id.clone(),
+                source_id.to_string(),
+                &creds.base_url,
+                content_id,
+            );
+            self.event_queue.enqueue(source_id, &event).await?;
+
+            info!("Successfully queued issue: {}", issue.fields.summary);
+            Ok(())
+        }
+        .await;
+
+        match &result {
+            Ok(_) => {
+                self.sync_run_repo
+                    .mark_completed(&sync_run.id, 1, 1)
+                    .await?
+            }
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?
+            }
         }
 
-        // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
-        let placeholder_sync_run_id = shared::utils::generate_ulid();
-
-        // Store content in LOB and get OID
-        let content_id = self
-            .content_storage
-            .store_text(&content, None)
-            .await
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to store content in LOB storage for Jira issue {}: {}",
-                    issue.key,
-                    e
-                )
-            })?;
-
-        let event = issue.to_connector_event(
-            placeholder_sync_run_id,
-            source_id.to_string(),
-            &creds.base_url,
-            content_id,
-        );
-        self.event_queue.enqueue(source_id, &event).await?;
-
-        info!("Successfully queued issue: {}", issue.fields.summary);
-        Ok(())
+        result
     }
 
     pub async fn delete_issue(
@@ -363,6 +456,12 @@ impl JiraProcessor {
     ) -> Result<u32> {
         info!("Syncing JIRA issues by JQL: {}", jql);
 
+        let sync_run = self
+            .sync_run_repo
+            .create(source_id, SyncType::Incremental)
+            .await?;
+        let storage_prefix = Self::get_storage_prefix(&sync_run);
+
         let mut total_issues = 0;
         let mut start_at = 0;
         const PAGE_SIZE: u32 = 50;
@@ -385,46 +484,69 @@ impl JiraProcessor {
             "components",
         ];
 
-        loop {
-            if total_issues >= max_results {
-                break;
+        let result: Result<u32> = async {
+            loop {
+                if total_issues >= max_results {
+                    break;
+                }
+
+                let page_size = std::cmp::min(PAGE_SIZE, max_results - total_issues);
+                let response = self
+                    .client
+                    .get_jira_issues(creds, jql, page_size, start_at, &fields)
+                    .await?;
+
+                if response.issues.is_empty() {
+                    break;
+                }
+
+                let issues_count = response.issues.len();
+                let events = self
+                    .process_issues(
+                        response.issues,
+                        source_id,
+                        &creds.base_url,
+                        &storage_prefix,
+                        &sync_run.id,
+                    )
+                    .await?;
+                self.queue_events(events).await?;
+
+                total_issues += issues_count as u32;
+                start_at += page_size;
+
+                debug!(
+                    "Processed {} issues from JQL query, total: {}",
+                    issues_count, total_issues
+                );
+
+                if issues_count < page_size as usize {
+                    break;
+                }
             }
 
-            let page_size = std::cmp::min(PAGE_SIZE, max_results - total_issues);
-            let response = self
-                .client
-                .get_jira_issues(creds, jql, page_size, start_at, &fields)
-                .await?;
-
-            if response.issues.is_empty() {
-                break;
-            }
-
-            let issues_count = response.issues.len();
-            let events = self
-                .process_issues(response.issues, source_id, &creds.base_url)
-                .await?;
-            self.queue_events(events).await?;
-
-            total_issues += issues_count as u32;
-            start_at += page_size;
-
-            debug!(
-                "Processed {} issues from JQL query, total: {}",
-                issues_count, total_issues
+            info!(
+                "Completed JQL-based JIRA sync. Issues processed: {}",
+                total_issues
             );
+            Ok(total_issues)
+        }
+        .await;
 
-            // Check if we've reached the end
-            if issues_count < page_size as usize {
-                break;
+        match &result {
+            Ok(count) => {
+                self.sync_run_repo
+                    .mark_completed(&sync_run.id, *count as i32, *count as i32)
+                    .await?
+            }
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?
             }
         }
 
-        info!(
-            "Completed JQL-based JIRA sync. Issues processed: {}",
-            total_issues
-        );
-        Ok(total_issues)
+        result
     }
 
     pub async fn sync_issues_by_status(

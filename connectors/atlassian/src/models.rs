@@ -1,21 +1,62 @@
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
+use time::OffsetDateTime;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfluencePageStatus {
+    Current,
+    Draft,
+    Archived,
+    Historical,
+    Trashed,
+    Deleted,
+    Any,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfluencePageParentType {
+    Page,
+    Whiteboard,
+    Database,
+    Embed,
+    Folder,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Hash)]
+pub struct ConfluencePageLinks {
+    pub webui: String,
+    pub editui: String,
+    pub tinyui: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfluencePage {
     pub id: String,
+    pub status: ConfluencePageStatus,
     pub title: String,
-    pub r#type: String, // page, blogpost
-    pub status: String, // current, trashed, draft
-    pub space: ConfluenceSpace,
+    #[serde(rename = "spaceId")]
+    pub space_id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
+    pub parent_type: Option<ConfluencePageParentType>,
+    pub position: Option<i32>,
+    #[serde(rename = "authorId")]
+    pub author_id: String,
+    #[serde(rename = "ownerId")]
+    pub owner_id: Option<String>,
+    #[serde(rename = "lastOwnerId")]
+    pub last_owner_id: Option<String>,
+    pub subtype: Option<String>,
+    #[serde(rename = "createdAt", with = "time::serde::iso8601")]
+    pub created_at: OffsetDateTime,
     pub version: ConfluenceVersion,
-    pub body: Option<ConfluenceBody>,
-    pub ancestors: Option<Vec<ConfluenceAncestor>>,
+    pub body: Option<ConfluencePageBody>,
     #[serde(rename = "_links")]
-    pub links: Option<ConfluenceLinks>,
+    pub links: ConfluencePageLinks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,10 +69,14 @@ pub struct ConfluenceSpace {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfluenceVersion {
-    pub by: ConfluenceUser,
-    pub when: String,
+    #[serde(rename = "createdAt", with = "time::serde::iso8601")]
+    pub created_at: OffsetDateTime,
+    pub message: String,
     pub number: i32,
-    pub message: Option<String>,
+    #[serde(rename = "minorEdit")]
+    pub minor_edit: bool,
+    #[serde(rename = "authorId")]
+    pub author_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,9 +91,9 @@ pub struct ConfluenceUser {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfluenceBody {
+pub struct ConfluencePageBody {
     pub storage: Option<ConfluenceContent>,
-    pub view: Option<ConfluenceContent>,
+    pub atlas_doc_format: Option<ConfluenceContent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,11 +118,15 @@ pub struct ConfluenceLinks {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ConfluenceSearchResponse {
+pub struct ConfluenceGetPagesResponse {
     pub results: Vec<ConfluencePage>,
-    pub start: i32,
-    pub limit: i32,
-    pub size: i32,
+    #[serde(rename = "_links")]
+    pub links: Option<ConfluenceResponseLinks>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfluenceGetSpacesResponse {
+    pub results: Vec<ConfluenceSpace>,
     #[serde(rename = "_links")]
     pub links: Option<ConfluenceResponseLinks>,
 }
@@ -85,7 +134,6 @@ pub struct ConfluenceSearchResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfluenceResponseLinks {
     pub base: String,
-    pub context: String,
     pub next: Option<String>,
 }
 
@@ -224,8 +272,8 @@ impl ConfluencePage {
         if let Some(body) = &self.body {
             if let Some(storage) = &body.storage {
                 content = self.strip_html_tags(&storage.value);
-            } else if let Some(view) = &body.view {
-                content = self.strip_html_tags(&view.value);
+            } else if let Some(doc) = &body.atlas_doc_format {
+                content = self.strip_html_tags(&doc.value);
             }
         }
 
@@ -249,79 +297,46 @@ impl ConfluencePage {
         base_url: &str,
         content_id: String,
     ) -> ConnectorEvent {
-        let document_id = format!("confluence_page_{}_{}", self.space.key, self.id);
-
-        let created_at = DateTime::parse_from_rfc3339(&self.version.when)
-            .ok()
-            .map(|dt| {
-                OffsetDateTime::from_unix_timestamp(dt.timestamp())
-                    .unwrap_or(OffsetDateTime::UNIX_EPOCH)
-            });
-
+        let document_id = format!("confluence_page_{}_{}", self.space_id, self.id);
         let mut extra = HashMap::new();
 
         // Store Confluence-specific hierarchical data
         let mut confluence_metadata = HashMap::new();
-        confluence_metadata.insert("space_id".to_string(), serde_json::json!(self.space.id));
-        confluence_metadata.insert("space_key".to_string(), serde_json::json!(self.space.key));
-        confluence_metadata.insert("space_name".to_string(), serde_json::json!(self.space.name));
-        confluence_metadata.insert("page_type".to_string(), serde_json::json!(self.r#type));
+        confluence_metadata.insert("space_id".to_string(), serde_json::json!(self.space_id));
+        confluence_metadata.insert("parent_id".to_string(), serde_json::json!(self.parent_id));
         confluence_metadata.insert("status".to_string(), serde_json::json!(self.status));
         confluence_metadata.insert(
             "version".to_string(),
             serde_json::json!(self.version.number),
         );
 
-        if let Some(ancestors) = &self.ancestors {
-            let ancestor_titles: Vec<String> = ancestors.iter().map(|a| a.title.clone()).collect();
-            confluence_metadata.insert("ancestors".to_string(), serde_json::json!(ancestor_titles));
-            // Store parent page ID for hierarchical relationships
-            if let Some(parent) = ancestors.last() {
-                confluence_metadata.insert("parent_id".to_string(), serde_json::json!(parent.id));
-            }
-        }
         extra.insert(
             "confluence".to_string(),
             serde_json::json!(confluence_metadata),
         );
 
-        let url = if let Some(links) = &self.links {
-            Some(format!("{}{}", base_url, links.web_ui))
-        } else {
-            Some(format!(
-                "{}/wiki/spaces/{}/pages/{}",
-                base_url, self.space.key, self.id
-            ))
-        };
+        let url = self.links.webui.clone();
 
-        // Build hierarchical path for display
-        let path = if let Some(ancestors) = &self.ancestors {
-            let mut path_components = ancestors
-                .iter()
-                .map(|a| a.title.clone())
-                .collect::<Vec<_>>();
-            path_components.push(self.title.clone());
-            Some(format!("{}/{}", self.space.name, path_components.join("/")))
-        } else {
-            Some(format!("{}/{}", self.space.name, self.title))
-        };
+        // For now, just use the page name
+        let path = self.title.clone();
 
         let metadata = DocumentMetadata {
             title: Some(self.title.clone()),
-            author: Some(self.version.by.display_name.clone()),
-            created_at,
-            updated_at: created_at,
+            author: Some(self.author_id.clone()),
+            created_at: Some(self.created_at),
+            updated_at: Some(self.created_at),
             mime_type: Some("text/html".to_string()),
             size: Some(self.extract_plain_text().len().to_string()),
-            url,
-            path,
+            url: Some(url),
+            path: Some(path),
             extra: Some(extra),
         };
 
+        // For now, make all documents public
         let permissions = DocumentPermissions {
-            public: false,
+            public: true,
             users: vec![],
-            groups: vec![format!("confluence_space_{}", self.space.key)],
+            groups: vec![],
         };
 
         ConnectorEvent::DocumentCreated {

@@ -159,8 +159,13 @@
                     throw new Error('Atlassian domain is required')
                 }
 
-                credentials = { api_key: apiToken }
-                config = { base_url: domain }
+                credentials = {
+                    api_token: apiToken,
+                }
+                config = {
+                    base_url: domain.startsWith('http') ? domain : `https://${domain}`,
+                    user_email: principalEmail,
+                }
                 authType = AuthType.API_KEY
                 provider = 'atlassian'
             } else if (selectedIntegration.id === 'slack') {
@@ -182,7 +187,7 @@
                     body: JSON.stringify({
                         name: 'Google Drive',
                         sourceType: 'google_drive',
-                        config: {},
+                        config,
                     }),
                 })
 
@@ -201,8 +206,8 @@
                         provider: provider,
                         authType: authType,
                         principalEmail: principalEmail || null,
-                        credentials: credentials,
-                        config: config,
+                        credentials,
+                        config,
                     }),
                 })
 
@@ -217,7 +222,7 @@
                     body: JSON.stringify({
                         name: 'Gmail',
                         sourceType: 'gmail',
-                        config: {},
+                        config,
                     }),
                 })
 
@@ -237,7 +242,7 @@
                         authType: authType,
                         principalEmail: principalEmail || null,
                         credentials: credentials,
-                        config: config,
+                        config,
                     }),
                 })
 
@@ -252,7 +257,7 @@
                     body: JSON.stringify({
                         name: 'Confluence',
                         sourceType: 'confluence',
-                        config: {},
+                        config,
                     }),
                 })
 
@@ -272,7 +277,7 @@
                         authType: authType,
                         principalEmail: principalEmail || null,
                         credentials: credentials,
-                        config: config,
+                        config,
                     }),
                 })
 
@@ -287,7 +292,7 @@
                     body: JSON.stringify({
                         name: 'JIRA',
                         sourceType: 'jira',
-                        config: {},
+                        config,
                     }),
                 })
 
@@ -307,7 +312,7 @@
                         authType: authType,
                         principalEmail: principalEmail || null,
                         credentials: credentials,
-                        config: config,
+                        config,
                     }),
                 })
 
