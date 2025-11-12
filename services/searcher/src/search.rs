@@ -215,36 +215,19 @@ impl SearchEngine {
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
-        let ignore_typos = request.ignore_typos.unwrap_or(false);
-        let (documents_with_scores, corrected_query) =
-            if self.config.typo_tolerance_enabled && !ignore_typos {
-                debug!("Searching for {} with typo tolerance", &request.query);
-                repo.search_with_typo_tolerance_and_filters(
-                    &request.query,
-                    sources,
-                    content_types,
-                    request.limit(),
-                    request.offset(),
-                    self.config.typo_tolerance_max_distance,
-                    self.config.typo_tolerance_min_word_length,
-                    request.user_email().map(|e| e.as_str()),
-                )
-                .await?
-            } else {
-                debug!("Searching for {} without typo tolerance", &request.query);
-                (
-                    repo.search_with_filters(
-                        &request.query,
-                        sources,
-                        content_types,
-                        request.limit(),
-                        request.offset(),
-                        request.user_email().map(|e| e.as_str()),
-                    )
-                    .await?,
-                    None,
-                )
-            };
+        debug!("Running fulltext search for {}", &request.query);
+        let (documents_with_scores, corrected_query) = (
+            repo.search_with_filters(
+                &request.query,
+                sources,
+                content_types,
+                request.limit(),
+                request.offset(),
+                request.user_email().map(|e| e.as_str()),
+            )
+            .await?,
+            None,
+        );
 
         let content_ids: Vec<String> = documents_with_scores
             .iter()
