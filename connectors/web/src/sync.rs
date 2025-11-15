@@ -1,18 +1,22 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{SourceRepository, SyncRunRepository};
-use shared::models::{Source, SourceType, SyncType};
+use shared::models::{Source, SourceType, SyncRun, SyncType};
 use shared::queue::EventQueue;
 use shared::{ObjectStorage, Repository};
+use spider::page::Page;
 use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
+use time;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::config::WebSourceConfig;
 use crate::models::{PageSyncState, WebPage};
 
+#[derive(Clone)]
 pub struct SyncManager {
     redis_client: RedisClient,
     event_queue: EventQueue,
@@ -21,6 +25,7 @@ pub struct SyncManager {
     source_repo: SourceRepository,
 }
 
+#[derive(Clone)]
 pub struct SyncState {
     redis_client: RedisClient,
 }
@@ -183,7 +188,6 @@ impl SyncManager {
             .sync_run_repo
             .create(&source.id, SyncType::Full)
             .await?;
-        let sync_run_id = &sync_run.id;
 
         let mut website = config.build_spider_website()?;
 
@@ -194,95 +198,124 @@ impl SyncManager {
         let pages_processed: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
         let pages_updated: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
-        info!("Starting crawl of {}", config.root_url);
+        info!("Setting up subscription for url {}", config.root_url);
+        let mut rx = website.subscribe(32).ok_or(anyhow!(
+            "Failed to subscribe to website crawl events for root url: {}",
+            config.root_url
+        ))?;
+        let processor_handle = tokio::spawn({
+            let self_clone = self.clone();
+            let source = source.clone();
+            let current_urls = current_urls.clone();
+            let pages_processed = pages_processed.clone();
+            let pages_updated = pages_updated.clone();
+            let sync_state = sync_state.clone();
+            let sync_run = sync_run.clone();
 
+            async move {
+                while let Ok(page) = rx.recv().await {
+                    let page_title = page.metadata.as_ref().and_then(|m| m.title.clone());
+                    let page_url = page.get_url();
+                    debug!(
+                        "Received crawl event for page {:?} [url={}]",
+                        page_title, page_url
+                    );
+
+                    if let Err(e) = self_clone
+                        .process_page(
+                            &page,
+                            &sync_run,
+                            &source.id,
+                            &sync_state,
+                            &current_urls,
+                            &pages_processed,
+                            &pages_updated,
+                        )
+                        .await
+                    {
+                        error!("Failed to process page {}: {}", page_url, e)
+                    }
+                }
+            }
+        });
+
+        info!("Starting crawl of {}", config.root_url);
+        let crawl_start = Instant::now();
         website.crawl().await;
 
+        info!("Crawl complete, waiting for processing task to complete...");
+        let crawl_duration = crawl_start.elapsed();
+        website.unsubscribe();
+        processor_handle
+            .await
+            .with_context(|| format!("Failed while waiting for tasks to complete"))?;
+
         let links = website.get_links();
-        info!("Crawled {} pages from {}", links.len(), config.root_url);
+        info!(
+            "Crawled {} pages from {} in {:?}",
+            links.len(),
+            config.root_url,
+            crawl_duration
+        );
 
-        let result: Result<()> = async {
-            for page in website.get_pages().unwrap_or(&vec![]) {
-                let url = page.get_url();
+        let final_processed = *pages_processed.lock().await;
+        let final_updated = *pages_updated.lock().await;
 
-                if let Err(e) = self
-                    .process_page(
-                        page,
-                        sync_run_id,
-                        &source.id,
-                        &sync_state,
-                        &current_urls,
-                        &pages_processed,
-                        &pages_updated,
-                    )
-                    .await
-                {
-                    warn!("Failed to process page {}: {}", url, e);
-                }
+        let current_url_hashes = current_urls.lock().await;
+        let deleted_urls: Vec<String> = previous_urls
+            .difference(&*current_url_hashes)
+            .cloned()
+            .collect();
+
+        info!(
+            "Detected {} deleted pages for source {}",
+            deleted_urls.len(),
+            source.id
+        );
+
+        for url_hash in &deleted_urls {
+            if let Err(e) = self
+                .publish_deletion_event(&sync_run.id, &source.id, url_hash)
+                .await
+            {
+                error!("Failed to publish deletion event: {}", e);
             }
 
-            let final_processed = *pages_processed.lock().await;
-            let final_updated = *pages_updated.lock().await;
-
-            let current_url_hashes = current_urls.lock().await;
-            let deleted_urls: Vec<String> = previous_urls
-                .difference(&*current_url_hashes)
-                .cloned()
-                .collect();
-
-            info!(
-                "Detected {} deleted pages for source {}",
-                deleted_urls.len(),
-                source.id
-            );
-
-            for url_hash in &deleted_urls {
-                if let Err(e) = self
-                    .publish_deletion_event(sync_run_id, &source.id, url_hash)
-                    .await
-                {
-                    error!("Failed to publish deletion event: {}", e);
-                }
-
-                if let Err(e) = sync_state.remove_url_from_set(&source.id, url_hash).await {
-                    error!("Failed to remove URL from set: {}", e);
-                }
-            }
-
-            info!(
-                "Completed sync for source {}: {} pages processed, {} updated, {} deleted",
-                source.id,
-                final_processed,
-                final_updated,
-                deleted_urls.len()
-            );
-
-            Ok(())
-        }
-        .await;
-
-        match &result {
-            Ok(_) => {
-                let final_processed = *pages_processed.lock().await;
-                let final_updated = *pages_updated.lock().await;
-                self.sync_run_repo
-                    .mark_completed(&sync_run.id, final_processed as i32, final_updated as i32)
-                    .await?;
-            }
-            Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?;
+            if let Err(e) = sync_state.remove_url_from_set(&source.id, url_hash).await {
+                error!("Failed to remove URL from set: {}", e);
             }
         }
 
-        result
+        info!(
+            "Completed sync for source {}: {} pages processed, {} updated, {} deleted",
+            source.id,
+            final_processed,
+            final_updated,
+            deleted_urls.len()
+        );
+
+        self.sync_run_repo
+            .mark_completed(&sync_run.id, final_processed as i32, final_updated as i32)
+            .await?;
+
+        Ok(())
+    }
+
+    fn get_storage_prefix(sync_run: &SyncRun) -> String {
+        format!(
+            "{}/{}",
+            sync_run
+                .created_at
+                .format(&time::format_description::well_known::Iso8601::DATE)
+                .unwrap_or_else(|_| "unknown-date".to_string()),
+            sync_run.id
+        )
     }
 
     async fn process_page(
         &self,
-        page: &spider::page::Page,
-        sync_run_id: &str,
+        page: &Page,
+        sync_run: &SyncRun,
         source_id: &str,
         sync_state: &SyncState,
         current_urls: &Arc<Mutex<HashSet<String>>>,
@@ -317,7 +350,7 @@ impl SyncManager {
         };
 
         if should_index {
-            let storage_prefix = format!("web/{}", source_id);
+            let storage_prefix = Self::get_storage_prefix(sync_run);
             let content_id = self
                 .content_storage
                 .store_text(&web_page.content, Some(&storage_prefix))
@@ -325,7 +358,7 @@ impl SyncManager {
                 .context("Failed to store page content")?;
 
             let event = web_page.to_connector_event(
-                sync_run_id.to_string(),
+                sync_run.id.to_string(),
                 source_id.to_string(),
                 content_id,
             );

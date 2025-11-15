@@ -22,15 +22,12 @@ repository = "https://github.com/yourusername/omni"
 [workspace.dependencies]
 tokio = { version = "1.40", features = ["full"] }
 axum = { version = "0.7", features = ["ws", "multipart"] }
-axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-full"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "time", "uuid"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-jsonwebtoken = "9.3"
-argon2 = "0.5"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 tracing = "0.1"
@@ -43,12 +40,10 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 ulid = { version = "1.1", features = ["serde"] }
 dotenvy = "0.15"
 async-trait = "0.1"
-oauth2 = "4.4"
 governor = "0.6"
 futures = "0.3"
 nonzero_ext = "0.3"
 rand = "0.8"
-validator = { version = "0.18", features = ["derive"] }
 url = "2.5"
 dashmap = "6.1.0"
 
@@ -63,7 +58,6 @@ opentelemetry-http = "0.27"
 # Test dependencies
 testcontainers = "0.21"
 testcontainers-modules = { version = "0.9", features = ["postgres", "redis"] }
-wiremock = "0.6"
 axum-test = "15.3"
 
 [profile.release]

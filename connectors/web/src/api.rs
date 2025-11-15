@@ -76,14 +76,27 @@ async fn sync_source(
 ) -> Result<Json<SyncResponse>, StatusCode> {
     info!("Manual sync triggered for source: {}", source_id);
 
-    match state.sync_manager.sync_source_by_id(&source_id).await {
-        Ok(_) => Ok(Json(SyncResponse {
-            message: "Sync completed successfully".to_string(),
-            source_id,
-        })),
-        Err(e) => {
-            error!("Manual sync failed for source {}: {}", source_id, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+    tokio::spawn({
+        let source_id = source_id.clone();
+        async move {
+            match state.sync_manager.sync_source_by_id(&source_id).await {
+                Ok(_) => Ok(Json(SyncResponse {
+                    message: "Sync completed successfully".to_string(),
+                    source_id,
+                })),
+                Err(e) => {
+                    error!("Manual sync failed for source {}: {}", source_id, e);
+                    Err(StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            }
         }
-    }
+    });
+
+    Ok(Json(SyncResponse {
+        message: format!(
+            "Sync triggered successfully for source: {}. Running in background.",
+            source_id
+        ),
+        source_id: source_id,
+    }))
 }

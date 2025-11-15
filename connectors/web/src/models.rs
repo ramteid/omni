@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use html2md::{dummy::DummyHandler, TagHandler, TagHandlerFactory};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,6 +18,32 @@ pub struct WebPage {
     pub last_modified: Option<String>,
     pub etag: Option<String>,
     pub word_count: usize,
+}
+
+// The built-in DummyHandler doesn't skip descendents, but we need to skip entire elements for our use-case
+// We do not want to extract script, style, img, etc.
+#[derive(Default)]
+struct NoopHandler;
+impl TagHandler for NoopHandler {
+    fn handle(&mut self, _tag: &html2md::Handle, _printer: &mut html2md::StructuredPrinter) {}
+
+    fn after_handle(&mut self, _printer: &mut html2md::StructuredPrinter) {}
+
+    fn skip_descendants(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Default)]
+struct NoopTagHandlerFactory;
+impl TagHandlerFactory for NoopTagHandlerFactory {
+    fn instantiate(&self) -> Box<dyn TagHandler> {
+        Box::new(NoopHandler::default())
+    }
+}
+
+fn get_noop_handler_factory() -> Box<dyn TagHandlerFactory> {
+    Box::new(NoopTagHandlerFactory::default())
 }
 
 impl WebPage {
@@ -66,34 +93,23 @@ impl WebPage {
     }
 
     fn extract_main_content(document: &Html) -> Result<String> {
-        let selectors_to_try = vec![
-            "main",
-            "article",
-            "[role='main']",
-            ".content",
-            "#content",
-            "body",
-        ];
+        let html = document.html();
 
-        for selector_str in selectors_to_try {
-            if let Ok(selector) = Selector::parse(selector_str) {
-                if let Some(element) = document.select(&selector).next() {
-                    let text = element.text().collect::<Vec<_>>().join(" ");
-                    let cleaned = text
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .trim()
-                        .to_string();
+        let script_handler = get_noop_handler_factory();
+        let style_handler = get_noop_handler_factory();
+        let img_handler = get_noop_handler_factory();
+        let custom_handlers = HashMap::from([
+            ("script".to_string(), script_handler),
+            ("style".to_string(), style_handler),
+            ("img".to_string(), img_handler),
+        ]);
+        let markdown = html2md::parse_html_custom(&html, &custom_handlers);
 
-                    if !cleaned.is_empty() {
-                        return Ok(cleaned);
-                    }
-                }
-            }
+        if markdown.trim().is_empty() {
+            return Err(anyhow::anyhow!("No content found in HTML"));
         }
 
-        Err(anyhow::anyhow!("Could not extract content from page"))
+        Ok(markdown)
     }
 
     fn extract_first_h1(document: &Html) -> Option<String> {
@@ -249,8 +265,8 @@ mod tests {
 
         assert!(content.contains("Main Title"));
         assert!(content.contains("main content"));
-        assert!(!content.contains("Navigation"));
-        assert!(!content.contains("Footer"));
+        assert!(content.contains("Navigation"));
+        assert!(content.contains("Footer"));
     }
 
     #[test]

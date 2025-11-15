@@ -2,6 +2,7 @@ use crate::{db::error::DatabaseError, models::Source, traits::Repository};
 use async_trait::async_trait;
 use sqlx::PgPool;
 
+#[derive(Clone)]
 pub struct SourceRepository {
     pool: PgPool,
 }
