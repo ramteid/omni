@@ -73,8 +73,9 @@ export function getSourceIconPath(sourceType: string): string | null {
         case SourceType.SLACK:
             return slackIcon
         case SourceType.CONFLUENCE:
+            return confluenceIcon
         case SourceType.JIRA:
-            return atlassianIcon
+            return jiraIcon
         case SourceType.GITHUB:
             return null // TODO: Add github icon when available
         case SourceType.LOCAL_FILES:

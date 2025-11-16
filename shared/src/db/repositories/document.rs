@@ -173,18 +173,36 @@ impl DocumentRepository {
         offset: i64,
         user_email: Option<&str>,
     ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
-        let has_sources = source_types.map_or(false, |s| !s.is_empty());
         let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
 
         let mut filters = vec!["(title @@@ $1 OR content @@@ $2)".to_string()];
         let mut param_idx = 3; // Params 1 and 2 are for the query (title query and content query)
 
-        if has_sources {
-            filters.push(format!(
-                "source_id IN (SELECT id FROM sources WHERE source_type = ANY(${}))",
-                param_idx
-            ));
+        let source_filter_query = if let Some(source_types) = source_types {
+            // We could use a sub-query here, source_id IN (SELECT id FROM sources WHERE ...)
+            // But ParadeDB doesn't return a score for each document when using a sub-query.
+            // So we simply query the sources table, collect all the source IDs, and use an IN condition on source_id instead
+            let source_filter_query = r#"SELECT id FROM sources WHERE source_type = ANY($1) AND is_active AND NOT is_deleted"#;
+            sqlx::query_scalar(source_filter_query).bind(source_types)
+        } else {
+            // Filter down to all active sources
+            let source_filter_query =
+                r#"SELECT id FROM sources WHERE is_active AND NOT is_deleted"#;
+            sqlx::query_scalar(source_filter_query)
+        };
+
+        // TODO: Cache active sources to avoid querying each time
+        let source_ids: Vec<String> = source_filter_query.fetch_all(&self.pool).await?;
+        if !source_ids.is_empty() {
+            debug!("Applying filter for source IDs: {:?}", source_ids);
+            filters.push(format!("source_id = ANY(${})", param_idx));
             param_idx += 1;
+        } else {
+            debug!(
+                "No active sources found. Source type filter: {:?}",
+                source_types
+            );
+            return Ok(vec![]);
         }
 
         if has_content_types {
@@ -216,13 +234,8 @@ impl DocumentRepository {
         let title_query = format!("{}^2", query);
         let mut query = sqlx::query_as::<_, DocumentWithScores>(&full_query)
             .bind(title_query)
-            .bind(query);
-
-        if let Some(src) = source_types {
-            if !src.is_empty() {
-                query = query.bind(src);
-            }
-        }
+            .bind(query)
+            .bind(source_ids);
 
         if let Some(ct) = content_types {
             if !ct.is_empty() {

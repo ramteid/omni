@@ -339,7 +339,10 @@
                             {/if}
                         </p>
                         {#if getTotalSelectedFilters() > 0}
-                            <Button variant="outline" onclick={clearFilters} class="mr-2">
+                            <Button
+                                variant="outline"
+                                onclick={clearFilters}
+                                class="mr-2 cursor-pointer">
                                 Clear Filters
                             </Button>
                         {/if}
@@ -424,7 +427,11 @@
 
                 {#if getTotalSelectedFilters() > 0}
                     <div class="mt-4">
-                        <Button variant="outline" size="sm" onclick={clearFilters} class="w-full">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onclick={clearFilters}
+                            class="w-full cursor-pointer">
                             Clear All Filters
                         </Button>
                     </div>

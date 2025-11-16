@@ -17,8 +17,8 @@ impl Default for HighlightConfig {
         Self {
             start_sel: "**".to_string(),
             stop_sel: "**".to_string(),
-            max_words: 80,
-            min_words: 20,
+            max_words: 20,
+            min_words: 10,
             max_fragments: 3,
             fragment_delimiter: "...".to_string(),
         }

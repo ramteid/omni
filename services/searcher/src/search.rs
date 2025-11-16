@@ -12,7 +12,9 @@ use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
 };
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info};
@@ -809,9 +811,6 @@ impl SearchEngine {
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
         let mut hasher = DefaultHasher::new();
         request.query.hash(&mut hasher);
         request.search_mode().hash(&mut hasher);
