@@ -1,5 +1,6 @@
 import type { Handle, HandleServerError } from '@sveltejs/kit'
 import { sequence } from '@sveltejs/kit/hooks'
+import { redirect } from '@sveltejs/kit'
 import * as auth from '$lib/server/auth.js'
 import { Logger } from '$lib/server/logger.js'
 import { initTelemetry, extractTraceContext, getRequestId } from '$lib/server/telemetry.js'
@@ -26,6 +27,22 @@ const handleAuth: Handle = async ({ event, resolve }) => {
 
     event.locals.user = user
     event.locals.session = session
+    return resolve(event)
+}
+
+const handlePasswordChange: Handle = async ({ event, resolve }) => {
+    const user = event.locals.user
+
+    if (user && user.mustChangePassword) {
+        const isChangePasswordRoute = event.url.pathname === '/change-password'
+        const isLogoutRoute = event.url.pathname === '/logout'
+        const isApiRoute = event.url.pathname.startsWith('/api/')
+
+        if (!isChangePasswordRoute && !isLogoutRoute && !isApiRoute) {
+            throw redirect(302, '/change-password')
+        }
+    }
+
     return resolve(event)
 }
 
@@ -70,7 +87,7 @@ const handleLogging: Handle = async ({ event, resolve }) => {
     return response
 }
 
-export const handle = sequence(handleLogging, handleAuth)
+export const handle = sequence(handleLogging, handleAuth, handlePasswordChange)
 
 export const handleError: HandleServerError = ({ error, event }) => {
     const logger = event.locals.logger || new Logger('error')

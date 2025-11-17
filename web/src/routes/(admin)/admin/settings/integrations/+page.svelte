@@ -185,7 +185,7 @@
                 </div>
             {:else}
                 <div class="py-12 text-center">
-                    <p class="text-muted-foreground">
+                    <p class="text-muted-foreground text-sm">
                         No connected sources yet. Connect an integration below to get started.
                     </p>
                 </div>

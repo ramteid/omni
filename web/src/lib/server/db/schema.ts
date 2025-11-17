@@ -21,6 +21,7 @@ export const user = pgTable('users', {
     isActive: boolean('is_active').notNull().default(true),
     authMethod: text('auth_method').notNull().default('password'),
     domain: text('domain'),
+    mustChangePassword: boolean('must_change_password').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
