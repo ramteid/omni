@@ -5,13 +5,10 @@ with fallback to environment variables.
 """
 
 import time
-from typing import Optional, Dict, Any
+from typing import Optional
 from dataclasses import dataclass
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
 from config import (
-    DATABASE_URL,
     LLM_PROVIDER,
     VLLM_URL,
     ANTHROPIC_API_KEY,
@@ -28,6 +25,7 @@ from config import (
     BEDROCK_EMBEDDING_MODEL_ID,
     AWS_REGION,
 )
+from db import fetch_llm_config, fetch_embedding_config
 
 
 @dataclass
@@ -55,7 +53,6 @@ class LLMConfigCache:
     def __init__(self):
         self._cache: Optional[LLMConfig] = None
         self._cache_timestamp: float = 0
-        self._database_url = DATABASE_URL
 
     def _is_cache_valid(self) -> bool:
         """Check if cache is still valid"""
@@ -64,40 +61,22 @@ class LLMConfigCache:
         elapsed = time.time() - self._cache_timestamp
         return elapsed < self.CACHE_TTL_SECONDS
 
-    def _fetch_from_database(self) -> Optional[LLMConfig]:
+    async def _fetch_from_database(self) -> Optional[LLMConfig]:
         """Fetch LLM configuration from database"""
-        try:
-            conn = psycopg2.connect(self._database_url)
-            try:
-                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                    cursor.execute(
-                        """
-                        SELECT value
-                        FROM configuration
-                        WHERE key = 'llm_config'
-                        LIMIT 1
-                        """
-                    )
-                    row = cursor.fetchone()
+        config_data = await fetch_llm_config()
 
-                    if row and row["value"]:
-                        config_data = row["value"]
-                        return LLMConfig(
-                            provider=config_data.get("provider"),
-                            primary_model_id=config_data.get("primaryModelId"),
-                            secondary_model_id=config_data.get("secondaryModelId"),
-                            vllm_url=config_data.get("vllmUrl"),
-                            anthropic_api_key=config_data.get("anthropicApiKey"),
-                            max_tokens=config_data.get("maxTokens"),
-                            temperature=config_data.get("temperature"),
-                            top_p=config_data.get("topP"),
-                        )
-                    return None
-            finally:
-                conn.close()
-        except Exception as e:
-            print(f"Warning: Failed to fetch LLM config from database: {e}")
-            return None
+        if config_data:
+            return LLMConfig(
+                provider=config_data.get("provider"),
+                primary_model_id=config_data.get("primaryModelId"),
+                secondary_model_id=config_data.get("secondaryModelId"),
+                vllm_url=config_data.get("vllmUrl"),
+                anthropic_api_key=config_data.get("anthropicApiKey"),
+                max_tokens=config_data.get("maxTokens"),
+                temperature=config_data.get("temperature"),
+                top_p=config_data.get("topP"),
+            )
+        return None
 
     def _get_env_fallback_config(self) -> LLMConfig:
         """Get configuration from environment variables as fallback"""
@@ -125,7 +104,7 @@ class LLMConfigCache:
             top_p=DEFAULT_TOP_P,
         )
 
-    def get_config(self) -> LLMConfig:
+    async def get_config(self) -> LLMConfig:
         """
         Get LLM configuration with caching.
         Priority: Database config -> Environment variables
@@ -135,7 +114,7 @@ class LLMConfigCache:
             return self._cache  # type: ignore
 
         # Try to fetch from database
-        db_config = self._fetch_from_database()
+        db_config = await self._fetch_from_database()
 
         if db_config is not None:
             # Use database configuration
@@ -159,9 +138,9 @@ class LLMConfigCache:
 _llm_config_cache = LLMConfigCache()
 
 
-def get_llm_config() -> LLMConfig:
+async def get_llm_config() -> LLMConfig:
     """Get current LLM configuration (with caching)"""
-    return _llm_config_cache.get_config()
+    return await _llm_config_cache.get_config()
 
 
 def invalidate_llm_config_cache():
@@ -191,7 +170,6 @@ class EmbeddingConfigCache:
     def __init__(self):
         self._cache: Optional[EmbeddingConfig] = None
         self._cache_timestamp: float = 0
-        self._database_url = DATABASE_URL
 
     def _is_cache_valid(self) -> bool:
         """Check if cache is still valid"""
@@ -200,37 +178,19 @@ class EmbeddingConfigCache:
         elapsed = time.time() - self._cache_timestamp
         return elapsed < self.CACHE_TTL_SECONDS
 
-    def _fetch_from_database(self) -> Optional[EmbeddingConfig]:
+    async def _fetch_from_database(self) -> Optional[EmbeddingConfig]:
         """Fetch embedding configuration from database"""
-        try:
-            conn = psycopg2.connect(self._database_url)
-            try:
-                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                    cursor.execute(
-                        """
-                        SELECT value
-                        FROM configuration
-                        WHERE key = 'embedding_config'
-                        LIMIT 1
-                        """
-                    )
-                    row = cursor.fetchone()
+        config_data = await fetch_embedding_config()
 
-                    if row and row["value"]:
-                        config_data = row["value"]
-                        return EmbeddingConfig(
-                            provider=config_data.get("provider"),
-                            jina_api_key=config_data.get("jinaApiKey"),
-                            jina_model=config_data.get("jinaModel"),
-                            jina_api_url=config_data.get("jinaApiUrl"),
-                            bedrock_model_id=config_data.get("bedrockModelId"),
-                        )
-                    return None
-            finally:
-                conn.close()
-        except Exception as e:
-            print(f"Warning: Failed to fetch embedding config from database: {e}")
-            return None
+        if config_data:
+            return EmbeddingConfig(
+                provider=config_data.get("provider"),
+                jina_api_key=config_data.get("jinaApiKey"),
+                jina_model=config_data.get("jinaModel"),
+                jina_api_url=config_data.get("jinaApiUrl"),
+                bedrock_model_id=config_data.get("bedrockModelId"),
+            )
+        return None
 
     def _get_env_fallback_config(self) -> EmbeddingConfig:
         """Get configuration from environment variables as fallback"""
@@ -242,7 +202,7 @@ class EmbeddingConfigCache:
             bedrock_model_id=BEDROCK_EMBEDDING_MODEL_ID if BEDROCK_EMBEDDING_MODEL_ID else None,
         )
 
-    def get_config(self) -> EmbeddingConfig:
+    async def get_config(self) -> EmbeddingConfig:
         """
         Get embedding configuration with caching.
         Priority: Database config -> Environment variables
@@ -252,7 +212,7 @@ class EmbeddingConfigCache:
             return self._cache  # type: ignore
 
         # Try to fetch from database
-        db_config = self._fetch_from_database()
+        db_config = await self._fetch_from_database()
 
         if db_config is not None:
             # Use database configuration
@@ -276,9 +236,9 @@ class EmbeddingConfigCache:
 _embedding_config_cache = EmbeddingConfigCache()
 
 
-def get_embedding_config() -> EmbeddingConfig:
+async def get_embedding_config() -> EmbeddingConfig:
     """Get current embedding configuration (with caching)"""
-    return _embedding_config_cache.get_config()
+    return await _embedding_config_cache.get_config()
 
 
 def invalidate_embedding_config_cache():

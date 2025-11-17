@@ -119,7 +119,7 @@ async def startup_event():
 
     # Initialize embedding provider using database configuration (with env fallback)
     try:
-        embedding_config = get_embedding_config()
+        embedding_config = await get_embedding_config()
         logger.info(f"Loaded embedding configuration from database (provider: {embedding_config.provider})")
 
         if embedding_config.provider == "jina":
@@ -152,7 +152,7 @@ async def startup_event():
         logger.info(f"Initialized {embedding_config.provider} embedding provider with model: {app.state.embedding_provider.get_model_name()}")
 
         # Initialize LLM provider using database configuration (with env fallback)
-        llm_config = get_llm_config()
+        llm_config = await get_llm_config()
         logger.info(f"Loaded LLM configuration from database (provider: {llm_config.provider})")
 
         if llm_config.provider == "vllm":
@@ -288,8 +288,8 @@ async def health_check():
     embedding_model = app.state.embedding_provider.get_model_name() if hasattr(app.state, 'embedding_provider') else "unknown"
 
     # Get current configurations
-    llm_config = get_llm_config()
-    embedding_config = get_embedding_config()
+    llm_config = await get_llm_config()
+    embedding_config = await get_embedding_config()
 
     return {
         "status": "healthy",

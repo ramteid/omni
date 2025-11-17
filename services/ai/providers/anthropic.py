@@ -38,9 +38,8 @@ class AnthropicProvider(LLMProvider):
             request_params = {
                 "model": self.model,
                 "messages": msg_list,
-                "max_tokens": max_tokens or 4096,
+                "max_tokens": max_tokens or 8192,
                 "temperature": temperature or 0.7,
-                "top_p": top_p or 0.9,
                 "stream": True,
             }
 
@@ -99,7 +98,6 @@ class AnthropicProvider(LLMProvider):
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens or 4096,
                 temperature=temperature or 0.7,
-                top_p=top_p or 0.9,
                 stream=False,
             )
 
