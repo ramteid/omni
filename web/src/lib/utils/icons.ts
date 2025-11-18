@@ -65,6 +65,7 @@ export function getDocumentIconPath(sourceType: string, contentType: string): st
 
 // Map source types to icon file paths (legacy function, kept for backward compatibility)
 export function getSourceIconPath(sourceType: string): string | null {
+    console.log('fetching source icon for', sourceType)
     switch (sourceType) {
         case SourceType.GOOGLE_DRIVE:
             return googleDriveIcon
@@ -123,7 +124,8 @@ export function parseUrlMetadata(url: string): { sourceType?: string; contentTyp
 }
 
 // Infer source type from URL patterns (fallback)
-export function inferSourceFromUrl(url: string): string | null {
+export function inferSourceFromUrl(url: string): SourceType | null {
+    console.log('inferring source from url', url)
     if (!url) return null
 
     const urlLower = url.toLowerCase()
@@ -135,17 +137,20 @@ export function inferSourceFromUrl(url: string): string | null {
     if (urlLower.includes('mail.google.com') || urlLower.includes('gmail.com'))
         return SourceType.GMAIL
     if (urlLower.includes('slack.com')) return SourceType.SLACK
-    if (urlLower.includes('atlassian.net')) return SourceType.CONFLUENCE
+    if (urlLower.includes('atlassian.net/spaces')) return SourceType.CONFLUENCE
+    if (urlLower.includes('atlassian.net/jira')) return SourceType.JIRA
 
     return null
 }
 
 // Get icon from search result URL (main function for tool-message component)
 export function getIconFromSearchResult(sourceUrl: string): string | null {
+    console.log('get icon from search result', sourceUrl)
     if (!sourceUrl) return null
 
     // First, try to parse metadata from URL hash
     const metadata = parseUrlMetadata(sourceUrl)
+    console.log('metadata', metadata)
 
     // Try to get icon from content_type if available
     if (metadata.contentType) {
@@ -169,4 +174,20 @@ export function getIconFromSearchResult(sourceUrl: string): string | null {
     }
 
     return null
+}
+
+export function getSourceDisplayName(sourceType: SourceType) {
+    console.log('source display name', sourceType)
+    const sourceDisplayNames: Record<string, string> = {
+        [SourceType.GOOGLE_DRIVE]: 'Google Drive',
+        [SourceType.GMAIL]: 'Gmail',
+        [SourceType.CONFLUENCE]: 'Confluence',
+        [SourceType.JIRA]: 'JIRA',
+        [SourceType.SLACK]: 'Slack',
+        [SourceType.GITHUB]: 'GitHub',
+        [SourceType.LOCAL_FILES]: 'Files',
+        [SourceType.WEB]: 'Web',
+    }
+
+    return sourceDisplayNames[sourceType]
 }

@@ -5,8 +5,10 @@
         MessageStreamEvent,
         SearchResultBlockParam,
         TextBlockParam,
+        TextCitationParam,
         ToolUseBlock,
         TextDelta,
+        CitationsDelta,
         InputJSONDelta,
     } from '@anthropic-ai/sdk/resources/messages'
     import {
@@ -15,10 +17,10 @@
         ThumbsDown,
         Share,
         Check,
-        TriangleAlert,
-        AlertCircleIcon,
-        AlertCircle,
         CircleAlert,
+        CircleAlertIcon,
+        ExternalLink,
+        FileText,
     } from '@lucide/svelte'
     import { marked } from 'marked'
     import { onMount } from 'svelte'
@@ -39,6 +41,14 @@
     import { afterNavigate, invalidate } from '$app/navigation'
     import UserInput from '$lib/components/user-input.svelte'
     import * as Alert from '$lib/components/ui/alert'
+    import type { Attachment } from 'svelte/attachments'
+    import * as HoverCard from '$lib/components/ui/hover-card'
+    import {
+        getIconFromSearchResult,
+        getSourceDisplayName,
+        inferSourceFromUrl,
+    } from '$lib/utils/icons'
+    import { SourceType } from '$lib/types'
 
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
@@ -55,6 +65,7 @@
     let error = $state<string | null>(null)
 
     let processedMessages = $derived(processMessages(chatMessages))
+    $inspect(processedMessages)
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
@@ -130,6 +141,26 @@
         return res
     }
 
+    function collectSources(message: ProcessedMessage): TextCitationParam[] {
+        const citations = []
+        const sourceSet = new Set()
+        for (const block of message.content) {
+            if (block.type === 'text' && block.citations) {
+                // TODO: Handle other types of citations if necessary
+                for (const citation of block.citations) {
+                    if (
+                        citation.type === 'search_result_location' &&
+                        !sourceSet.has(citation.source)
+                    ) {
+                        citations.push(citation)
+                        sourceSet.add(citation.source)
+                    }
+                }
+            }
+        }
+        return citations
+    }
+
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
         const processedMessages: ProcessedMessage[] = []
 
@@ -151,9 +182,25 @@
 
             for (const block of message.content) {
                 const lastBlock = messageToUpdate.content[messageToUpdate.content.length - 1]
-                if (lastBlock && lastBlock.type === 'text' && block.type === 'text') {
+                const bothTextBlocks =
+                    lastBlock && lastBlock.type === 'text' && block.type === 'text'
+                const citationsPresent =
+                    lastBlock &&
+                    lastBlock.type === 'text' &&
+                    lastBlock.citations &&
+                    lastBlock.citations.length > 0
+                // If the last block has citations, we want to keep it as a separate block and not combine.
+                // This is because we want to display citations in-line with the content. If we combine, all the citations will appear at the end.
+                const shouldCombine = bothTextBlocks && !citationsPresent
+                if (shouldCombine) {
                     // Combine text blocks
                     lastBlock.text += block.text
+                    if (block.citations) {
+                        if (!lastBlock.citations) {
+                            lastBlock.citations = []
+                        }
+                        lastBlock.citations.push(...block.citations)
+                    }
                 } else {
                     messageToUpdate.content.push({
                         ...block,
@@ -221,12 +268,13 @@
                             id: processedMessage.content.length,
                             type: 'text',
                             text: block.text,
+                            citations: block.citations || [],
                         })
                     } else {
                         // Tool use or result
                         if (block.type === 'tool_use') {
                             // Tool use always comes first, so we create the corresponding output block
-                            const toolComponentData: ToolMessageContent = {
+                            const toolMsgContent: ToolMessageContent = {
                                 id: 0,
                                 type: 'tool',
                                 toolUse: {
@@ -236,7 +284,7 @@
                                 },
                             }
 
-                            processedMessage.content.push(toolComponentData)
+                            processedMessage.content.push(toolMsgContent)
                         } else if (block.type === 'tool_result') {
                             const toolUseId = block.tool_use_id
                             const searchResults = Array.isArray(block.content)
@@ -313,7 +361,12 @@
         let messageEventsReceived = 0
 
         const updateStreamingResponse = (
-            block: ToolUseBlock | TextDelta | InputJSONDelta | ToolResultBlockParam,
+            block:
+                | ToolUseBlock
+                | TextDelta
+                | InputJSONDelta
+                | ToolResultBlockParam
+                | CitationsDelta,
         ) => {
             const lastMessage = chatMessages[chatMessages.length - 1]
             if (!lastMessage) {
@@ -332,6 +385,16 @@
                     existingBlocks.push({
                         type: 'text',
                         text: block.text,
+                    })
+                }
+            } else if (block.type === 'citations_delta') {
+                if (lastBlock && lastBlock.type === 'text') {
+                    lastBlock.citations?.push(block.citation)
+                } else {
+                    existingBlocks.push({
+                        type: 'text',
+                        text: '',
+                        citations: [block.citation],
                     })
                 }
             } else if (block.type === 'tool_use') {
@@ -413,6 +476,8 @@
                     }
                 } else if (data.type === 'content_block_delta') {
                     if (data.delta.type === 'text_delta' && data.delta.text) {
+                        updateStreamingResponse(data.delta)
+                    } else if (data.delta.type === 'citations_delta') {
                         updateStreamingResponse(data.delta)
                     } else if (data.delta.type === 'input_json_delta') {
                         // Parse partial JSON to show search query if possible
@@ -499,6 +564,68 @@
 
             // Start streaming AI response
             streamResponse(data.chat.id)
+        }
+    }
+
+    // const attachInlineCitations: Attachment = (container: Element) => {
+    //     console.log('attach citations called on', container)
+    //     const inlineCitations = container.querySelectorAll('.inline-citation')
+    //     console.log('found inline citations', inlineCitations.length)
+    //     let lastChild
+    //     for (const child of container.childNodes) {
+    //         if (child instanceof HTMLElement && !child.classList.contains('inline-citation')) {
+    //             lastChild = child
+    //         }
+    //     }
+
+    //     if (lastChild) {
+    //         console.log('found last child')
+    //         // Add all citations to the last child
+    //         for (const inlineCitation of inlineCitations) {
+    //             container.removeChild(inlineCitation)
+    //             lastChild.appendChild(inlineCitation)
+    //         }
+    //     }
+
+    //     return () => {}
+    // }
+
+    // Remove markdown annotations, reduce consecutive whitespace to a single space, truncate to 80 chars
+    function sanitizeCitedText(text: string) {
+        // Remove markdown formatting
+        let sanitized = text
+            // Remove bold/italic markers
+            .replace(/\*\*([^*]+)\*\*/g, '$1') // **bold**
+            .replace(/\*([^*]+)\*/g, '$1') // *italic*
+            .replace(/__([^_]+)__/g, '$1') // __bold__
+            .replace(/_([^_]+)_/g, '$1') // _italic_
+            // Remove links [text](url)
+            .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+            // Remove inline code
+            .replace(/`([^`]+)`/g, '$1')
+            // Remove headers
+            .replace(/^#+\s+/gm, '')
+            // Replace multiple ellipses with single ellipsis
+            .replace(/\.{2,}/g, '... ')
+            // Reduce consecutive whitespace to single space
+            .replace(/\s+/g, ' ')
+            // Trim
+            .trim()
+
+        // Truncate to 80 chars with ellipsis
+        if (sanitized.length > 80) {
+            sanitized = sanitized.substring(0, 80) + '...'
+        }
+
+        return sanitized
+    }
+
+    function extractDomain(url: string): string {
+        try {
+            const urlObj = new URL(url)
+            return urlObj.hostname
+        } catch {
+            return ''
         }
     }
 </script>
@@ -597,10 +724,91 @@
     </div>
 {/snippet}
 
+{#snippet inlineCitations(citations: TextCitationParam[])}
+    {#if citations.length > 0}
+        <div class="not-prose inline-citation inline-flex items-start">
+            {#each citations as citation}
+                {#if citation.type === 'search_result_location'}
+                    <HoverCard.Root>
+                        <HoverCard.Trigger
+                            href={citation.source}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            class="border-primary/10 bg-muted text-muted-foreground hover:border-primary/20 hover:text-foreground/80 inline-block max-w-36 items-center 
+                            gap-1 truncate overflow-hidden rounded-lg border px-1 py-0.5 text-xs no-underline 
+                            transition-colors">
+                            {extractDomain(citation.source)}
+                        </HoverCard.Trigger>
+                        <HoverCard.Content>
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center gap-1">
+                                    {#if getIconFromSearchResult(citation.source)}
+                                        <img
+                                            src={getIconFromSearchResult(citation.source)}
+                                            alt=""
+                                            class="!m-0 h-4 w-4 flex-shrink-0" />
+                                    {:else}
+                                        <FileText
+                                            class="text-muted-foreground h-4 w-4 flex-shrink-0" />
+                                    {/if}
+                                    <h4 class="text-muted-foreground text-xs font-semibold">
+                                        {getSourceDisplayName(
+                                            inferSourceFromUrl(citation.source) ||
+                                                SourceType.LOCAL_FILES,
+                                        )}
+                                    </h4>
+                                </div>
+                                <h4 class="truncate overflow-hidden text-sm font-semibold">
+                                    {citation.title}
+                                </h4>
+                                <div
+                                    class="text-muted-foreground overflow-hidden text-xs whitespace-break-spaces">
+                                    {sanitizeCitedText(citation.cited_text)}
+                                </div>
+                            </div>
+                        </HoverCard.Content>
+                    </HoverCard.Root>
+                {/if}
+            {/each}
+        </div>
+    {/if}
+{/snippet}
+
+{#snippet sourcesSection(citations: TextCitationParam[])}
+    {#if citations.length > 0}
+        <div class="mt-4 flex flex-col gap-1.5">
+            <p class="text-muted-foreground text-xs font-bold uppercase">Sources</p>
+            <div class="flex gap-1">
+                {#each citations as citation}
+                    {#if citation.type === 'search_result_location'}
+                        <a
+                            href={citation.source}
+                            class="border-primary/10 hover:border-primary/20 hover:bg-muted/40 rounded-lg border p-2 px-2.5 text-xs font-normal no-underline transition-colors">
+                            <div class="flex items-center gap-1">
+                                {#if getIconFromSearchResult(citation.source)}
+                                    <img
+                                        src={getIconFromSearchResult(citation.source)}
+                                        alt=""
+                                        class="!m-0 h-4 w-4 flex-shrink-0" />
+                                {:else}
+                                    <FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
+                                {/if}
+                                <h1 class="text-muted-foreground text-sm font-semibold">
+                                    {citation.title}
+                                </h1>
+                            </div>
+                        </a>
+                    {/if}
+                {/each}
+            </div>
+        </div>
+    {/if}
+{/snippet}
+
 <div class="flex h-full flex-col">
     <!-- Chat Container -->
     <div bind:this={chatContainerRef} class="flex w-full flex-1 flex-col overflow-y-auto px-4 pt-6">
-        <div class="mx-auto mb-20 flex w-full max-w-4xl flex-1 flex-col gap-8">
+        <div class="mx-auto mb-20 flex w-full max-w-4xl flex-1 flex-col gap-6">
             <!-- Existing Messages -->
             {#each processedMessages as message, i (message.id)}
                 {#if message.role === 'user'}
@@ -627,12 +835,17 @@
                 {:else if message.role === 'assistant'}
                     <!-- Assistant Message -->
                     <div class="flex flex-col gap-1">
-                        <div class="prose max-w-none">
+                        <div class="prose prose-p:my-3 max-w-none">
                             {#each message.content as block (block.id)}
                                 {#if block.type === 'text'}
-                                    {@html marked.parse(
-                                        stripThinkingContent(block.text, 'thinking'),
-                                    )}
+                                    <div>
+                                        {@html marked.parse(
+                                            stripThinkingContent(block.text, 'thinking'),
+                                        )}
+                                        {#if block.citations}
+                                            {@render inlineCitations(block.citations)}
+                                        {/if}
+                                    </div>
                                 {:else if block.type === 'tool'}
                                     <div class="mb-1">
                                         <ToolMessage message={block} />
@@ -640,6 +853,7 @@
                                 {/if}
                             {/each}
                         </div>
+                        {@render sourcesSection(collectSources(message))}
                         {#if !(isStreaming && i === processedMessages.length - 1)}
                             {@render messageControls(message)}
                         {/if}

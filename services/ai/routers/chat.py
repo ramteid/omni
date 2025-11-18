@@ -15,6 +15,13 @@ from anthropic.types import (
     MessageParam, 
     TextBlockParam,
     ToolUseBlockParam,
+    TextCitationParam,
+    CitationCharLocationParam,
+    CitationPageLocationParam,
+    CitationContentBlockLocationParam,
+    CitationSearchResultLocationParam,
+    CitationWebSearchResultLocationParam,
+    CitationsDelta,
     ToolResultBlockParam,
     SearchResultBlockParam,
     CitationsConfigParam,
@@ -84,6 +91,56 @@ SEARCH_TOOLS = [
         }
     }
 ]
+
+def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationParam:
+    citation = citation_delta.citation
+    if citation.type == 'char_location':
+        return CitationCharLocationParam(
+            type='char_location',
+            start_char_index=citation.start_char_index,
+            end_char_index=citation.end_char_index,
+            document_title=citation.document_title,
+            document_index=citation.document_index,
+            cited_text=citation.cited_text
+        )
+    elif citation.type == 'page_location':
+        return CitationPageLocationParam(
+            type='page_location',
+            start_page_number=citation.start_page_number,
+            end_page_number=citation.end_page_number,
+            document_title=citation.document_title,
+            document_index=citation.document_index,
+            cited_text=citation.cited_text
+        )
+    elif citation.type == 'content_block_location':
+        return CitationContentBlockLocationParam(
+            type='content_block_location',
+            start_block_index=citation.start_block_index,
+            end_block_index=citation.end_block_index,
+            document_title=citation.document_title,
+            document_index=citation.document_index,
+            cited_text=citation.cited_text
+        )
+    elif citation.type == 'search_result_location':
+        return CitationSearchResultLocationParam(
+            type='search_result_location',
+            start_block_index=citation.start_block_index,
+            end_block_index=citation.end_block_index,
+            search_result_index=citation.search_result_index,
+            title=citation.title,
+            source=citation.source,
+            cited_text=citation.cited_text,
+        )
+    elif citation.type == 'web_search_result_location':
+        return CitationWebSearchResultLocationParam(
+            type='web_search_result_location',
+            url=citation.url,
+            title=citation.title,
+            encrypted_index=citation.encrypted_index,
+            cited_text=citation.cited_text,
+        )
+    else:
+        raise ValueError(f"Unknown citation type: {citation.type}")
 
 
 @router.get("/chat/{chat_id}/stream")
@@ -186,11 +243,20 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                             text_block['text'] += event.delta.text
                         elif event.delta.type == 'input_json_delta':
                             if event.index >= len(content_blocks):
-                                # This should never happen in the case of tool calls, but handle it anyway
+                                # This should never happen in the case of tool calls, because the start event will add a new entry in content blocks, but we handle it anyway
                                 logger.warning(f"[ASK] Received input JSON delta for unknown content block index {event.index}, creating new tool use block")
                                 content_blocks.append(ToolUseBlockParam(type='tool_use', id='', name='', input=''))
                             tool_use_block = cast(ToolUseBlockParam, content_blocks[event.index])
                             tool_use_block['input'] = cast(str, tool_use_block['input']) + event.delta.partial_json
+                        elif event.delta.type == 'citations_delta':
+                            if event.index >= len(content_blocks):
+                                logger.warning(f"[ASK] Received citations delta for unknown content block index {event.index}, creating new citations block")
+                                content_blocks.append(TextBlockParam(type='text', text='', citations=[]))
+                            text_block = cast(TextBlockParam, content_blocks[event.index])
+                            if 'citations' not in text_block or not text_block['citations']:
+                                text_block['citations'] = []
+                            citations = cast(List[TextCitationParam], text_block['citations'])
+                            citations.append(convert_citation_to_param(event.delta))
                     elif event.type == 'content_block_start':
                         if event.content_block.type == 'text':
                             logger.info(f"[ASK] Text block start: {event.content_block.text}")

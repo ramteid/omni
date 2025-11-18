@@ -19,14 +19,14 @@
     let contentRef: HTMLDivElement | undefined = $state()
     let searchProgress = $state('')
 
-    // Start streaming AI-first answer automatically when component mounts
+    // Start streaming AI response automatically when component mounts
     $effect(() => {
         if (query.trim()) {
-            streamAIFirstAnswer()
+            streamResponse()
         }
     })
 
-    async function streamAIFirstAnswer() {
+    async function streamResponse() {
         isLoading = true
         answer = ''
         error = null

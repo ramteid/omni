@@ -1,7 +1,10 @@
+import type { TextCitationParam } from '@anthropic-ai/sdk/resources/messages'
+
 export type TextMessageContent = {
     id: number
     type: 'text'
     text: string
+    citations?: Array<TextCitationParam>
 }
 
 export type ToolMessageContent = {
