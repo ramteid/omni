@@ -37,7 +37,10 @@
     import { page } from '$app/state'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import { type ChatMessage } from '$lib/server/db/schema'
-    import type { ContentBlockParam } from '@anthropic-ai/sdk/resources.js'
+    import type {
+        CitationSearchResultLocationParam,
+        ContentBlockParam,
+    } from '@anthropic-ai/sdk/resources.js'
     import { afterNavigate, invalidate } from '$app/navigation'
     import UserInput from '$lib/components/user-input.svelte'
     import * as Alert from '$lib/components/ui/alert'
@@ -163,6 +166,8 @@
         return citations
     }
 
+    // Converts messages into a format that makes it easy to render the messages
+    // E.g., combines multiple content blocks into a single content block, handles citations, etc.
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
         const processedMessages: ProcessedMessage[] = []
 
@@ -219,7 +224,7 @@
         const messages = chatMessages.map((m) => m.message)
         for (let i = 0; i < messages.length; i++) {
             const message = messages[i]
-            const messageCitations = [] // All citations in this message
+            const messageCitations: TextCitationParam[] = [] // All citations in this message
             if (isUserMessage(message)) {
                 // User messages are expected to contain only text blocks
                 const userMessageContent: MessageContent =
@@ -259,9 +264,20 @@
                     if (block.type === 'text') {
                         let citationTxt = ''
                         for (const citation of block.citations || []) {
-                            const citationIdx = messageCitations.length
-                            messageCitations.push(citation)
-                            citationTxt += ` [${citationIdx}]`
+                            if (citation.type === 'search_result_location') {
+                                const existingCitationIdx = messageCitations.findIndex(
+                                    (c) =>
+                                        c.type === 'search_result_location' &&
+                                        c.source === citation.source,
+                                )
+                                if (existingCitationIdx !== -1) {
+                                    citationTxt += ` [${existingCitationIdx}]`
+                                } else {
+                                    const citationIdx = messageCitations.length
+                                    messageCitations.push(citation)
+                                    citationTxt += ` [${citationIdx}]`
+                                }
+                            }
                         }
                         processedMessage.content.push({
                             id: processedMessage.content.length,
@@ -779,67 +795,20 @@
     </div>
 {/snippet}
 
-{#snippet inlineCitations(citations: TextCitationParam[])}
-    {#if citations.length > 0}
-        <span class="not-prose inline-citation ml-1 inline-flex items-start">
-            {#each citations as citation}
-                {#if citation.type === 'search_result_location'}
-                    <HoverCard.Root>
-                        <HoverCard.Trigger
-                            href={citation.source}
-                            target="_blank"
-                            rel="noreferrer noopener"
-                            class="border-primary/10 bg-muted text-muted-foreground hover:border-primary/20 hover:text-foreground/80 inline-block max-w-36 items-center 
-                            gap-1 truncate overflow-hidden rounded-lg border px-1 py-0.5 text-xs no-underline 
-                            transition-colors">
-                            {extractDomain(citation.source)}
-                        </HoverCard.Trigger>
-                        <HoverCard.Content>
-                            <div class="flex flex-col gap-1">
-                                <div class="flex items-center gap-1">
-                                    {#if getIconFromSearchResult(citation.source)}
-                                        <img
-                                            src={getIconFromSearchResult(citation.source)}
-                                            alt=""
-                                            class="!m-0 h-4 w-4 flex-shrink-0" />
-                                    {:else}
-                                        <FileText
-                                            class="text-muted-foreground h-4 w-4 flex-shrink-0" />
-                                    {/if}
-                                    <h4 class="text-muted-foreground text-xs font-semibold">
-                                        {getSourceDisplayName(
-                                            inferSourceFromUrl(citation.source) ||
-                                                SourceType.LOCAL_FILES,
-                                        )}
-                                    </h4>
-                                </div>
-                                <h4 class="truncate overflow-hidden text-sm font-semibold">
-                                    {citation.title}
-                                </h4>
-                                <div
-                                    class="text-muted-foreground overflow-hidden text-xs whitespace-break-spaces">
-                                    {sanitizeCitedText(citation.cited_text)}
-                                </div>
-                            </div>
-                        </HoverCard.Content>
-                    </HoverCard.Root>
-                {/if}
-            {/each}
-        </span>
-    {/if}
-{/snippet}
-
 {#snippet sourcesSection(citations: TextCitationParam[])}
     {#if citations.length > 0}
         <div class="flex flex-col gap-1.5">
-            <p class="text-muted-foreground text-xs font-bold uppercase">Sources</p>
+            <p class="text-muted-foreground pl-1 text-xs font-bold uppercase">Sources</p>
             <div class="flex gap-1">
-                {#each citations as citation}
+                {#each citations as citation, idx}
                     {#if citation.type === 'search_result_location'}
                         <a
                             href={citation.source}
-                            class="border-primary/10 hover:border-primary/20 hover:bg-muted/40 rounded-lg border p-2 px-2.5 text-xs font-normal no-underline transition-colors">
+                            class="border-primary/10 hover:border-primary/20 hover:bg-muted/40 rounded-lg border p-2 px-2.5 text-xs font-normal no-underline transition-colors"
+                            target="_blank"
+                            rel="noopener noreferrer">
                             <div class="flex items-center gap-1">
+                                <div class="text-muted-foreground text-sm">[{idx}]</div>
                                 {#if getIconFromSearchResult(citation.source)}
                                     <img
                                         src={getIconFromSearchResult(citation.source)}
