@@ -33,8 +33,5 @@ RUN npm ci --only=production && npm cache clean --force
 COPY --from=builder /app/build ./build
 COPY --from=builder /app/static ./static
 
-# Expose port (SvelteKit production server)
-EXPOSE ${WEB_PORT}
-
 # Start the application
 CMD ["node", "build"]
