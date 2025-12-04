@@ -37,37 +37,39 @@ def handler(event, context):
         task_arn = response['tasks'][0]['taskArn']
         print(f"Started migration task: {task_arn}")
 
-        # Wait for task completion
-        waiter = ecs.get_waiter('tasks_stopped')
-        waiter.wait(
-            cluster=cluster,
-            tasks=[task_arn],
-            WaiterConfig={
-                'Delay': 10,
-                'MaxAttempts': 60  # 10 minutes max wait
-            }
-        )
+        # Wait a few seconds to ensure the task started successfully
+        time.sleep(10)
 
-        # Check task exit status
+        # Check if task is running or has already completed
         task_status = ecs.describe_tasks(
             cluster=cluster,
             tasks=[task_arn]
         )
 
+        if not task_status['tasks']:
+            raise Exception(f"Task {task_arn} not found after starting")
+
         task = task_status['tasks'][0]
+        last_status = task.get('lastStatus', 'UNKNOWN')
 
-        # Check container exit code
-        for container in task['containers']:
-            if container.get('exitCode', 0) != 0:
-                raise Exception(f"Migration failed with exit code: {container.get('exitCode')}")
+        print(f"Task {task_arn} status: {last_status}")
 
-        print("Migration completed successfully")
+        # If task already stopped, check exit code
+        if last_status == 'STOPPED':
+            for container in task['containers']:
+                exit_code = container.get('exitCode', 0)
+                if exit_code != 0:
+                    raise Exception(f"Migration task failed with exit code: {exit_code}")
+            print("Migration task completed successfully")
+        else:
+            print(f"Migration task is {last_status}. It will complete asynchronously.")
 
         return {
             'statusCode': 200,
             'body': json.dumps({
-                'message': 'Migration completed successfully',
-                'taskArn': task_arn
+                'message': 'Migration task started successfully',
+                'taskArn': task_arn,
+                'status': last_status
             })
         }
 

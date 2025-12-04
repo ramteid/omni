@@ -128,3 +128,53 @@ resource "aws_ecs_service" "google_connector" {
     Name = "omni-${var.customer_name}-google-connector"
   })
 }
+
+# Atlassian Connector Service
+resource "aws_ecs_service" "atlassian_connector" {
+  name            = "omni-${var.customer_name}-atlassian-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.atlassian_connector.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.atlassian_connector.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-atlassian-connector"
+  })
+}
+
+# Web Connector Service
+resource "aws_ecs_service" "web_connector" {
+  name            = "omni-${var.customer_name}-web-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.web_connector.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.web_connector.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-web-connector"
+  })
+}

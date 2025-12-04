@@ -63,7 +63,7 @@ resource "aws_lambda_function" "migrator" {
   role          = aws_iam_role.lambda_execution.arn
   handler       = "index.handler"
   runtime       = "python3.11"
-  timeout       = 600
+  timeout       = 30
 
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 

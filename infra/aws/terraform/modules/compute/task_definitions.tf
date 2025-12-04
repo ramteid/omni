@@ -90,6 +90,9 @@ resource "aws_ecs_task_definition" "web" {
       { name = "INDEXER_URL", value = "http://indexer.omni-${var.customer_name}.local:3002" },
       { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
       { name = "GOOGLE_CONNECTOR_URL", value = "http://google-connector.omni-${var.customer_name}.local:3004" },
+      { name = "SLACK_CONNECTOR_URL", value = "http://slack-connector.omni-${var.customer_name}.local:3007" },
+      { name = "ATLASSIAN_CONNECTOR_URL", value = "http://atlassian-connector.omni-${var.customer_name}.local:3005" },
+      { name = "WEB_CONNECTOR_URL", value = "http://web-connector.omni-${var.customer_name}.local:3006" },
       { name = "SESSION_COOKIE_NAME", value = "omni_session" },
       { name = "SESSION_DURATION_DAYS", value = "30" },
       { name = "ORIGIN", value = local.app_url },
@@ -331,5 +334,99 @@ resource "aws_ecs_task_definition" "google_connector" {
 
   tags = merge(local.common_tags, {
     Name = "omni-${var.customer_name}-google-connector"
+  })
+}
+
+# Atlassian Connector Task Definition
+resource "aws_ecs_task_definition" "atlassian_connector" {
+  family                   = "omni-${var.customer_name}-atlassian-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-atlassian-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-atlassian-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 3005
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "atlassian-connector"
+      }
+    }
+
+    environment = concat(local.common_environment, [
+      { name = "PORT", value = "3005" },
+      # Storage configuration
+      { name = "STORAGE_BACKEND", value = "s3" },
+      { name = "S3_BUCKET", value = var.content_bucket_name },
+      { name = "S3_REGION", value = var.region }
+    ])
+
+    secrets = concat(local.common_secrets, [
+      { name = "ENCRYPTION_KEY", valueFrom = "${var.encryption_key_arn}:key::" },
+      { name = "ENCRYPTION_SALT", valueFrom = "${var.encryption_salt_arn}:salt::" }
+    ])
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-atlassian-connector"
+  })
+}
+
+# Web Connector Task Definition
+resource "aws_ecs_task_definition" "web_connector" {
+  family                   = "omni-${var.customer_name}-web-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-web-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-web-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 3006
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "web-connector"
+      }
+    }
+
+    environment = concat(local.common_environment, [
+      { name = "PORT", value = "3006" },
+      { name = "WEB_SYNC_INTERVAL_SECONDS", value = "86400" },
+      # Storage configuration
+      { name = "STORAGE_BACKEND", value = "s3" },
+      { name = "S3_BUCKET", value = var.content_bucket_name },
+      { name = "S3_REGION", value = var.region }
+    ])
+
+    secrets = local.common_secrets
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-web-connector"
   })
 }
