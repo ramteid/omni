@@ -15,11 +15,11 @@ WORKDIR /app
 # Copy requirements and create CPU-only version
 COPY requirements.txt requirements-original.txt
 
-# Create CPU-only requirements by removing GPU-specific packages
-RUN grep -v -E "(flash-attn|nvidia-|triton)" requirements-original.txt > requirements-cpu.txt
+# Create CPU-only requirements by removing GPU-specific packages and torch
+RUN grep -v -E "(flash-attn|nvidia-|triton|^torch==)" requirements-original.txt > requirements-cpu.txt
 
-# Install CPU-only PyTorch (much smaller - ~200MB vs 3GB+)
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Install CPU-only PyTorch first
+RUN pip install --no-cache-dir torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements-cpu.txt
