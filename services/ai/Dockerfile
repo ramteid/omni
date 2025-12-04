@@ -1,13 +1,13 @@
-FROM python:3.12-slim
+# Build stage
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -24,9 +24,26 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
 # Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements-cpu.txt
 
+# Runtime stage
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install only runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy Python packages from builder
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
 # Copy application code
 COPY . .
 
 # Run the application
-# Use AI_WORKERS environment variable for number of workers (defaults to 1)
-CMD sh -c "python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${AI_WORKERS:-1}"
+# PORT and AI_WORKERS must be provided at runtime via environment variables
+CMD sh -c "python -m uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers ${AI_WORKERS:-1}"
