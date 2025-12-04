@@ -130,7 +130,7 @@ export const actions: Actions = {
         // Redirect based on whether this was the first user
         if (isFirstUser) {
             // Redirect first admin to integrations page to set up data sources
-            throw redirect(302, '/admin/integrations')
+            throw redirect(302, '/admin/settings')
         } else {
             // Redirect regular users to home page
             throw redirect(302, '/')
