@@ -35,11 +35,11 @@ Omni can be deployed entirely on your own infra. See our deployment guides below
 ## Supported Integrations
 
 ### Phase 1 (Available)
-- ✅ **Google Workspace** - Drive, Docs, Gmail
-- ✅ **Slack** - Messages, files, channels
-- ✅ **Confluence** - Pages, attachments, spaces
-- ✅ **Jira** - Issues and projects
-- ✅ **Local Files** - File system indexing
+- **Google Workspace** - Drive, Docs, Gmail
+- **Slack** - Messages, files, channels
+- **Confluence** - Pages, attachments, spaces
+- **Jira** - Issues and projects
+- **Local Files** - File system indexing
 
 ### Phase 2 (Coming Soon)
 - **GitHub** - Repositories, issues, pull requests

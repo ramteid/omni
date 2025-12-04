@@ -41,36 +41,49 @@ services:
   # Update database URLs for all services in dev
 
   migrator:
+    build:
+      context: ..
+      dockerfile: services/migrations/Dockerfile
     environment:
       <<: *dev-database-url
 
   searcher:
+    build:
+      context: ..
+      dockerfile: services/searcher/Dockerfile
     ports:
       - "${SEARCHER_PORT}:${SEARCHER_PORT}"
     environment:
       <<: *dev-database-url
+      RUST_BACKTRACE: full
 
   indexer:
+    build:
+      context: ..
+      dockerfile: services/indexer/Dockerfile
     ports:
       - "${INDEXER_PORT}:${INDEXER_PORT}"
     environment:
       <<: *dev-database-url
+      RUST_BACKTRACE: full
 
   ai:
+    build:
+      context: ../services/ai
+      dockerfile: Dockerfile
     ports:
       - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     environment:
       <<: *dev-database-url
       VLLM_URL: http://localhost:8000  # Dummy URL for dev
       LOG_LEVEL: debug
-
     volumes:
       - ../services/ai:/app
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
   google-connector:
     build:
-      context: ../
+      context: ..
       dockerfile: connectors/google/Dockerfile
       args:
         BUILD_MODE: debug
@@ -79,20 +92,26 @@ services:
       RUST_BACKTRACE: full
 
   slack-connector:
+    build:
+      context: ..
+      dockerfile: connectors/slack/Dockerfile
     environment:
       <<: *dev-database-url
+      RUST_BACKTRACE: full
     profiles:
       - production
 
   atlassian-connector:
+    build:
+      context: ..
+      dockerfile: connectors/atlassian/Dockerfile
     environment:
       <<: *dev-database-url
-    profiles:
-      - production
+      RUST_BACKTRACE: full
 
   web-connector:
     build:
-      context: ../
+      context: ..
       dockerfile: connectors/web/Dockerfile
       args:
         BUILD_MODE: debug

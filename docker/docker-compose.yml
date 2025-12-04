@@ -58,10 +58,7 @@ services:
       retries: 5
 
   migrator:
-    build:
-      context: ..
-      dockerfile: services/migrations/Dockerfile
-    image: omni-migrator
+    image: ghcr.io/getomnico/omni/omni-migrator:latest
     container_name: omni-migrator
     environment:
       <<: *db-config
@@ -74,10 +71,7 @@ services:
 
   # Core Services
   searcher:
-    build:
-      context: ..
-      dockerfile: services/searcher/Dockerfile
-    image: omni-searcher
+    image: ghcr.io/getomnico/omni/omni-searcher:latest
     container_name: omni-searcher
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
@@ -99,10 +93,7 @@ services:
     restart: unless-stopped
 
   indexer:
-    build:
-      context: ..
-      dockerfile: services/indexer/Dockerfile
-    image: omni-indexer
+    image: ghcr.io/getomnico/omni/omni-indexer:latest
     container_name: omni-indexer
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
@@ -123,10 +114,7 @@ services:
     restart: unless-stopped
 
   ai:
-    build:
-      context: ../services/ai
-      dockerfile: Dockerfile
-    image: omni-ai
+    image: ghcr.io/getomnico/omni/omni-ai:latest
     container_name: omni-ai
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
@@ -208,10 +196,7 @@ services:
 
   # Connector Services
   google-connector:
-    build:
-      context: ..
-      dockerfile: connectors/google/Dockerfile
-    image: omni-google-connector
+    image: ghcr.io/getomnico/omni/omni-google-connector:latest
     container_name: omni-google-connector
     environment:
       <<: [*db-config, *redis-config, *otel-config, *storage-config]
@@ -236,10 +221,7 @@ services:
     restart: unless-stopped
 
   slack-connector:
-    build:
-      context: ..
-      dockerfile: connectors/slack/Dockerfile
-    image: omni-slack-connector
+    image: ghcr.io/getomnico/omni/omni-slack-connector:latest
     container_name: omni-slack-connector
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
@@ -258,10 +240,7 @@ services:
     restart: unless-stopped
 
   atlassian-connector:
-    build:
-      context: ..
-      dockerfile: connectors/atlassian/Dockerfile
-    image: omni-atlassian-connector
+    image: ghcr.io/getomnico/omni/omni-atlassian-connector:latest
     container_name: omni-atlassian-connector
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
@@ -284,10 +263,7 @@ services:
     restart: unless-stopped
 
   web-connector:
-    build:
-      context: ..
-      dockerfile: connectors/web/Dockerfile
-    image: omni-web-connector
+    image: ghcr.io/getomnico/omni/omni-web-connector:latest
     container_name: omni-web-connector
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
@@ -307,9 +283,7 @@ services:
 
   # Web Application (SvelteKit frontend + backend)
   web:
-    build:
-      context: ../web
-    image: omni-web
+    image: ghcr.io/getomnico/omni/omni-web:latest
     container_name: omni-web
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
