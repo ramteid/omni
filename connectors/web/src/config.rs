@@ -43,7 +43,7 @@ impl WebSourceConfig {
             .with_respect_robots_txt(self.respect_robots_txt)
             .with_subdomains(self.include_subdomains)
             .with_depth(self.max_depth)
-            .with_delay(300);
+            .with_delay(100);
 
         if let Some(user_agent) = &self.user_agent {
             website.with_user_agent(Some(user_agent.as_str()));

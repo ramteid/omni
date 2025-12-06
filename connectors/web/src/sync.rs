@@ -235,6 +235,8 @@ impl SyncManager {
                     {
                         error!("Failed to process page {}: {}", page_url, e)
                     }
+
+                    debug!("Processed page {:?} [url={}]", page_title, page_url);
                 }
             }
         });

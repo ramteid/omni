@@ -21,16 +21,44 @@
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
-    import { invalidate } from '$app/navigation'
-    import { onMount } from 'svelte'
+    import { onMount, onDestroy } from 'svelte'
+    import type { SyncRun } from '$lib/server/db/schema'
 
     let { data }: PageProps = $props()
 
+    let runningSyncs = $state<Map<string, SyncRun>>(data.runningSyncs)
+    let eventSource = $state<EventSource | null>(null)
+
     onMount(() => {
-        const interval = setInterval(() => {
-            invalidate('/admin/settings/integrations')
-        }, 30000)
-        return () => clearInterval(interval)
+        // Set up Server-Sent Events for real-time sync status updates
+        eventSource = new EventSource('/api/indexing/status')
+        eventSource.onmessage = (event) => {
+            try {
+                const statusData = JSON.parse(event.data)
+                if (statusData.overall?.latestSyncRuns) {
+                    // Update running syncs from SSE data
+                    const newRunningSyncs = new Map<string, SyncRun>()
+                    statusData.overall.latestSyncRuns.forEach((sync: any) => {
+                        if (sync.status === 'running') {
+                            newRunningSyncs.set(sync.sourceId, sync)
+                        }
+                    })
+                    runningSyncs = newRunningSyncs
+                }
+            } catch (error) {
+                console.error('Error parsing SSE data:', error)
+            }
+        }
+
+        eventSource.onerror = (error) => {
+            console.error('EventSource error:', error)
+        }
+    })
+
+    onDestroy(() => {
+        if (eventSource) {
+            eventSource.close()
+        }
     })
 
     async function handleSync(sourceId: string) {
@@ -41,7 +69,7 @@
             if (!response.ok) {
                 console.error('Failed to trigger sync')
             }
-            invalidate('/admin/settings/integrations')
+            // SSE will handle the real-time update
         } catch (error) {
             console.error('Error triggering sync:', error)
         }
@@ -188,9 +216,9 @@
                                     </div>
                                     <div
                                         class="text-muted-foreground flex items-center gap-2 text-xs">
-                                        {#if data.runningSyncs.has(source.id)}
+                                        {#if runningSyncs.has(source.id)}
                                             <span
-                                                >Syncing now... ({data.runningSyncs.get(source.id)
+                                                >Syncing now... ({runningSyncs.get(source.id)
                                                     ?.documentsProcessed ?? 0} documents processed)</span>
                                         {:else}
                                             <span>Last sync: {formatDate(source.lastSyncAt)}</span>
@@ -203,7 +231,7 @@
                                     variant="outline"
                                     size="sm"
                                     class="cursor-pointer"
-                                    disabled={data.runningSyncs.has(source.id)}
+                                    disabled={runningSyncs.has(source.id)}
                                     onclick={() => handleSync(source.id)}>
                                     Sync
                                 </Button>

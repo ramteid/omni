@@ -21,5 +21,4 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY --from=builder /app/target/release/omni-web-connector /usr/local/bin/omni-web-connector
 
-EXPOSE 8083
 CMD ["omni-web-connector"]
