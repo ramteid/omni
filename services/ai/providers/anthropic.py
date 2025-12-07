@@ -20,6 +20,37 @@ class AnthropicProvider(LLMProvider):
         self.client = AsyncAnthropic(api_key=api_key)
         self.model = model
 
+    def add_cache_control(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
+        """Remove all existing cache control blocks and add them only to the last message and last tool."""
+        # Remove cache control from all message content blocks
+        for msg in messages:
+            if 'content' in msg and isinstance(msg['content'], list):
+                for block in msg['content']:
+                    if isinstance(block, dict) and 'cache_control' in block:
+                        del block['cache_control']
+
+        # Remove cache control from all tools
+        if tools:
+            for tool in tools:
+                if 'cache_control' in tool:
+                    del tool['cache_control']
+
+        # Add cache control to last message's last content block
+        if messages:
+            last_msg = messages[-1]
+            if 'content' in last_msg and isinstance(last_msg['content'], list):
+                last_msg_blocks = last_msg['content']
+                if len(last_msg_blocks) > 0:
+                    last_msg_blocks[-1]['cache_control'] = {'type': 'ephemeral'}
+
+        # Add cache control to last tool
+        if tools and len(tools) > 0:
+            tools[-1]['cache_control'] = {'type': 'ephemeral'}
+
     async def stream_response(
         self,
         prompt: str,
@@ -34,12 +65,8 @@ class AnthropicProvider(LLMProvider):
             # Use provided messages or create from prompt
             msg_list = messages or [{"role": "user", "content": [ { "type": "text", "text": prompt } ]}]
 
-            # Add prompt caching field
-            last_msg = msg_list[-1]
-            if 'content' in last_msg and isinstance(last_msg['content'], list):
-                last_msg_blocks = last_msg['content']
-                if len(last_msg_blocks) > 0:
-                    last_msg_blocks[-1]['cache_control'] = { 'type': 'ephemeral' }
+            # Add cache control blocks (removes old ones first)
+            self.add_cache_control(msg_list, tools)
 
             # Prepare request parameters
             request_params = {
@@ -52,11 +79,6 @@ class AnthropicProvider(LLMProvider):
 
             # Add tools if provided
             if tools:
-                if len(tools) > 0:
-                    last_tool = tools[-1]
-                    last_tool['cache_control'] = {
-                        'type': 'ephemeral'
-                    }
                 request_params["tools"] = tools
                 logger.info(f"[ANTHROPIC] Sending request with {len(tools)} tools: {[t['name'] for t in tools]}")
             else:
