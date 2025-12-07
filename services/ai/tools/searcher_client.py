@@ -23,6 +23,8 @@ class SearchRequest(BaseModel):
     is_generated_query: Optional[bool] = None
     original_user_query: Optional[str] = None
     document_id: Optional[str] = None
+    document_content_start_line: Optional[int] = None
+    document_content_end_line: Optional[int] = None
     include_facets: Optional[bool] = None
     ignore_typos: Optional[bool] = None
 
@@ -79,6 +81,8 @@ class SearcherClient:
                 "is_generated_query": request.is_generated_query,
                 "original_user_query": request.original_user_query,
                 "document_id": request.document_id,
+                "document_content_start_line": request.document_content_start_line,
+                "document_content_end_line": request.document_content_end_line,
                 "include_facets": request.include_facets,
                 "ignore_typos": request.ignore_typos,
             }

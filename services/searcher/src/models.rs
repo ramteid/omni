@@ -26,6 +26,12 @@ pub struct SearchRequest {
     pub is_generated_query: Option<bool>,
     pub original_user_query: Option<String>,
     pub document_id: Option<String>,
+    // This SearchRequest doubles as a ReadDocumentRequest (because we want to support searching
+    // through a single doc, to handle large documents).
+    // So these next two fields allow us to read a specific set of lines from the document.
+    // Both inclusive.
+    pub document_content_start_line: Option<u32>,
+    pub document_content_end_line: Option<u32>,
     pub ignore_typos: Option<bool>,
 }
 

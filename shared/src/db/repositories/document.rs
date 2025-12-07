@@ -172,6 +172,7 @@ impl DocumentRepository {
         limit: i64,
         offset: i64,
         user_email: Option<&str>,
+        document_id: Option<&str>,
     ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
         let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
 
@@ -182,12 +183,12 @@ impl DocumentRepository {
             // We could use a sub-query here, source_id IN (SELECT id FROM sources WHERE ...)
             // But ParadeDB doesn't return a score for each document when using a sub-query.
             // So we simply query the sources table, collect all the source IDs, and use an IN condition on source_id instead
-            let source_filter_query = r#"SELECT id FROM sources WHERE source_type = ANY($1) AND is_active AND NOT is_deleted"#;
+            let source_filter_query =
+                r#"SELECT id FROM sources WHERE source_type = ANY($1) AND NOT is_deleted"#;
             sqlx::query_scalar(source_filter_query).bind(source_types)
         } else {
             // Filter down to all active sources
-            let source_filter_query =
-                r#"SELECT id FROM sources WHERE is_active AND NOT is_deleted"#;
+            let source_filter_query = r#"SELECT id FROM sources WHERE NOT is_deleted"#;
             sqlx::query_scalar(source_filter_query)
         };
 
@@ -212,6 +213,14 @@ impl DocumentRepository {
 
         if let Some(email) = user_email {
             filters.push(self.generate_permission_filter(email));
+        }
+
+        // Document ID will be set when running a search query within a single document.
+        // Seems silly to use this function to search through the contents of a single doc, but
+        // it's the easiest way right now to get the search results in the desired format.
+        if document_id.is_some() {
+            filters.push(format!("id = ${}", param_idx));
+            param_idx += 1;
         }
 
         let where_clause = filters.join(" AND ");
@@ -241,6 +250,10 @@ impl DocumentRepository {
             if !ct.is_empty() {
                 query = query.bind(ct);
             }
+        }
+
+        if let Some(doc_id) = document_id {
+            query = query.bind(doc_id);
         }
 
         query = query.bind(limit).bind(offset);

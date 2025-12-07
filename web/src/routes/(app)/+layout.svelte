@@ -158,7 +158,13 @@
     <div class="flex max-h-[100vh] w-full min-w-0 flex-1 flex-col">
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
             <div class="prose flex h-16 items-center px-6">
-                <h2 class="px-4">{page.url.pathname === '/search' ? 'Search' : 'Chat'}</h2>
+                <h2 class="px-4">
+                    {page.url.pathname === '/search'
+                        ? 'Search'
+                        : page.url.pathname.startsWith('/chat')
+                          ? 'Chat'
+                          : ''}
+                </h2>
             </div>
         </header>
 

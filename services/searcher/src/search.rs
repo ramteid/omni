@@ -226,6 +226,7 @@ impl SearchEngine {
                 request.limit(),
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
+                request.document_id.as_deref(),
             )
             .await?,
             None,
@@ -247,7 +248,20 @@ impl SearchEngine {
         };
         info!("Content fetch took {:?}", content_fetch_start.elapsed());
 
-        let highlight_config = HighlightConfig::default();
+        let highlight_config = if request.document_id.is_some() {
+            // When searching through a single document, we can fetch more context
+            // around matches
+            HighlightConfig {
+                start_sel: "**".to_string(),
+                stop_sel: "**".to_string(),
+                max_words: 500,
+                min_words: 50,
+                max_fragments: 10,
+                fragment_delimiter: "...".to_string(),
+            }
+        } else {
+            HighlightConfig::default()
+        };
         let mut results = Vec::new();
 
         for doc_with_score in documents_with_scores {
@@ -466,13 +480,76 @@ impl SearchEngine {
                             content: None,
                         }]
                     } else {
-                        // Large document: use chunk-based retrieval
-                        info!(
-                            "Document content is large ({}B), using chunk-based retrieval",
-                            content_size
-                        );
-                        self.read_document_chunks(document_id, &doc, request)
-                            .await?
+                        // Check if specific line range is requested
+                        match (
+                            request.document_content_start_line,
+                            request.document_content_end_line,
+                        ) {
+                            (Some(start_line), Some(end_line)) => {
+                                debug!("Start ({}) and end ({}) line numbers are specified, returning these specific lines.", start_line, end_line);
+
+                                // Validate line numbers (1-indexed from user perspective)
+                                if start_line < 1 || end_line < start_line {
+                                    return Err(anyhow::anyhow!(
+                                        "Invalid line range: start={}, end={}",
+                                        start_line,
+                                        end_line
+                                    ));
+                                }
+
+                                let mut selected_lines = Vec::new();
+                                let start_idx = start_line as usize;
+                                let end_idx = end_line as usize;
+
+                                for (line_num, line) in content.lines().enumerate() {
+                                    let current_line = line_num + 1; // Convert to 1-indexed
+
+                                    if current_line >= start_idx && current_line <= end_idx {
+                                        // Prefix each line with its line number
+                                        selected_lines.push(format!("{} | {}", current_line, line));
+                                    }
+
+                                    // Stop iteration once we've passed the end line
+                                    if current_line > end_idx {
+                                        break;
+                                    }
+                                }
+
+                                if selected_lines.is_empty() {
+                                    return Err(anyhow::anyhow!(
+                                        "Line range {}-{} is out of bounds for document",
+                                        start_line,
+                                        end_line
+                                    ));
+                                }
+
+                                let selected_content = selected_lines.join("\n");
+
+                                info!(
+                                    "Returning lines {}-{} from document ({} lines, {}B)",
+                                    start_line,
+                                    start_line + (selected_lines.len() as u32) - 1,
+                                    selected_lines.len(),
+                                    selected_content.len()
+                                );
+
+                                vec![SearchResult {
+                                    document: self.prepare_document_for_response(doc.clone()),
+                                    score: 1.0,
+                                    highlights: vec![selected_content],
+                                    match_type: "line_range".to_string(),
+                                    content: None,
+                                }]
+                            }
+                            _ => {
+                                info!(
+                                    "Document content is large ({}B), using chunk-based retrieval",
+                                    content_size
+                                );
+                                self.read_document_chunks(document_id, &doc, request)
+                                    .await?
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -524,19 +601,33 @@ impl SearchEngine {
             results
         } else {
             info!(
-                "No query provided, returning first {} chars from document ID {}",
-                request.limit(),
+                "No query provided, returning first 500 lines from document ID {}",
                 document_id
             );
             if let Some(content_id) = &doc.content_id {
                 let content = self.content_storage.get_text(content_id).await?;
-                let truncated = content.chars().take(Self::CONTENT_SIZE_THRESHOLD).collect();
+
+                // Take first 500 lines and prefix with line numbers
+                let prefixed_content: String = content
+                    .lines()
+                    .take(500)
+                    .enumerate()
+                    .map(|(idx, line)| format!("{} | {}", idx + 1, line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                // Apply character limit after line prefixing
+                let truncated: String = prefixed_content
+                    .chars()
+                    .take(Self::CONTENT_SIZE_THRESHOLD)
+                    .collect();
+
                 vec![SearchResult {
                     document: doc.clone(),
                     score: 1.0,
-                    highlights: vec![truncated], // Up to 10k chars
+                    highlights: vec![truncated],
                     match_type: "fulltext".to_string(),
-                    content: None, // We will still use the highlights field
+                    content: None,
                 }]
             } else {
                 error!(

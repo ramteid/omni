@@ -84,7 +84,15 @@ SEARCH_TOOLS = [
                 },
                 "query": {
                     "type": "string",
-                    "description": "Optional: specify what you're looking for to get the most relevant sections"
+                    "description": "Optional: specify what you're looking for to get the most relevant sections. If you specify line numbers, this this will be ignored."
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "Optional: start line number (inclusive) to read from."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Optional: end line number (inclusive) to read to"
                 }
             },
             "required": ["id", "name"]
@@ -473,16 +481,19 @@ async def execute_read_document_tool(
     """Execute read_document tool by calling omni-searcher with document_id filter"""
     logger.info(f"[READ_DOC_TOOL] Reading document: {tool_input}")
     document_id = tool_input.id
-    document_name = tool_input.name
+    document_content_start_line = tool_input.start_line
+    document_content_end_line = tool_input.end_line
 
     # Create search request with document_id filter
     # Use query if provided for semantic search within document, otherwise use empty query
     search_request = SearchRequest(
         query=tool_input.query or "",
         document_id=document_id,
-        limit=20,  # Get up to 20 chunks for large documents
+        document_content_start_line=document_content_start_line,
+        document_content_end_line=document_content_end_line,
+        limit=20, # Get up to 20 chunks for large documents
         offset=0,
-        mode="semantic" if tool_input.query else "hybrid",
+        mode="hybrid",
         user_id=user_id,
         user_email=user_email,
     )

@@ -11,4 +11,6 @@ class ReadDocumentParams(BaseModel):
     id: str # Document ID
     name: str # Document Name
     query: Optional[str] = None # Optional query to retrieve specific relevant sections
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
 
