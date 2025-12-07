@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{SourceRepository, SyncRunRepository};
 use shared::models::{Source, SourceType, SyncRun, SyncType};
 use shared::queue::EventQueue;
 use shared::{ObjectStorage, Repository};
+use spider::client::StatusCode;
 use spider::page::Page;
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -136,6 +138,9 @@ impl SyncManager {
         for source in sources {
             if let Err(e) = self.sync_source(&source).await {
                 error!("Failed to sync source {}: {}", source.id, e);
+                let _ = self
+                    .update_source_status(&source.id, "failed", None, Some(e.to_string()))
+                    .await;
             }
         }
 
@@ -221,6 +226,11 @@ impl SyncManager {
                         page_title, page_url
                     );
 
+                    if page.status_code != StatusCode::OK {
+                        debug!("Page {:?} [url={}] status code is not 200 OK [status_code={}], skipping", page_title, page_url, page.status_code);
+                        continue;
+                    }
+
                     if let Err(e) = self_clone
                         .process_page(
                             &page,
@@ -260,9 +270,11 @@ impl SyncManager {
             crawl_duration
         );
 
+        debug!("Collecting final processed and updated document counts");
         let final_processed = *pages_processed.lock().await;
         let final_updated = *pages_updated.lock().await;
 
+        debug!("Collecting all URLs");
         let current_url_hashes = current_urls.lock().await;
         let deleted_urls: Vec<String> = previous_urls
             .difference(&*current_url_hashes)
@@ -300,6 +312,9 @@ impl SyncManager {
             .mark_completed(&sync_run.id, final_processed as i32, final_updated as i32)
             .await?;
 
+        self.update_source_status(&source.id, "completed", Some(Utc::now()), None)
+            .await?;
+
         Ok(())
     }
 
@@ -312,6 +327,20 @@ impl SyncManager {
                 .unwrap_or_else(|_| "unknown-date".to_string()),
             sync_run.id
         )
+    }
+
+    async fn update_source_status(
+        &self,
+        source_id: &str,
+        status: &str,
+        last_sync_at: Option<DateTime<Utc>>,
+        sync_error: Option<String>,
+    ) -> Result<()> {
+        self.source_repo
+            .update_sync_status(source_id, status, last_sync_at, sync_error)
+            .await?;
+
+        Ok(())
     }
 
     async fn process_page(
