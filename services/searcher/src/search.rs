@@ -250,7 +250,7 @@ impl SearchEngine {
 
         let highlight_config = if request.document_id.is_some() {
             // When searching through a single document, we can fetch more context
-            // around matches
+            // around matches and show line numbers
             HighlightConfig {
                 start_sel: "**".to_string(),
                 stop_sel: "**".to_string(),
@@ -258,6 +258,7 @@ impl SearchEngine {
                 min_words: 50,
                 max_fragments: 10,
                 fragment_delimiter: "...".to_string(),
+                include_line_numbers: true,
             }
         } else {
             HighlightConfig::default()

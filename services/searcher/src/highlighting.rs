@@ -1,4 +1,3 @@
-use hyper::body::Frame;
 use shared::utils::safe_str_slice;
 use tracing::debug;
 
@@ -10,6 +9,7 @@ pub struct HighlightConfig {
     pub min_words: usize,
     pub max_fragments: usize,
     pub fragment_delimiter: String,
+    pub include_line_numbers: bool,
 }
 
 impl Default for HighlightConfig {
@@ -21,6 +21,7 @@ impl Default for HighlightConfig {
             min_words: 10,
             max_fragments: 3,
             fragment_delimiter: "...".to_string(),
+            include_line_numbers: false,
         }
     }
 }
@@ -211,6 +212,22 @@ fn find_word_boundary_forward(content: &str, pos: usize) -> usize {
     }
 }
 
+fn build_line_offset_map(content: &str) -> Vec<usize> {
+    let mut line_starts = vec![0];
+    for (i, byte) in content.bytes().enumerate() {
+        if byte == b'\n' {
+            line_starts.push(i + 1);
+        }
+    }
+    line_starts
+}
+
+fn get_line_number(byte_pos: usize, line_map: &[usize]) -> usize {
+    line_map
+        .binary_search(&byte_pos)
+        .unwrap_or_else(|insert_pos| insert_pos)
+}
+
 fn format_fragments(
     content: &str,
     fragments: &[Fragment],
@@ -220,13 +237,22 @@ fn format_fragments(
     debug!("Formatting {} fragments", fragments.len());
     let mut result = String::new();
 
+    let line_map = if config.include_line_numbers {
+        Some(build_line_offset_map(content))
+    } else {
+        None
+    };
+
     for (i, fragment) in fragments.iter().enumerate() {
         if i > 0 {
+            result.push('\n');
             result.push_str(&config.fragment_delimiter);
+            result.push('\n');
         }
 
-        if fragment.start > 0 {
+        if fragment.start > 0 && i == 0 {
             result.push_str(&config.fragment_delimiter);
+            result.push('\n');
         }
 
         let fragment_text = safe_str_slice(content, fragment.start, fragment.end);
@@ -235,22 +261,40 @@ fn format_fragments(
             .filter(|m| m.start >= fragment.start && m.end <= fragment.end)
             .collect();
 
+        // Build highlighted text first
+        let mut highlighted = String::new();
         let mut last_pos = 0;
         for match_item in matches_in_fragment {
             let match_start = match_item.start - fragment.start;
             let match_end = match_item.end - fragment.start;
 
-            result.push_str(safe_str_slice(fragment_text, last_pos, match_start));
-            result.push_str(&config.start_sel);
-            result.push_str(safe_str_slice(fragment_text, match_start, match_end));
-            result.push_str(&config.stop_sel);
+            highlighted.push_str(safe_str_slice(fragment_text, last_pos, match_start));
+            highlighted.push_str(&config.start_sel);
+            highlighted.push_str(safe_str_slice(fragment_text, match_start, match_end));
+            highlighted.push_str(&config.stop_sel);
 
             last_pos = match_end;
         }
+        highlighted.push_str(&fragment_text[last_pos..]);
 
-        result.push_str(&fragment_text[last_pos..]);
+        // Add line numbers if configured
+        if let Some(ref map) = line_map {
+            let start_line = get_line_number(fragment.start, map) + 1;
+            let mut current_line = start_line;
+
+            for line in highlighted.lines() {
+                if current_line > start_line {
+                    result.push('\n');
+                }
+                result.push_str(&format!("{} | {}", current_line, line));
+                current_line += 1;
+            }
+        } else {
+            result.push_str(&highlighted);
+        }
 
         if fragment.end < content.len() {
+            result.push('\n');
             result.push_str(&config.fragment_delimiter);
         }
     }
@@ -337,5 +381,70 @@ mod tests {
         let result = generate_highlights(content, "fox dog", &config);
         assert!(result.contains("**fox**"));
         assert!(result.contains("**dog**"));
+    }
+
+    #[test]
+    fn test_generate_highlights_with_line_numbers() {
+        let mut config = HighlightConfig::default();
+        config.include_line_numbers = true;
+        config.max_words = 5; // Small window to create separate fragments
+        config.max_fragments = 2;
+        let content = "Line one content here with extra words.\nLine two has a fox here with more words.\nLine three is here with content.\nLine four more text.\nLine five has another fox in it with text.";
+        let result = generate_highlights(content, "fox", &config);
+
+        // Verify exact format with line numbers and highlights
+        assert!(result.contains("2 | Line two has a **fox** here with"));
+
+        // Second fragment may be on a different line depending on word boundaries
+        // Just verify it contains line number prefix and fox highlight
+        assert!(result.contains("**fox**"));
+        assert!(result.matches("| ").count() >= 2); // At least 2 lines with line numbers
+
+        // Verify delimiters with newlines around fragments
+        assert!(result.starts_with("...\n"));
+        assert!(result.contains("\n...\n"));
+        assert!(result.ends_with("\n..."));
+    }
+
+    #[test]
+    fn test_generate_highlights_multiline_fragment_with_line_numbers() {
+        let mut config = HighlightConfig::default();
+        config.include_line_numbers = true;
+        config.max_words = 100;
+        config.max_fragments = 1;
+
+        let content = "First line with some content here\nSecond line with test keyword\nThird line also has test keyword\nFourth line with more content";
+        let result = generate_highlights(content, "test", &config);
+
+        // Should have exact line numbers and highlights for the fragment containing both matches
+        assert!(result.contains("2 | Second line with **test** keyword"));
+        assert!(result.contains("3 | Third line also has **test** keyword"));
+
+        // Fragment should have line breaks between lines
+        assert!(result.contains("\n"));
+    }
+
+    #[test]
+    fn test_fragment_delimiter_with_newlines() {
+        let mut config = HighlightConfig::default();
+        config.max_words = 10;
+        config.max_fragments = 3;
+        let content = "Start content here with lots of words. Middle section has fox in it with more words around. End section has another fox reference with more text. Final content at the end.";
+        let result = generate_highlights(content, "fox", &config);
+
+        // Should start with delimiter and newline if first fragment doesn't start at position 0
+        if result.starts_with("...") {
+            assert!(result.starts_with("...\n"));
+        }
+
+        // Should have newlines around delimiters between fragments
+        if result.matches("...").count() > 2 {
+            assert!(result.contains("\n...\n"));
+        }
+
+        // Should end with newline and delimiter if last fragment doesn't reach the end
+        if result.ends_with("...") {
+            assert!(result.ends_with("\n..."));
+        }
     }
 }
