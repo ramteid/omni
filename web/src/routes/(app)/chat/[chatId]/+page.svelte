@@ -799,7 +799,7 @@
     {#if citations.length > 0}
         <div class="flex flex-col gap-1.5">
             <p class="text-muted-foreground pl-1 text-xs font-bold uppercase">Sources</p>
-            <div class="flex gap-1">
+            <div class="flex flex-wrap gap-1">
                 {#each citations as citation, idx}
                     {#if citation.type === 'search_result_location'}
                         <a

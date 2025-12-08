@@ -18,6 +18,8 @@ Thank you for your interest in contributing to Omni! This document provides guid
 
 We are committed to providing a welcoming and inclusive environment. Please be respectful and considerate in all interactions.
 
+(This doc is a work-in-progress, so some info might be out-of-date. We will update this shortly.)
+
 ## Getting Started
 
 1. **Fork the repository** on GitHub
@@ -28,7 +30,7 @@ We are committed to providing a welcoming and inclusive environment. Please be r
    ```
 3. **Add upstream remote**:
    ```bash
-   git remote add upstream https://github.com/omnihq/omni.git
+   git remote add upstream https://github.com/getomnico/omni.git
    ```
 
 ## Development Setup
@@ -36,10 +38,7 @@ We are committed to providing a welcoming and inclusive environment. Please be r
 ### Prerequisites
 
 - **Rust** 1.75+ (install via [rustup](https://rustup.rs/))
-- **Node.js** 20+ and npm
-- **Python** 3.10+
 - **Docker** and Docker Compose
-- **PostgreSQL** 17+
 
 ### Initial Setup
 
@@ -228,14 +227,14 @@ pub async fn search(
 
 ## Getting Help
 
-- **Discord**: Join our [community Discord](https://discord.gg/omni)
+- **Discord**: Join our [community Discord](https://discord.gg/NB47AMHP)
 - **GitHub Issues**: For bug reports and feature requests
 - **Discussions**: For questions and ideas
 
 ## Recognition
 
 Contributors will be recognized in our:
-- [Contributors list](https://github.com/omnihq/omni/graphs/contributors)
+- Contributors list
 - Release notes
 - Project documentation
 
