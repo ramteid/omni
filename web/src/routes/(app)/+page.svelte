@@ -5,67 +5,78 @@
     import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
     import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
     import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
+    import { userPreferences } from '$lib/preferences'
 
     let { data }: PageProps = $props()
 
     let searchQuery = $state('')
     let popoverOpen = $state(false)
     let isSearching = $state(false)
-    let inputMode = $state<InputMode>('chat')
+    let inputMode = $state<InputMode>(userPreferences.get('inputMode'))
 
-    $inspect(inputMode)
+    $effect(() => {
+        userPreferences.set('inputMode', inputMode)
+    })
 
     async function submitQuery() {
-        if (searchQuery.trim() && !isSearching) {
-            if (inputMode === 'search') {
-                goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
-                return
-            }
-
-            const response = await fetch(`/api/chat`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            })
-
-            if (!response.ok) {
-                console.error('Failed to create chat session')
-                return
-            }
-
-            const { chatId } = await response.json()
-            console.log('Created chat session with ID:', chatId)
-
-            const msgResponse = await fetch(`/api/chat/${chatId}/messages`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    content: searchQuery.trim(),
-                    role: 'user',
-                }),
-            })
-
-            if (!msgResponse.ok) {
-                console.error('Failed to send message to chat session')
-                return
-            }
-
-            const { messageId } = await msgResponse.json()
-            console.log('Sent message with ID:', messageId)
-
-            isSearching = true
-            popoverOpen = false
-
-            goto(`/chat/${chatId}`, {
-                invalidateAll: true,
-                state: {
-                    stream: true,
-                },
-            })
+        if (!searchQuery.trim()) {
+            return
         }
+
+        if (isSearching) {
+            return
+        }
+
+        isSearching = true
+
+        if (inputMode === 'search') {
+            goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
+            return
+        }
+
+        const response = await fetch(`/api/chat`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        })
+
+        if (!response.ok) {
+            console.error('Failed to create chat session')
+            return
+        }
+
+        const { chatId } = await response.json()
+        console.log('Created chat session with ID:', chatId)
+
+        const msgResponse = await fetch(`/api/chat/${chatId}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                content: searchQuery.trim(),
+                role: 'user',
+            }),
+        })
+
+        if (!msgResponse.ok) {
+            console.error('Failed to send message to chat session')
+            return
+        }
+
+        const { messageId } = await msgResponse.json()
+        console.log('Sent message with ID:', messageId)
+
+        isSearching = true
+        popoverOpen = false
+
+        goto(`/chat/${chatId}`, {
+            invalidateAll: true,
+            state: {
+                stream: true,
+            },
+        })
     }
 
     function selectSuggestion(query: string) {
