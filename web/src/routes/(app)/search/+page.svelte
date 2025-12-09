@@ -122,7 +122,7 @@
         return { iconPath, useFileText: !iconPath }
     }
 
-    function formatUrlAsBreadcrumbs(url: string): string {
+    function formatUrlAsBreadcrumbs(url: string, maxLength: number = 120): string {
         if (!url || url === 'No URL available') return url
 
         try {
@@ -134,7 +134,76 @@
                 return domain
             }
 
-            return [domain, ...pathParts].join(' › ')
+            const breadcrumb = [domain, ...pathParts].join(' › ')
+
+            if (breadcrumb.length <= maxLength) {
+                return breadcrumb
+            }
+
+            // Breadcrumb is too long - truncate middle components
+            // Find the shortest contiguous subsequence to remove from the middle
+            const separator = ' › '
+            const ellipsis = '…'
+
+            // Account for domain and separators in the budget
+            const domainLength = domain.length + separator.length
+            const ellipsisLength = ellipsis.length + separator.length * 2
+            let budget = maxLength - domainLength
+
+            // Find minimal interval [i, j) to remove
+            let i = 0
+            let j = pathParts.length
+
+            // Try progressively larger intervals to remove
+            for (let removeCount = 0; removeCount <= pathParts.length; removeCount++) {
+                // Try different positions for the interval
+                for (let start = 0; start <= pathParts.length - removeCount; start++) {
+                    const end = start + removeCount
+
+                    // Calculate total length if we keep [0, start) and [end, pathParts.length)
+                    let totalLength = 0
+
+                    // Add length of kept parts from start
+                    for (let k = 0; k < start; k++) {
+                        totalLength += pathParts[k].length + separator.length
+                    }
+
+                    // Add length of kept parts from end
+                    for (let k = end; k < pathParts.length; k++) {
+                        totalLength += pathParts[k].length + separator.length
+                    }
+
+                    // Add ellipsis if we're removing something
+                    if (removeCount > 0 && start < end) {
+                        totalLength += ellipsisLength
+                    }
+
+                    if (totalLength <= budget) {
+                        i = start
+                        j = end
+                        break
+                    }
+                }
+
+                if (j !== pathParts.length || i !== 0) {
+                    break
+                }
+            }
+
+            // Build result
+            if (i === 0 && j === pathParts.length) {
+                // Keep everything
+                return breadcrumb
+            } else if (i === j) {
+                // No removal needed
+                return breadcrumb
+            } else {
+                // Remove [i, j)
+                const firstParts = pathParts.slice(0, i)
+                const lastParts = pathParts.slice(j)
+                const parts = [domain, ...firstParts, ellipsis, ...lastParts]
+                return parts.join(separator)
+            }
         } catch {
             return url
         }

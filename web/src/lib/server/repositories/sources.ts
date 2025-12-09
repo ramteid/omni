@@ -1,11 +1,15 @@
 import { db } from '$lib/server/db'
 import { sources, syncRuns } from '$lib/server/db/schema'
-import { eq, and } from 'drizzle-orm'
+import { eq, desc } from 'drizzle-orm'
 import type { Source, SyncRun } from '$lib/server/db/schema'
 
 export class SourcesRepository {
     async getAll(): Promise<Source[]> {
-        return await db.select().from(sources).where(eq(sources.isDeleted, false))
+        return await db
+            .select()
+            .from(sources)
+            .where(eq(sources.isDeleted, false))
+            .orderBy(desc(sources.createdAt))
     }
 
     async getById(sourceId: string): Promise<Source | null> {

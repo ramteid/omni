@@ -34,3 +34,7 @@ export interface WebSourceConfig {
     blacklist_patterns: string[]
     user_agent: string | null
 }
+
+export interface AtlassianSourceConfig {
+    base_url: string
+}

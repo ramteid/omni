@@ -208,29 +208,6 @@ impl Repository<Source, String> for SourceRepository {
         Ok(created_source)
     }
 
-    async fn update(&self, id: String, source: Source) -> Result<Option<Source>, DatabaseError> {
-        let updated_source = sqlx::query_as::<_, Source>(
-            r#"
-            UPDATE sources
-            SET name = $2, source_type = $3, config = $4, is_active = $5, is_deleted = $6
-            WHERE id = $1
-            RETURNING id, name, source_type, config, is_active, is_deleted,
-                      last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
-                      created_at, updated_at, created_by
-            "#,
-        )
-        .bind(&id)
-        .bind(&source.name)
-        .bind(&source.source_type)
-        .bind(&source.config)
-        .bind(source.is_active)
-        .bind(source.is_deleted)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(updated_source)
-    }
-
     async fn delete(&self, id: String) -> Result<bool, DatabaseError> {
         let result = sqlx::query("DELETE FROM sources WHERE id = $1")
             .bind(&id)

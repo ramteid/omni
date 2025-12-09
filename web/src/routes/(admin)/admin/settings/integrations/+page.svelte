@@ -227,14 +227,16 @@
                                 </div>
                             </div>
                             <div class="flex gap-2">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    class="cursor-pointer"
-                                    disabled={runningSyncs.has(source.id)}
-                                    onclick={() => handleSync(source.id)}>
-                                    Sync
-                                </Button>
+                                {#if source.isActive}
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        class="cursor-pointer"
+                                        disabled={runningSyncs.has(source.id)}
+                                        onclick={() => handleSync(source.id)}>
+                                        Sync
+                                    </Button>
+                                {/if}
                                 <Button
                                     variant="outline"
                                     size="sm"

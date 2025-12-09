@@ -13,7 +13,7 @@
 
     let rootUrl = $state('')
     let maxDepth = $state(10)
-    let maxPages = $state(10000)
+    let maxPages = $state(100000)
     let respectRobotsTxt = $state(true)
     let includeSubdomains = $state(false)
     let blacklistPatterns = $state<string[]>([])
