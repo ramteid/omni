@@ -1,4 +1,5 @@
 use shared::utils::safe_str_slice;
+use std::collections::HashSet;
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -149,8 +150,7 @@ fn build_fragments(content: &str, matches: &[Match], config: &HighlightConfig) -
             .filter(|m| m.start >= frag_start && m.end <= frag_end)
             .collect();
 
-        let unique_terms: std::collections::HashSet<_> =
-            matches_in_fragment.iter().map(|m| m.term_index).collect();
+        let unique_terms: HashSet<_> = matches_in_fragment.iter().map(|m| m.term_index).collect();
 
         let score = unique_terms.len() as f32 * 2.0 + matches_in_fragment.len() as f32;
 
@@ -267,6 +267,11 @@ fn format_fragments(
         for match_item in matches_in_fragment {
             let match_start = match_item.start - fragment.start;
             let match_end = match_item.end - fragment.start;
+
+            // Skip overlapping matches (can happen with multiple query terms)
+            if match_start < last_pos {
+                continue;
+            }
 
             highlighted.push_str(safe_str_slice(fragment_text, last_pos, match_start));
             highlighted.push_str(&config.start_sel);
