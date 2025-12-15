@@ -11,6 +11,8 @@ It connects to your workplace apps, and helps employees find information and get
 
 </div>
 
+![omni-chopped](https://github.com/user-attachments/assets/2a33c5e9-4e4c-4577-a891-ec6d459e455a)
+
 ---
 
 ## Features
