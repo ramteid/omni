@@ -7,7 +7,7 @@
 
 It connects to your workplace apps, and helps employees find information and get work done.
 
-[Features](#features) • [Docs](https://docs.getomni.co){:target="_blank"} • [Deploy](#deployment) • [Contributing](#contributing)
+[Features](#features) • [Docs](https://docs.getomni.co) • [Deploy](#deployment) • [Contributing](#contributing)
 
 </div>
 
