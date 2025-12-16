@@ -141,7 +141,7 @@
 
     function formatDate(date: Date | null) {
         if (!date) return 'Never'
-        return new Date(date).toLocaleDateString()
+        return new Date(date).toLocaleString()
     }
 
     function getStatusColor(isActive: boolean) {
