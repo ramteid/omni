@@ -1,10 +1,46 @@
 import { db } from '$lib/server/db/index.js'
-import { syncRuns, sources } from '$lib/server/db/schema.js'
-import { eq, desc } from 'drizzle-orm'
+import { syncRuns, sources, documents } from '$lib/server/db/schema.js'
+import { eq, desc, count } from 'drizzle-orm'
 import type { RequestHandler } from './$types.js'
 import postgres from 'postgres'
 import { constructDatabaseUrl } from '$lib/server/config.js'
 import { logger } from '$lib/server/logger.js'
+
+type SourceId = string
+
+// Cache for document counts per source (refreshed every 30 seconds)
+let documentCountCache: Record<SourceId, number> = {}
+let documentCountCacheTime = 0
+const DOCUMENT_COUNT_CACHE_TTL = 30000 // 30 seconds
+
+async function getDocumentCounts(): Promise<Record<SourceId, number>> {
+    const now = Date.now()
+    if (now - documentCountCacheTime < DOCUMENT_COUNT_CACHE_TTL) {
+        return documentCountCache
+    }
+
+    try {
+        const counts = await db
+            .select({
+                sourceId: documents.sourceId,
+                count: count(),
+            })
+            .from(documents)
+            .groupBy(documents.sourceId)
+
+        const countMap: Record<SourceId, number> = {}
+        for (const row of counts) {
+            countMap[row.sourceId] = row.count
+        }
+
+        documentCountCache = countMap
+        documentCountCacheTime = now
+        return countMap
+    } catch (error) {
+        logger.error('Error fetching document counts:', error)
+        return documentCountCache // Return stale cache on error
+    }
+}
 
 export const GET: RequestHandler = async ({ url }) => {
     const encoder = new TextEncoder()
@@ -59,6 +95,7 @@ export const GET: RequestHandler = async ({ url }) => {
                             sourceType: sources.sourceType,
                             syncType: syncRuns.syncType,
                             status: syncRuns.status,
+                            documentsScanned: syncRuns.documentsScanned,
                             documentsProcessed: syncRuns.documentsProcessed,
                             documentsUpdated: syncRuns.documentsUpdated,
                             startedAt: syncRuns.startedAt,
@@ -70,10 +107,14 @@ export const GET: RequestHandler = async ({ url }) => {
                         .orderBy(desc(syncRuns.startedAt))
                         .limit(10)
 
+                    // Get cached document counts per source
+                    const documentCounts = await getDocumentCounts()
+
                     const statusData = {
                         timestamp: Date.now(),
                         overall: {
                             latestSyncRuns,
+                            documentCounts,
                         },
                     }
 

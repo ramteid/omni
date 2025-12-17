@@ -97,7 +97,6 @@ impl ConfluenceProcessor {
                         &sync_run.id,
                         *pages_processed as i32,
                         *pages_processed as i32,
-                        *pages_processed as i32,
                     )
                     .await?;
             }

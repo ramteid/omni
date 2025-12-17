@@ -28,7 +28,9 @@
 
     let { data }: PageProps = $props()
 
-    let runningSyncs = $derived<Map<string, SyncRun>>(data.runningSyncs)
+    type SourceId = string
+    let runningSyncs = $derived<Map<SourceId, SyncRun>>(data.runningSyncs)
+    let documentCounts = $state<Record<SourceId, number>>({})
     let eventSource = $state<EventSource | null>(null)
 
     onMount(() => {
@@ -39,13 +41,16 @@
                 const statusData = JSON.parse(event.data)
                 if (statusData.overall?.latestSyncRuns) {
                     // Update running syncs from SSE data
-                    const newRunningSyncs = new Map<string, SyncRun>()
+                    const newRunningSyncs = new Map<SourceId, SyncRun>()
                     statusData.overall.latestSyncRuns.forEach((sync: any) => {
                         if (sync.status === 'running') {
                             newRunningSyncs.set(sync.sourceId, sync)
                         }
                     })
                     runningSyncs = newRunningSyncs
+                }
+                if (statusData.overall?.documentCounts) {
+                    documentCounts = statusData.overall.documentCounts
                 }
             } catch (error) {
                 console.error('Error parsing SSE data:', error)
@@ -202,9 +207,9 @@
                         <div
                             class="flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
                             <div class="flex flex-1 items-start gap-3">
-                                {#if getSourceIcon(source.sourceType)}
+                                {#if getSourceIcon(source.sourceType as SourceType)}
                                     <img
-                                        src={getSourceIcon(source.sourceType)}
+                                        src={getSourceIcon(source.sourceType as SourceType)}
                                         alt={source.name}
                                         class="h-6 w-6" />
                                 {:else if source.sourceType === 'web'}
@@ -224,11 +229,23 @@
                                     <div
                                         class="text-muted-foreground flex items-center gap-2 text-xs">
                                         {#if runningSyncs.has(source.id)}
-                                            <span
-                                                >Syncing now... ({runningSyncs.get(source.id)
-                                                    ?.documentsProcessed ?? 0} documents processed)</span>
+                                            {@const sync = runningSyncs.get(source.id)}
+                                            {#if sync && sync.documentsScanned && sync.documentsScanned > 0}
+                                                <span
+                                                    >Syncing... {sync.documentsProcessed ??
+                                                        0}/{sync.documentsScanned} processed ({sync.documentsUpdated ??
+                                                        0} updated)</span>
+                                            {:else}
+                                                <span>Syncing... scanning documents</span>
+                                            {/if}
                                         {:else}
                                             <span>Last sync: {formatDate(source.lastSyncAt)}</span>
+                                        {/if}
+                                        {#if documentCounts[source.id]}
+                                            <span class="text-muted-foreground">·</span>
+                                            <span
+                                                >{documentCounts[source.id].toLocaleString()} documents
+                                                indexed</span>
                                         {/if}
                                     </div>
                                 </div>

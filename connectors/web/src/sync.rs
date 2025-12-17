@@ -309,12 +309,7 @@ impl SyncManager {
         );
 
         self.sync_run_repo
-            .mark_completed(
-                &sync_run.id,
-                final_processed as i32,
-                final_updated as i32,
-                final_updated as i32,
-            )
+            .mark_completed(&sync_run.id, final_processed as i32, final_updated as i32)
             .await?;
 
         self.update_source_status(&source.id, "completed", Some(Utc::now()), None)

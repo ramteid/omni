@@ -139,6 +139,22 @@ impl SourceRepository {
 
         Ok(())
     }
+
+    pub async fn get_document_count(&self, id: &str) -> Result<i64, DatabaseError> {
+        let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM documents WHERE source_id = $1")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(result.0)
+    }
+
+    pub async fn get_document_counts_by_source(&self) -> Result<Vec<(String, i64)>, DatabaseError> {
+        let results: Vec<(String, i64)> =
+            sqlx::query_as("SELECT source_id, COUNT(*) FROM documents GROUP BY source_id")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(results)
+    }
 }
 
 #[async_trait]

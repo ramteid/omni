@@ -16,14 +16,16 @@ use tracing::{debug, error, info, warn};
 // Batch processing types
 #[derive(Debug)]
 struct EventBatch {
+    sync_run_id: String,
     documents_created: Vec<(Document, Vec<String>)>, // (document, event_ids)
     documents_updated: Vec<(Document, Vec<String>)>, // (document, event_ids)
     documents_deleted: Vec<(String, String, Vec<String>)>, // (source_id, document_id, event_ids)
 }
 
 impl EventBatch {
-    fn new() -> Self {
+    fn new(sync_run_id: String) -> Self {
         Self {
+            sync_run_id,
             documents_created: Vec::new(),
             documents_updated: Vec::new(),
             documents_deleted: Vec::new(),
@@ -34,6 +36,11 @@ impl EventBatch {
         self.documents_created.is_empty()
             && self.documents_updated.is_empty()
             && self.documents_deleted.is_empty()
+    }
+
+    #[allow(dead_code)]
+    fn total_documents(&self) -> usize {
+        self.documents_created.len() + self.documents_updated.len() + self.documents_deleted.len()
     }
 
     #[allow(dead_code)]
@@ -58,6 +65,7 @@ impl EventBatch {
 #[derive(Debug)]
 struct BatchProcessingResult {
     successful_event_ids: Vec<String>,
+    successful_documents_count: usize,
     failed_events: Vec<(String, String)>, // (event_id, error_message)
 }
 
@@ -65,6 +73,7 @@ impl BatchProcessingResult {
     fn new() -> Self {
         Self {
             successful_event_ids: Vec::new(),
+            successful_documents_count: 0,
             failed_events: Vec::new(),
         }
     }
@@ -231,11 +240,18 @@ impl QueueProcessor {
                 events.len()
             );
 
+            // Extract sync_run_id (all events in batch are from the same sync_run)
+            let sync_run_id = events
+                .first()
+                .context("Batch has no events")?
+                .sync_run_id
+                .clone();
+
             // Store events for potential fallback processing
             let events_clone = events.clone();
 
             // Group events by type for batch processing
-            let batch = self.group_events_by_type(events).await?;
+            let batch = self.group_events_by_type(sync_run_id, events).await?;
 
             if batch.is_empty() {
                 continue;
@@ -250,6 +266,9 @@ impl QueueProcessor {
                 batch.documents_updated.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
                 batch.documents_deleted.iter().map(|(_, _, event_ids)| event_ids.len()).sum::<usize>()
             );
+
+            // Store sync_run_id before moving batch
+            let batch_sync_run_id = batch.sync_run_id.clone();
 
             // Process the batch with fallback to individual processing
             let result = self.process_event_batch(batch).await;
@@ -281,6 +300,23 @@ impl QueueProcessor {
                                 "Failed to mark {} events as failed: {}",
                                 batch_result.failed_events.len(),
                                 e
+                            );
+                        }
+                    }
+
+                    // Update sync run progress with document count (not event count)
+                    if batch_result.successful_documents_count > 0 {
+                        if let Err(e) = self
+                            .sync_run_repo
+                            .increment_progress_by(
+                                &batch_sync_run_id,
+                                batch_result.successful_documents_count as i32,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "Failed to update sync run progress for {}: {}",
+                                batch_sync_run_id, e
                             );
                         }
                     }
@@ -324,9 +360,10 @@ impl QueueProcessor {
 
     async fn group_events_by_type(
         &self,
+        sync_run_id: String,
         events: Vec<ConnectorEventQueueItem>,
     ) -> Result<EventBatch> {
-        let mut batch = EventBatch::new();
+        let mut batch = EventBatch::new(sync_run_id);
 
         // Temporary storage for grouping events by document key
         let mut created_docs: std::collections::HashMap<String, (Document, Vec<String>)> =
@@ -338,18 +375,9 @@ impl QueueProcessor {
 
         for event_item in events {
             let event_id = event_item.id.clone();
-            let sync_run_id = event_item.sync_run_id.clone();
 
             // Parse the event payload
             let event: ConnectorEvent = serde_json::from_value(event_item.payload.clone())?;
-
-            // Update sync run progress for each event
-            if let Err(e) = self.increment_sync_run_progress(&sync_run_id).await {
-                warn!(
-                    "Failed to update sync run progress for {}: {}",
-                    sync_run_id, e
-                );
-            }
 
             match event {
                 ConnectorEvent::DocumentCreated {
@@ -441,12 +469,14 @@ impl QueueProcessor {
 
         // Process document creations in batch
         if !batch.documents_created.is_empty() {
+            let docs_count = batch.documents_created.len();
             match self
                 .process_documents_created_batch(&batch.documents_created)
                 .await
             {
                 Ok(successful_ids) => {
                     result.successful_event_ids.extend(successful_ids);
+                    result.successful_documents_count += docs_count;
                 }
                 Err(e) => {
                     error!("Batch document creation failed: {}", e);
@@ -462,12 +492,14 @@ impl QueueProcessor {
 
         // Process document updates in batch
         if !batch.documents_updated.is_empty() {
+            let docs_count = batch.documents_updated.len();
             match self
                 .process_documents_updated_batch(&batch.documents_updated)
                 .await
             {
                 Ok(successful_ids) => {
                     result.successful_event_ids.extend(successful_ids);
+                    result.successful_documents_count += docs_count;
                 }
                 Err(e) => {
                     error!("Batch document update failed: {}", e);
@@ -483,12 +515,14 @@ impl QueueProcessor {
 
         // Process document deletions in batch
         if !batch.documents_deleted.is_empty() {
+            let docs_count = batch.documents_deleted.len();
             match self
                 .process_documents_deleted_batch(&batch.documents_deleted)
                 .await
             {
                 Ok(successful_ids) => {
                     result.successful_event_ids.extend(successful_ids);
+                    result.successful_documents_count += docs_count;
                 }
                 Err(e) => {
                     error!("Batch document deletion failed: {}", e);
@@ -828,10 +862,6 @@ impl QueueProcessor {
         Ok(successful_event_ids)
     }
 
-    async fn increment_sync_run_progress(&self, sync_run_id: &str) -> Result<()> {
-        self.sync_run_repo.increment_progress(sync_run_id).await?;
-        Ok(())
-    }
     // Fallback method for individual processing when batch operations fail
     async fn process_events_individually(
         &self,

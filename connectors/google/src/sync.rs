@@ -426,14 +426,9 @@ impl SyncManager {
 
         // Update sync run based on result
         match &result {
-            Ok((files_scanned, files_processed, files_updated)) => {
+            Ok((files_scanned, _files_processed, files_updated)) => {
                 self.sync_run_repo
-                    .mark_completed(
-                        &sync_run.id,
-                        *files_scanned as i32,
-                        *files_processed as i32,
-                        *files_updated as i32,
-                    )
+                    .mark_completed(&sync_run.id, *files_scanned as i32, *files_updated as i32)
                     .await?;
             }
             Err(e) => {
@@ -1452,12 +1447,7 @@ impl SyncManager {
                 }
 
                 self.sync_run_repo
-                    .mark_completed(
-                        &sync_run.id,
-                        processed_count as i32,
-                        processed_count as i32,
-                        updated_count as i32,
-                    )
+                    .mark_completed(&sync_run.id, processed_count as i32, updated_count as i32)
                     .await?;
                 info!(
                     "Incremental sync completed for source {}: {} changes processed, {} updated",
@@ -2163,12 +2153,11 @@ impl SyncManager {
 
                         // Update sync run based on result
                         match result {
-                            Ok((files_scanned, files_processed, files_updated)) => {
+                            Ok((files_scanned, _files_processed, files_updated)) => {
                                 self.sync_run_repo
                                     .mark_completed(
                                         &sync_run.id,
                                         files_scanned as i32,
-                                        files_processed as i32,
                                         files_updated as i32,
                                     )
                                     .await?;

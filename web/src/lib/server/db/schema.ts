@@ -117,6 +117,7 @@ export const syncRuns = pgTable('sync_runs', {
     startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
     status: text('status').notNull().default('running'),
+    documentsScanned: integer('documents_scanned').default(0),
     documentsProcessed: integer('documents_processed').default(0),
     documentsUpdated: integer('documents_updated').default(0),
     errorMessage: text('error_message'),

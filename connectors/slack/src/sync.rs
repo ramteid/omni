@@ -239,14 +239,9 @@ impl SyncManager {
         .await;
 
         match &result {
-            Ok((scanned, processed, updated)) => {
+            Ok((scanned, _processed, updated)) => {
                 self.sync_run_repo
-                    .mark_completed(
-                        &sync_run.id,
-                        *scanned as i32,
-                        *processed as i32,
-                        *updated as i32,
-                    )
+                    .mark_completed(&sync_run.id, *scanned as i32, *updated as i32)
                     .await?;
             }
             Err(e) => {

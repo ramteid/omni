@@ -100,7 +100,6 @@ impl JiraProcessor {
                 &sync_run.id,
                 total_issues_processed as i32,
                 total_issues_processed as i32,
-                total_issues_processed as i32,
             )
             .await?;
 
@@ -189,7 +188,7 @@ impl JiraProcessor {
         match &result {
             Ok(count) => {
                 self.sync_run_repo
-                    .mark_completed(&sync_run.id, *count as i32, *count as i32, *count as i32)
+                    .mark_completed(&sync_run.id, *count as i32, *count as i32)
                     .await?
             }
             Err(e) => {
@@ -413,7 +412,7 @@ impl JiraProcessor {
         match &result {
             Ok(_) => {
                 self.sync_run_repo
-                    .mark_completed(&sync_run.id, 1, 1, 1)
+                    .mark_completed(&sync_run.id, 1, 1)
                     .await?
             }
             Err(e) => {
@@ -537,7 +536,7 @@ impl JiraProcessor {
         match &result {
             Ok(count) => {
                 self.sync_run_repo
-                    .mark_completed(&sync_run.id, *count as i32, *count as i32, *count as i32)
+                    .mark_completed(&sync_run.id, *count as i32, *count as i32)
                     .await?
             }
             Err(e) => {

@@ -72,19 +72,17 @@ impl SyncRunRepository {
         &self,
         id: &str,
         documents_scanned: i32,
-        documents_processed: i32,
         documents_updated: i32,
     ) -> Result<(), DatabaseError> {
         sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                 documents_scanned = $2, documents_processed = $3, documents_updated = $4,
+                 documents_scanned = $2, documents_updated = $3,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $5",
+             WHERE id = $4",
         )
         .bind(SyncStatus::Completed)
         .bind(documents_scanned)
-        .bind(documents_processed)
         .bind(documents_updated)
         .bind(id)
         .execute(&self.pool)
@@ -125,12 +123,17 @@ impl SyncRunRepository {
     }
 
     pub async fn increment_progress(&self, id: &str) -> Result<(), DatabaseError> {
+        self.increment_progress_by(id, 1).await
+    }
+
+    pub async fn increment_progress_by(&self, id: &str, count: i32) -> Result<(), DatabaseError> {
         sqlx::query(
             "UPDATE sync_runs
-             SET documents_processed = documents_processed + 1,
+             SET documents_processed = documents_processed + $1,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1",
+             WHERE id = $2",
         )
+        .bind(count)
         .bind(id)
         .execute(&self.pool)
         .await?;

@@ -48,12 +48,23 @@ impl EventQueue {
     }
 
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<ConnectorEventQueueItem>> {
+        // Dequeue events from a single sync_run (the one with most pending events)
+        // This ensures each batch contains events from only one sync_run
         let rows = sqlx::query(
             r#"
-            WITH batch AS (
+            WITH target_sync_run AS (
+                SELECT sync_run_id
+                FROM connector_events_queue
+                WHERE status = 'pending'
+                GROUP BY sync_run_id
+                ORDER BY COUNT(*) DESC
+                LIMIT 1
+            ),
+            batch AS (
                 SELECT id
                 FROM connector_events_queue
                 WHERE status = 'pending'
+                  AND sync_run_id = (SELECT sync_run_id FROM target_sync_run)
                 ORDER BY created_at
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
@@ -63,7 +74,7 @@ impl EventQueue {
                 processing_started_at = NOW()
             FROM batch
             WHERE q.id = batch.id
-            RETURNING 
+            RETURNING
                 q.id,
                 q.sync_run_id,
                 q.source_id,
