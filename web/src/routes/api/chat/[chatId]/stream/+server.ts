@@ -56,8 +56,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
     logger.debug('Sending GET request to AI service to receive the streaming response', { chatId })
 
+    const abortController = new AbortController()
+
     try {
-        const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/stream`)
+        const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/stream`, {
+            signal: abortController.signal,
+        })
 
         if (!response.ok) {
             logger.error('AI service error', undefined, {
@@ -207,6 +211,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                     logger.error('Error in stream processing', error, { chatId })
                     controller.error(error)
                 }
+            },
+            cancel() {
+                logger.info('Client disconnected, cancelling stream', { chatId })
+                reader.cancel()
+                abortController.abort()
             },
         })
 

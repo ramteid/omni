@@ -67,6 +67,7 @@
 
     let isStreaming = $state(false)
     let error = $state<string | null>(null)
+    let eventSource: EventSource | null = $state(null)
 
     let processedMessages = $derived(processMessages(chatMessages))
     let copiedMessageId = $state<number | null>(null)
@@ -107,6 +108,14 @@
         setTimeout(() => {
             copiedUrl = false
         }, 2000)
+    }
+
+    function handleStop() {
+        if (eventSource) {
+            eventSource.close()
+            eventSource = null
+        }
+        isStreaming = false
     }
 
     async function handleFeedback(messageId: string, feedbackType: 'upvote' | 'downvote') {
@@ -389,7 +398,7 @@
         let currToolUseName: string
         let currToolUseInputStr: string
 
-        const eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
+        eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
 
         let streamCompleted = false
         let messageEventsReceived = 0
@@ -581,7 +590,8 @@
         eventSource.addEventListener('end_of_stream', () => {
             streamCompleted = true
             isStreaming = false
-            eventSource.close()
+            eventSource?.close()
+            eventSource = null
 
             if (messageEventsReceived === 0 && !error) {
                 error = 'Failed to generate response. Please try again.'
@@ -591,7 +601,8 @@
         eventSource.addEventListener('error', (event) => {
             error = 'Failed to generate response. Please try again.'
             isStreaming = false
-            eventSource.close()
+            eventSource?.close()
+            eventSource = null
         })
     }
 
@@ -909,6 +920,7 @@
                     search: 'Search for something else...',
                 }}
                 {isStreaming}
+                onStop={handleStop}
                 maxWidth="max-w-4xl" />
         </div>
     </div>

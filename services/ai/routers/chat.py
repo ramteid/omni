@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import cast, List
@@ -214,6 +215,11 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                             break
 
             for iteration in range(max_iterations):
+                # Check if client disconnected before starting expensive operations
+                if await request.is_disconnected():
+                    logger.info(f"[ASK] Client disconnected, stopping stream for chat {chat_id}")
+                    break
+
                 logger.info(f"[ASK] Iteration {iteration + 1}/{max_iterations}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
@@ -312,6 +318,11 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                     break
 
                 logger.info(f"[ASK] Processing {len(tool_calls)} tool calls")
+
+                # Check for disconnection before expensive tool execution
+                if await request.is_disconnected():
+                    logger.info(f"[ASK] Client disconnected before tool execution, stopping stream for chat {chat_id}")
+                    break
 
                 # Execute each tool call and add results
                 tool_results: list[ToolResultBlockParam] = []
@@ -427,6 +438,9 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
             
             yield f"event: end_of_stream\ndata: Stream ended\n\n"
 
+        except asyncio.CancelledError:
+            logger.info(f"[ASK] Stream cancelled for chat {chat_id}")
+            raise  # Re-raise to let FastAPI handle cleanup
         except Exception as e:
             logger.error(f"[ASK] Failed to generate AI response with tools: {e}", exc_info=True)
             yield f"event: error\ndata: Something went wrong, please try again later.\n\n"
