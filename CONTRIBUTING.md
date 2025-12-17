@@ -241,7 +241,7 @@ pub async fn search(
 
 ## Getting Help
 
-- **Discord**: Join our [community Discord](https://discord.gg/NB47AMHP)
+- **Discord**: Join our [community Discord](https://discord.gg/Ja4xwxmM)
 - **GitHub Issues**: For bug reports and feature requests
 - **Discussions**: For questions and ideas
 
