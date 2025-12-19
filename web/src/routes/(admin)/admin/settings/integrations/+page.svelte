@@ -21,6 +21,7 @@
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
+    import FilesystemConnectorSetupDialog from '$lib/components/filesystem-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { onMount, onDestroy } from 'svelte'
@@ -88,6 +89,7 @@
     let showGoogleSetup = $state(false)
     let showAtlassianSetup = $state(false)
     let showWebSetup = $state(false)
+    let showFilesystemSetup = $state(false)
 
     function handleConnect(integrationId: string) {
         if (integrationId === 'google') {
@@ -96,8 +98,9 @@
             showAtlassianSetup = true
         } else if (integrationId === 'web') {
             showWebSetup = true
+        } else if (integrationId === 'filesystem') {
+            showFilesystemSetup = true
         }
-        // TODO: Handle filesystem integration
     }
 
     function handleGoogleSetupSuccess() {
@@ -112,6 +115,11 @@
 
     function handleWebSetupSuccess() {
         showWebSetup = false
+        window.location.reload()
+    }
+
+    function handleFilesystemSetupSuccess() {
+        showFilesystemSetup = false
         window.location.reload()
     }
 
@@ -336,7 +344,7 @@
                         </CardHeader>
                         <CardContent class="flex-1" />
                         <CardFooter>
-                            {#if integration.id === 'slack' || integration.id === 'filesystem'}
+                            {#if integration.id === 'slack'}
                                 <Button size="sm" disabled>Coming Soon</Button>
                             {:else}
                                 <Button
@@ -368,3 +376,8 @@
     bind:open={showWebSetup}
     onSuccess={handleWebSetupSuccess}
     onCancel={() => (showWebSetup = false)} />
+
+<FilesystemConnectorSetupDialog
+    bind:open={showFilesystemSetup}
+    onSuccess={handleFilesystemSetupSuccess}
+    onCancel={() => (showFilesystemSetup = false)} />

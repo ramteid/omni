@@ -52,3 +52,11 @@ export interface GoogleDriveSourceConfig {
 export interface GmailSourceConfig {
     // Future: label_filters, date_range_filters, etc.
 }
+
+export interface FilesystemSourceConfig {
+    base_path: string
+    file_extensions?: string[]
+    exclude_patterns?: string[]
+    max_file_size_bytes?: number
+    scan_interval_seconds?: number
+}

@@ -7,22 +7,22 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
-use crate::models::FilesystemSource;
-use crate::scanner::FilesystemScanner;
-use crate::watcher::{FilesystemEventProcessor, FilesystemWatcher};
+use crate::models::FileSystemSource;
+use crate::scanner::FileSystemScanner;
+use crate::watcher::{FileSystemEventProcessor, FileSystemWatcher};
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{Source, SyncType};
 use shared::queue::EventQueue;
 use shared::ObjectStorage;
 
-pub struct FilesystemSyncManager {
+pub struct FileSystemSyncManager {
     pool: PgPool,
     event_queue: EventQueue,
     content_storage: Arc<dyn ObjectStorage>,
-    sources: HashMap<String, FilesystemSource>,
+    sources: HashMap<String, FileSystemSource>,
 }
 
-impl FilesystemSyncManager {
+impl FileSystemSyncManager {
     pub async fn new(pool: PgPool, event_queue: EventQueue) -> Result<Self> {
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
         Ok(Self {
@@ -41,7 +41,7 @@ impl FilesystemSyncManager {
         Ok(())
     }
 
-    fn parse_filesystem_source(&self, source: &Source) -> Result<FilesystemSource> {
+    fn parse_filesystem_source(&self, source: &Source) -> Result<FileSystemSource> {
         let config = &source.config;
 
         let base_path = config
@@ -74,7 +74,7 @@ impl FilesystemSyncManager {
 
         let max_file_size_bytes = config.get("max_file_size_bytes").and_then(|v| v.as_u64());
 
-        Ok(FilesystemSource {
+        Ok(FileSystemSource {
             id: source.id.clone(),
             name: source.name.clone(),
             base_path: PathBuf::from(base_path),
@@ -117,18 +117,21 @@ impl FilesystemSyncManager {
     }
 
     async fn run_source_sync(
-        source: FilesystemSource,
+        source: FileSystemSource,
         pool: PgPool,
         event_queue: EventQueue,
         source_id: String,
     ) -> Result<()> {
         info!("Starting sync for filesystem source: {}", source.name);
 
+        // Create content storage for the event processor
+        let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
+
         // Create channel for file system events
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
         // Start the file watcher
-        let watcher = FilesystemWatcher::new(source.clone(), event_sender);
+        let watcher = FileSystemWatcher::new(source.clone(), event_sender);
         let mut watcher_task = {
             let watcher = watcher;
             tokio::spawn(async move {
@@ -138,8 +141,22 @@ impl FilesystemSyncManager {
             })
         };
 
-        // Start the event processor
-        let mut event_processor = FilesystemEventProcessor::new(event_receiver);
+        // Create scanner for the event processor
+        let processor_scanner = FileSystemScanner::new(source.clone());
+
+        // Default idle timeout: 30 seconds
+        let idle_timeout_secs = 30;
+
+        // Start the event processor with all dependencies
+        let mut event_processor = FileSystemEventProcessor::new(
+            event_receiver,
+            processor_scanner,
+            event_queue.clone(),
+            content_storage.clone(),
+            source_id.clone(),
+            pool.clone(),
+            idle_timeout_secs,
+        );
         let mut processor_task = tokio::spawn(async move {
             if let Err(e) = event_processor.process_events().await {
                 error!("Event processor failed: {}", e);
@@ -147,7 +164,7 @@ impl FilesystemSyncManager {
         });
 
         // Start periodic full scans
-        let scanner = FilesystemScanner::new(source.clone());
+        let scanner = FileSystemScanner::new(source.clone());
         let scan_interval = Duration::from_secs(source.scan_interval_seconds);
         let mut scan_timer = interval(scan_interval);
 
@@ -182,7 +199,7 @@ impl FilesystemSyncManager {
     }
 
     async fn perform_full_scan(
-        scanner: &FilesystemScanner,
+        scanner: &FileSystemScanner,
         pool: &PgPool,
         event_queue: &EventQueue,
         source_id: &str,

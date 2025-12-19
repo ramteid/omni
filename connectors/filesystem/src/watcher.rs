@@ -1,28 +1,36 @@
-use crate::models::FilesystemSource;
+use crate::models::FileSystemSource;
+use crate::scanner::FileSystemScanner;
 use anyhow::Result;
 use notify::{Config, Event, EventKind, RecursiveMode, Watcher};
+use shared::db::repositories::SyncRunRepository;
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncRun, SyncType};
+use shared::queue::EventQueue;
+use shared::ObjectStorage;
+use sqlx::PgPool;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
+use tokio::time::{interval, Instant};
 use tracing::{debug, error, info, warn};
 
-pub struct FilesystemWatcher {
-    source: FilesystemSource,
-    event_sender: tokio_mpsc::UnboundedSender<FilesystemEvent>,
+pub struct FileSystemWatcher {
+    source: FileSystemSource,
+    event_sender: tokio_mpsc::UnboundedSender<FileSystemEvent>,
 }
 
 #[derive(Debug, Clone)]
-pub enum FilesystemEvent {
+pub enum FileSystemEvent {
     FileCreated(PathBuf),
     FileModified(PathBuf),
     FileDeleted(PathBuf),
 }
 
-impl FilesystemWatcher {
+impl FileSystemWatcher {
     pub fn new(
-        source: FilesystemSource,
-        event_sender: tokio_mpsc::UnboundedSender<FilesystemEvent>,
+        source: FileSystemSource,
+        event_sender: tokio_mpsc::UnboundedSender<FileSystemEvent>,
     ) -> Self {
         Self {
             source,
@@ -100,8 +108,8 @@ impl FilesystemWatcher {
 
     fn process_file_event(
         event: &Event,
-        source: &FilesystemSource,
-        event_sender: &tokio_mpsc::UnboundedSender<FilesystemEvent>,
+        source: &FileSystemSource,
+        event_sender: &tokio_mpsc::UnboundedSender<FileSystemEvent>,
     ) -> Result<()> {
         debug!("Processing file event: {:?}", event);
 
@@ -120,15 +128,15 @@ impl FilesystemWatcher {
             let filesystem_event = match event.kind {
                 EventKind::Create(_) => {
                     debug!("File created: {}", path.display());
-                    FilesystemEvent::FileCreated(path.clone())
+                    FileSystemEvent::FileCreated(path.clone())
                 }
                 EventKind::Modify(_) => {
                     debug!("File modified: {}", path.display());
-                    FilesystemEvent::FileModified(path.clone())
+                    FileSystemEvent::FileModified(path.clone())
                 }
                 EventKind::Remove(_) => {
                     debug!("File deleted: {}", path.display());
-                    FilesystemEvent::FileDeleted(path.clone())
+                    FileSystemEvent::FileDeleted(path.clone())
                 }
                 _ => {
                     // Other event types we don't care about
@@ -145,43 +153,240 @@ impl FilesystemWatcher {
     }
 }
 
-pub struct FilesystemEventProcessor {
-    event_receiver: tokio_mpsc::UnboundedReceiver<FilesystemEvent>,
+pub struct FileSystemEventProcessor {
+    event_receiver: tokio_mpsc::UnboundedReceiver<FileSystemEvent>,
+    scanner: FileSystemScanner,
+    event_queue: EventQueue,
+    content_storage: Arc<dyn ObjectStorage>,
+    source_id: String,
+    pool: PgPool,
+    // Batched sync_run state
+    current_sync_run: Option<SyncRun>,
+    idle_timeout: Duration,
+    last_event_time: Instant,
+    events_in_batch: i32,
 }
 
-impl FilesystemEventProcessor {
-    pub fn new(event_receiver: tokio_mpsc::UnboundedReceiver<FilesystemEvent>) -> Self {
-        Self { event_receiver }
+impl FileSystemEventProcessor {
+    pub fn new(
+        event_receiver: tokio_mpsc::UnboundedReceiver<FileSystemEvent>,
+        scanner: FileSystemScanner,
+        event_queue: EventQueue,
+        content_storage: Arc<dyn ObjectStorage>,
+        source_id: String,
+        pool: PgPool,
+        idle_timeout_secs: u64,
+    ) -> Self {
+        Self {
+            event_receiver,
+            scanner,
+            event_queue,
+            content_storage,
+            source_id,
+            pool,
+            current_sync_run: None,
+            idle_timeout: Duration::from_secs(idle_timeout_secs),
+            last_event_time: Instant::now(),
+            events_in_batch: 0,
+        }
     }
 
     pub async fn process_events(&mut self) -> Result<()> {
         info!("Starting filesystem event processor");
 
-        while let Some(event) = self.event_receiver.recv().await {
-            if let Err(e) = self.handle_event(event).await {
-                error!("Failed to handle filesystem event: {}", e);
+        let mut idle_check_interval = interval(Duration::from_secs(5));
+
+        loop {
+            tokio::select! {
+                Some(event) = self.event_receiver.recv() => {
+                    self.last_event_time = Instant::now();
+                    if let Err(e) = self.handle_event(event).await {
+                        error!("Failed to handle filesystem event: {}", e);
+                    }
+                }
+                _ = idle_check_interval.tick() => {
+                    self.maybe_commit_sync_run().await;
+                }
+            }
+        }
+    }
+
+    async fn get_or_create_sync_run(&mut self) -> Result<String> {
+        if let Some(ref run) = self.current_sync_run {
+            return Ok(run.id.clone());
+        }
+
+        let sync_run_repo = SyncRunRepository::new(&self.pool);
+        let sync_run = sync_run_repo
+            .create(&self.source_id, SyncType::Incremental)
+            .await?;
+
+        info!(
+            "Created new incremental sync_run for realtime events: {}",
+            sync_run.id
+        );
+
+        self.current_sync_run = Some(sync_run.clone());
+        self.events_in_batch = 0;
+
+        Ok(sync_run.id)
+    }
+
+    async fn maybe_commit_sync_run(&mut self) {
+        if self.current_sync_run.is_none() {
+            return;
+        }
+
+        let elapsed = self.last_event_time.elapsed();
+        if elapsed < self.idle_timeout {
+            return;
+        }
+
+        if let Some(ref run) = self.current_sync_run {
+            let sync_run_repo = SyncRunRepository::new(&self.pool);
+            match sync_run_repo
+                .mark_completed(&run.id, self.events_in_batch, self.events_in_batch)
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "Committed incremental sync_run {} with {} events",
+                        run.id, self.events_in_batch
+                    );
+                }
+                Err(e) => {
+                    error!("Failed to commit sync_run {}: {}", run.id, e);
+                }
             }
         }
 
-        info!("Filesystem event processor stopped");
+        self.current_sync_run = None;
+        self.events_in_batch = 0;
+    }
+
+    async fn handle_event(&mut self, event: FileSystemEvent) -> Result<()> {
+        match event {
+            FileSystemEvent::FileCreated(path) => {
+                info!("Handling file creation: {}", path.display());
+                self.handle_file_created_or_modified(&path, true).await?;
+            }
+            FileSystemEvent::FileModified(path) => {
+                info!("Handling file modification: {}", path.display());
+                self.handle_file_created_or_modified(&path, false).await?;
+            }
+            FileSystemEvent::FileDeleted(path) => {
+                info!("Handling file deletion: {}", path.display());
+                self.handle_file_deleted(&path).await?;
+            }
+        }
+
         Ok(())
     }
 
-    async fn handle_event(&self, event: FilesystemEvent) -> Result<()> {
-        match event {
-            FilesystemEvent::FileCreated(path) => {
-                info!("Handling file creation: {}", path.display());
-                // TODO: Trigger indexing for the new file
+    async fn handle_file_created_or_modified(
+        &mut self,
+        path: &PathBuf,
+        is_created: bool,
+    ) -> Result<()> {
+        // Get or create sync_run for this batch
+        let sync_run_id = self.get_or_create_sync_run().await?;
+
+        // Get file info
+        let file = match self.scanner.get_file_info(path).await? {
+            Some(f) => f,
+            None => {
+                debug!("Skipping file (filtered or directory): {}", path.display());
+                return Ok(());
             }
-            FilesystemEvent::FileModified(path) => {
-                info!("Handling file modification: {}", path.display());
-                // TODO: Trigger re-indexing for the modified file
-            }
-            FilesystemEvent::FileDeleted(path) => {
-                info!("Handling file deletion: {}", path.display());
-                // TODO: Remove the file from the index
-            }
+        };
+
+        // Read file content
+        let content = self.scanner.read_file_content(&file).await?;
+        if content.is_empty() {
+            debug!("Skipping file with empty content: {}", path.display());
+            return Ok(());
         }
+
+        // Store content in object storage
+        let content_id = self
+            .content_storage
+            .store_text(&content, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to store content: {}", e))?;
+
+        // Create the connector event
+        let document_id = path.to_string_lossy().to_string();
+
+        let event = if is_created {
+            file.to_connector_event(sync_run_id, self.source_id.clone(), content_id)
+        } else {
+            // For updates, we create a DocumentUpdated event
+            ConnectorEvent::DocumentUpdated {
+                sync_run_id,
+                source_id: self.source_id.clone(),
+                document_id: document_id.clone(),
+                content_id,
+                metadata: DocumentMetadata {
+                    title: Some(file.name),
+                    author: None,
+                    created_at: file.created_time.and_then(|t| {
+                        t.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                            .ok()
+                            .and_then(|d| {
+                                time::OffsetDateTime::from_unix_timestamp(d.as_secs() as i64).ok()
+                            })
+                    }),
+                    updated_at: file.modified_time.and_then(|t| {
+                        t.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                            .ok()
+                            .and_then(|d| {
+                                time::OffsetDateTime::from_unix_timestamp(d.as_secs() as i64).ok()
+                            })
+                    }),
+                    mime_type: Some(file.mime_type),
+                    size: Some(file.size.to_string()),
+                    url: None,
+                    path: Some(file.path.to_string_lossy().to_string()),
+                    extra: None,
+                },
+                permissions: Some(DocumentPermissions {
+                    public: false,
+                    users: vec![],
+                    groups: vec![],
+                }),
+            }
+        };
+
+        // Queue the event
+        self.event_queue.enqueue(&self.source_id, &event).await?;
+        self.events_in_batch += 1;
+
+        info!(
+            "Queued {} event for file: {}",
+            if is_created { "create" } else { "update" },
+            path.display()
+        );
+
+        Ok(())
+    }
+
+    async fn handle_file_deleted(&mut self, path: &PathBuf) -> Result<()> {
+        // Get or create sync_run for this batch
+        let sync_run_id = self.get_or_create_sync_run().await?;
+
+        let document_id = path.to_string_lossy().to_string();
+
+        let event = ConnectorEvent::DocumentDeleted {
+            sync_run_id,
+            source_id: self.source_id.clone(),
+            document_id: document_id.clone(),
+        };
+
+        // Queue the event
+        self.event_queue.enqueue(&self.source_id, &event).await?;
+        self.events_in_batch += 1;
+
+        info!("Queued delete event for file: {}", path.display());
 
         Ok(())
     }

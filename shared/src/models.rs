@@ -157,7 +157,7 @@ pub enum SourceType {
     Slack,
     Github,
     LocalFiles,
-    Filesystem,
+    FileSystem,
     Web,
 }
 

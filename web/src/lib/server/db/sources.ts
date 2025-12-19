@@ -1,7 +1,12 @@
 import { eq, inArray, and, desc } from 'drizzle-orm'
 import { db } from './index'
 import { sources, type Source } from './schema'
-import type { ConfluenceSourceConfig, JiraSourceConfig, WebSourceConfig } from '$lib/types'
+import type {
+    ConfluenceSourceConfig,
+    FilesystemSourceConfig,
+    JiraSourceConfig,
+    WebSourceConfig,
+} from '$lib/types'
 
 export type UserFilterMode = 'all' | 'whitelist' | 'blacklist'
 
@@ -24,6 +29,7 @@ export async function updateSourceById(
             | WebSourceConfig
             | ConfluenceSourceConfig
             | JiraSourceConfig
+            | FilesystemSourceConfig
             | Record<string, unknown>
         userFilterMode?: UserFilterMode
         userWhitelist?: string[] | null

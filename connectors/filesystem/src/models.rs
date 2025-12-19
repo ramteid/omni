@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilesystemFile {
+pub struct FileSystemFile {
     pub path: PathBuf,
     pub name: String,
     pub size: u64,
@@ -14,17 +14,17 @@ pub struct FilesystemFile {
     pub created_time: Option<SystemTime>,
     pub modified_time: Option<SystemTime>,
     pub is_directory: bool,
-    pub permissions: FilesystemPermissions,
+    pub permissions: FileSystemPermissions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilesystemPermissions {
+pub struct FileSystemPermissions {
     pub readable: bool,
     pub writable: bool,
     pub executable: bool,
 }
 
-impl FilesystemFile {
+impl FileSystemFile {
     pub fn to_connector_event(
         self,
         sync_run_id: String,
@@ -89,7 +89,7 @@ impl FilesystemFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FilesystemSource {
+pub struct FileSystemSource {
     pub id: String,
     pub name: String,
     pub base_path: PathBuf,
@@ -99,7 +99,7 @@ pub struct FilesystemSource {
     pub max_file_size_bytes: Option<u64>,
 }
 
-impl FilesystemSource {
+impl FileSystemSource {
     pub fn should_include_file(&self, file_path: &PathBuf) -> bool {
         // Check file extension filter
         if let Some(extensions) = &self.file_extensions {

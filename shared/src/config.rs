@@ -71,7 +71,7 @@ pub struct SlackConnectorConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct FilesystemConnectorConfig {
+pub struct FileSystemConnectorConfig {
     pub database: DatabaseConfig,
 }
 
@@ -401,7 +401,7 @@ impl SlackConnectorConfig {
     }
 }
 
-impl FilesystemConnectorConfig {
+impl FileSystemConnectorConfig {
     pub fn from_env() -> Self {
         let database = DatabaseConfig::from_env();
 
