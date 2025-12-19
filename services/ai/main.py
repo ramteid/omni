@@ -14,7 +14,11 @@ import time
 from providers import create_llm_provider
 from embeddings import create_embedding_provider, DEFAULT_TASK
 from tools import SearcherTool
-from pdf_extractor import PDFExtractionRequest, PDFExtractionResponse, extract_text_from_pdf
+from pdf_extractor import (
+    PDFExtractionRequest,
+    PDFExtractionResponse,
+    extract_text_from_pdf,
+)
 from logger import setup_logging
 from config import *  # Import all config variables
 from db_config import get_llm_config, get_embedding_config
@@ -42,23 +46,27 @@ app.include_router(chat_router)
 max_workers = max(2, min(multiprocessing.cpu_count() - 1, 8))
 _executor = ThreadPoolExecutor(max_workers=max_workers)
 
+
 # Priority queue for managing embedding requests
 class Priority(IntEnum):
-    HIGH = 1    # Searcher requests
+    HIGH = 1  # Searcher requests
     NORMAL = 2  # Default
-    LOW = 3     # Indexer bulk requests
+    LOW = 3  # Indexer bulk requests
+
 
 @dataclass(order=True)
 class PrioritizedRequest:
     priority: int
     request_id: str = field(compare=False)
-    request: 'EmbeddingRequest' = field(compare=False)
+    request: "EmbeddingRequest" = field(compare=False)
     future: asyncio.Future = field(compare=False)
     timestamp: float = field(default_factory=time.time, compare=False)
+
 
 # Global priority queue
 _request_queue: asyncio.PriorityQueue = None
 _queue_processor_task = None
+
 
 class EmbeddingRequest(BaseModel):
     texts: List[str]
@@ -120,7 +128,9 @@ async def startup_event():
     # Initialize embedding provider using database configuration (with env fallback)
     try:
         embedding_config = await get_embedding_config()
-        logger.info(f"Loaded embedding configuration from database (provider: {embedding_config.provider})")
+        logger.info(
+            f"Loaded embedding configuration from database (provider: {embedding_config.provider})"
+        )
 
         if embedding_config.provider == "jina":
             if not embedding_config.jina_api_key:
@@ -128,62 +138,76 @@ async def startup_event():
             if not embedding_config.jina_model:
                 raise ValueError("JINA_MODEL is required when using Jina provider")
 
-            logger.info(f"Initializing JINA embedding provider with model: {embedding_config.jina_model}")
+            logger.info(
+                f"Initializing JINA embedding provider with model: {embedding_config.jina_model}"
+            )
             app.state.embedding_provider = create_embedding_provider(
                 embedding_config.provider,
                 api_key=embedding_config.jina_api_key,
                 model=embedding_config.jina_model,
-                api_url=embedding_config.jina_api_url or "https://api.jina.ai/v1/embeddings"
+                api_url=embedding_config.jina_api_url
+                or "https://api.jina.ai/v1/embeddings",
             )
         elif embedding_config.provider == "bedrock":
             if not embedding_config.bedrock_model_id:
-                raise ValueError("BEDROCK_EMBEDDING_MODEL_ID is required when using Bedrock provider")
+                raise ValueError(
+                    "BEDROCK_EMBEDDING_MODEL_ID is required when using Bedrock provider"
+                )
 
-            logger.info(f"Initializing Bedrock embedding provider with model: {embedding_config.bedrock_model_id}")
+            logger.info(
+                f"Initializing Bedrock embedding provider with model: {embedding_config.bedrock_model_id}"
+            )
             region_name = AWS_REGION if AWS_REGION else None
             app.state.embedding_provider = create_embedding_provider(
                 embedding_config.provider,
                 model_id=embedding_config.bedrock_model_id,
-                region_name=region_name
+                region_name=region_name,
             )
         elif embedding_config.provider == "openai":
             api_key = embedding_config.openai_api_key or OPENAI_EMBEDDING_API_KEY
             if not api_key:
-                raise ValueError("OPENAI_EMBEDDING_API_KEY is required when using OpenAI provider")
+                raise ValueError(
+                    "OPENAI_EMBEDDING_API_KEY is required when using OpenAI provider"
+                )
 
             model = embedding_config.openai_model or OPENAI_EMBEDDING_MODEL
-            dimensions = embedding_config.openai_dimensions or OPENAI_EMBEDDING_DIMENSIONS
+            dimensions = (
+                embedding_config.openai_dimensions or OPENAI_EMBEDDING_DIMENSIONS
+            )
 
             logger.info(f"Initializing OpenAI embedding provider with model: {model}")
             app.state.embedding_provider = create_embedding_provider(
-                "openai",
-                api_key=api_key,
-                model=model,
-                dimensions=dimensions
+                "openai", api_key=api_key, model=model, dimensions=dimensions
             )
         elif embedding_config.provider == "local":
             base_url = embedding_config.local_base_url or LOCAL_EMBEDDINGS_URL
             model = embedding_config.local_model or LOCAL_EMBEDDINGS_MODEL
 
-            logger.info(f"Initializing local (vLLM) embedding provider with model: {model} at {base_url}")
+            logger.info(
+                f"Initializing local (vLLM) embedding provider with model: {model} at {base_url}"
+            )
             app.state.embedding_provider = create_embedding_provider(
-                "local",
-                base_url=base_url,
-                model=model
+                "local", base_url=base_url, model=model
             )
         else:
             raise ValueError(f"Unknown embedding provider: {embedding_config.provider}")
 
-        logger.info(f"Initialized {embedding_config.provider} embedding provider with model: {app.state.embedding_provider.get_model_name()}")
+        logger.info(
+            f"Initialized {embedding_config.provider} embedding provider with model: {app.state.embedding_provider.get_model_name()}"
+        )
 
         # Initialize LLM provider using database configuration (with env fallback)
         llm_config = await get_llm_config()
-        logger.info(f"Loaded LLM configuration from database (provider: {llm_config.provider})")
+        logger.info(
+            f"Loaded LLM configuration from database (provider: {llm_config.provider})"
+        )
 
         if llm_config.provider == "vllm":
             if not llm_config.vllm_url:
                 raise ValueError("VLLM_URL is required when using vLLM provider")
-            app.state.llm_provider = create_llm_provider("vllm", vllm_url=llm_config.vllm_url)
+            app.state.llm_provider = create_llm_provider(
+                "vllm", vllm_url=llm_config.vllm_url
+            )
             logger.info(f"Initialized vLLM provider with URL: {llm_config.vllm_url}")
         elif llm_config.provider == "anthropic":
             if not llm_config.anthropic_api_key:
@@ -193,18 +217,22 @@ async def startup_event():
             app.state.llm_provider = create_llm_provider(
                 "anthropic",
                 api_key=llm_config.anthropic_api_key,
-                model=llm_config.primary_model_id
+                model=llm_config.primary_model_id,
             )
-            logger.info(f"Initialized Anthropic provider with model: {llm_config.primary_model_id}")
+            logger.info(
+                f"Initialized Anthropic provider with model: {llm_config.primary_model_id}"
+            )
         elif llm_config.provider == "bedrock":
             region_name = AWS_REGION if AWS_REGION else None
             app.state.llm_provider = create_llm_provider(
                 "bedrock",
                 model_id=llm_config.primary_model_id,
                 secondary_model_id=llm_config.secondary_model_id,
-                region_name=region_name
+                region_name=region_name,
             )
-            logger.info(f"Initialized AWS Bedrock provider with model: {llm_config.primary_model_id}")
+            logger.info(
+                f"Initialized AWS Bedrock provider with model: {llm_config.primary_model_id}"
+            )
             if llm_config.secondary_model_id:
                 logger.info(f"Using secondary model: {llm_config.secondary_model_id}")
             if region_name:
@@ -224,12 +252,16 @@ async def startup_event():
         logger.info("Initialized content storage for batch processing")
 
         # Start batch processing in background (always enabled)
-        asyncio.create_task(start_batch_processing(
-            app.state.content_storage,
-            app.state.embedding_provider,
-            embedding_config.provider  # Pass provider type for routing
-        ))
-        logger.info(f"Started embedding batch processing with provider: {embedding_config.provider}")
+        asyncio.create_task(
+            start_batch_processing(
+                app.state.content_storage,
+                app.state.embedding_provider,
+                embedding_config.provider,  # Pass provider type for routing
+            )
+        )
+        logger.info(
+            f"Started embedding batch processing with provider: {embedding_config.provider}"
+        )
 
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
@@ -244,14 +276,14 @@ async def process_embedding_queue():
             prioritized_request = await _request_queue.get()
             request = prioritized_request.request
             future = prioritized_request.future
-            
+
             # Log queue wait time for monitoring
             wait_time = time.time() - prioritized_request.timestamp
             if wait_time > 1.0:
                 logger.warning(
                     f"Request {prioritized_request.request_id} waited {wait_time:.2f}s in queue (priority: {prioritized_request.priority})"
                 )
-            
+
             try:
                 # Process the embedding request using the provider
                 chunk_batch = await app.state.embedding_provider.generate_embeddings(
@@ -263,19 +295,21 @@ async def process_embedding_queue():
                 )
 
                 response = EmbeddingResponse(
-                    embeddings=[[c.embedding for c in chunks] for chunks in chunk_batch],
+                    embeddings=[
+                        [c.embedding for c in chunks] for chunks in chunk_batch
+                    ],
                     chunks_count=[len(chunks) for chunks in chunk_batch],
                     chunks=[[c.span for c in chunks] for chunks in chunk_batch],
                     model_name=app.state.embedding_provider.get_model_name(),
                 )
-                
+
                 # Set the result on the future
                 future.set_result(response)
-                
+
             except Exception as e:
                 logger.error(f"Failed to process embedding request: {e}")
                 future.set_exception(e)
-                
+
         except asyncio.CancelledError:
             logger.info("Queue processor task cancelled")
             break
@@ -288,14 +322,14 @@ async def process_embedding_queue():
 async def shutdown_event():
     """Cleanup on shutdown"""
     global _queue_processor_task
-    
+
     if _queue_processor_task:
         _queue_processor_task.cancel()
         try:
             await _queue_processor_task
         except asyncio.CancelledError:
             pass
-    
+
     logger.info("AI service shutdown complete")
 
 
@@ -304,14 +338,18 @@ async def health_check():
     """Health check endpoint"""
     # Check LLM provider health
     llm_health = False
-    if hasattr(app.state, 'llm_provider') and app.state.llm_provider:
+    if hasattr(app.state, "llm_provider") and app.state.llm_provider:
         try:
             llm_health = await app.state.llm_provider.health_check()
         except Exception:
             llm_health = False
 
     # Get embedding model name from provider
-    embedding_model = app.state.embedding_provider.get_model_name() if hasattr(app.state, 'embedding_provider') else "unknown"
+    embedding_model = (
+        app.state.embedding_provider.get_model_name()
+        if hasattr(app.state, "embedding_provider")
+        else "unknown"
+    )
 
     # Get current configurations
     llm_config = await get_llm_config()
@@ -357,36 +395,34 @@ async def generate_embeddings(request: EmbeddingRequest):
         priority_map = {
             "high": Priority.HIGH,
             "normal": Priority.NORMAL,
-            "low": Priority.LOW
+            "low": Priority.LOW,
         }
         priority = priority_map.get(request.priority, Priority.NORMAL)
-        
+
         # Create a future for this request
         future = asyncio.Future()
-        
+
         # Generate a unique request ID
         import uuid
+
         request_id = str(uuid.uuid4())[:8]
-        
+
         # Create prioritized request
         prioritized_request = PrioritizedRequest(
-            priority=priority,
-            request_id=request_id,
-            request=request,
-            future=future
+            priority=priority, request_id=request_id, request=request, future=future
         )
-        
+
         # Add to queue
         await _request_queue.put(prioritized_request)
-        
+
         # Log queue size if it's getting large
         queue_size = _request_queue.qsize()
         if queue_size > 10:
             logger.warning(f"Embedding queue size: {queue_size}")
-        
+
         # Wait for the result
         response = await future
-        
+
         logger.info(
             f"Generated these many chunks for each input text: {response.chunks_count}"
         )
@@ -413,7 +449,7 @@ async def rag_inference(request: RAGRequest):
 @app.post("/prompt")
 async def generate_response(request: PromptRequest):
     """Generate a response from the configured LLM provider with streaming support"""
-    if not hasattr(app.state, 'llm_provider') or not app.state.llm_provider:
+    if not hasattr(app.state, "llm_provider") or not app.state.llm_provider:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
     logger.info(
@@ -434,7 +470,7 @@ async def generate_response(request: PromptRequest):
                 top_p=request.top_p,
             ):
                 # Extract text content from MessageStreamEvent
-                if event.type == 'content_block_delta':
+                if event.type == "content_block_delta":
                     if event.delta.text:
                         yield event.delta.text
         except Exception as e:
@@ -452,26 +488,26 @@ async def generate_response(request: PromptRequest):
 async def extract_pdf(request: PDFExtractionRequest):
     """Extract text from a PDF file"""
     logger.info(f"Extracting text from PDF ({len(request.pdf_bytes)} bytes)")
-    
+
     # Run PDF extraction in executor to avoid blocking
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
-        _executor,
-        extract_text_from_pdf,
-        request.pdf_bytes
+        _executor, extract_text_from_pdf, request.pdf_bytes
     )
-    
+
     if result.error:
         logger.warning(f"PDF extraction completed with error: {result.error}")
     else:
-        logger.info(f"PDF extraction successful: {result.page_count} pages, {len(result.text)} characters")
-    
+        logger.info(
+            f"PDF extraction successful: {result.page_count} pages, {len(result.text)} characters"
+        )
+
     return result
 
 
 async def generate_non_streaming_response(request: PromptRequest) -> PromptResponse:
     """Generate non-streaming response for backward compatibility"""
-    if not hasattr(app.state, 'llm_provider') or not app.state.llm_provider:
+    if not hasattr(app.state, "llm_provider") or not app.state.llm_provider:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
     try:

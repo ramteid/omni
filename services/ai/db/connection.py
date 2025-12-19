@@ -6,6 +6,7 @@ from urllib.parse import quote_plus
 
 _db_pool: Optional[Pool] = None
 
+
 def construct_database_url() -> str:
     """Construct database URL from individual components"""
     database_host = os.environ["DATABASE_HOST"]
@@ -15,6 +16,7 @@ def construct_database_url() -> str:
     database_port = os.environ.get("DATABASE_PORT", "5432")
 
     return f"postgresql://{quote_plus(database_username)}:{quote_plus(database_password)}@{database_host}:{database_port}/{database_name}"
+
 
 async def get_db_pool() -> Pool:
     """Get or create database connection pool"""
@@ -28,10 +30,11 @@ async def get_db_pool() -> Pool:
             max_size=20,
             max_queries=50000,
             max_inactive_connection_lifetime=300.0,
-            command_timeout=60.0
+            command_timeout=60.0,
         )
 
     return _db_pool
+
 
 async def close_db_pool():
     """Close database connection pool"""

@@ -78,7 +78,9 @@ async def main():
     vllm_url = os.getenv("VLLM_URL", "http://localhost:8000")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
-    bedrock_model_id = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+    bedrock_model_id = os.getenv(
+        "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    )
     aws_region = os.getenv("AWS_REGION", "")
 
     results = []
@@ -147,9 +149,7 @@ async def main():
             "  TEST_ANTHROPIC=true ANTHROPIC_API_KEY=your-key python test_providers.py"
         )
         print("\n  # Test Bedrock provider")
-        print(
-            "  TEST_BEDROCK=true python test_providers.py"
-        )
+        print("  TEST_BEDROCK=true python test_providers.py")
         print("\n  # Test all providers")
         print(
             "  TEST_VLLM=true TEST_ANTHROPIC=true TEST_BEDROCK=true VLLM_URL=http://localhost:8000 ANTHROPIC_API_KEY=your-key python test_providers.py"

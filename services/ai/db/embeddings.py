@@ -34,7 +34,7 @@ class EmbeddingsRepository:
             DELETE FROM embeddings
             WHERE document_id = ANY($1)
             """,
-            document_ids
+            document_ids,
         )
         logger.info(f"Deleted existing embeddings for {len(document_ids)} documents")
 
@@ -59,25 +59,31 @@ class EmbeddingsRepository:
         # Prepare data for COPY
         records = [
             (
-                emb['id'],
-                emb['document_id'],
-                emb['chunk_index'],
-                emb['chunk_start_offset'],
-                emb['chunk_end_offset'],
-                emb['embedding'],
-                emb['model_name'],
-                emb.get('created_at', datetime.utcnow())
+                emb["id"],
+                emb["document_id"],
+                emb["chunk_index"],
+                emb["chunk_start_offset"],
+                emb["chunk_end_offset"],
+                emb["embedding"],
+                emb["model_name"],
+                emb.get("created_at", datetime.utcnow()),
             )
             for emb in embeddings
         ]
 
         # Use COPY for efficient bulk insert
         await pool.copy_records_to_table(
-            'embeddings',
+            "embeddings",
             records=records,
             columns=[
-                'id', 'document_id', 'chunk_index', 'chunk_start_offset',
-                'chunk_end_offset', 'embedding', 'model_name', 'created_at'
-            ]
+                "id",
+                "document_id",
+                "chunk_index",
+                "chunk_start_offset",
+                "chunk_end_offset",
+                "embedding",
+                "model_name",
+                "created_at",
+            ],
         )
         logger.info(f"Bulk inserted {len(embeddings)} embeddings")

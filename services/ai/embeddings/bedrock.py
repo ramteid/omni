@@ -100,7 +100,10 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
                     # Generate embeddings for all chunks
                     if chunk_texts:
                         embeddings = self.client.generate_embeddings(chunk_texts, task)
-                        chunks = [Chunk(span, embedding) for span, embedding in zip(all_spans, embeddings)]
+                        chunks = [
+                            Chunk(span, embedding)
+                            for span, embedding in zip(all_spans, embeddings)
+                        ]
                     else:
                         # Fallback to entire text
                         embeddings = self.client.generate_embeddings([text], task)
@@ -110,7 +113,7 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
                     # Fixed-size chunking
                     chunks_list = []
                     for i in range(0, len(text), chunk_size):
-                        chunk_text = text[i:i + chunk_size]
+                        chunk_text = text[i : i + chunk_size]
                         chunks_list.append((i, min(i + len(chunk_text), len(text))))
 
                     # Extract text for each chunk
@@ -118,11 +121,16 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
                     # Generate embeddings
                     embeddings = self.client.generate_embeddings(chunk_texts, task)
-                    chunks = [Chunk(span, embedding) for span, embedding in zip(chunks_list, embeddings)]
+                    chunks = [
+                        Chunk(span, embedding)
+                        for span, embedding in zip(chunks_list, embeddings)
+                    ]
 
                 else:
                     # Default to no chunking for unsupported modes
-                    logger.warning(f"Unsupported chunking mode: {chunking_mode}, using no chunking")
+                    logger.warning(
+                        f"Unsupported chunking mode: {chunking_mode}, using no chunking"
+                    )
                     embeddings = self.client.generate_embeddings([text], task)
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
@@ -163,7 +171,9 @@ class BedrockEmbeddingClient:
             self.client = boto3.client("bedrock-runtime")
             logger.info("Created Bedrock client with auto-detected region")
 
-    def generate_embeddings(self, texts: List[str], task: str = DEFAULT_TASK) -> List[List[float]]:
+    def generate_embeddings(
+        self, texts: List[str], task: str = DEFAULT_TASK
+    ) -> List[List[float]]:
         """Generate embeddings for a list of texts"""
 
         # Handle empty input
@@ -184,8 +194,7 @@ class BedrockEmbeddingClient:
                 try:
                     # Invoke the model with the request
                     response = self.client.invoke_model(
-                        modelId=self.model_id,
-                        body=request_body
+                        modelId=self.model_id, body=request_body
                     )
 
                     # Decode the model's native response body
@@ -197,17 +206,20 @@ class BedrockEmbeddingClient:
 
                     # Log token count if available
                     if "inputTextTokenCount" in model_response:
-                        logger.debug(f"Input tokens: {model_response['inputTextTokenCount']}, Embedding size: {len(embedding)}")
+                        logger.debug(
+                            f"Input tokens: {model_response['inputTextTokenCount']}, Embedding size: {len(embedding)}"
+                        )
 
                     break  # Success, exit retry loop
 
                 except Exception as e:
                     if attempt < BEDROCK_MAX_RETRIES - 1:
                         logger.warning(f"Bedrock API error: {e}, retrying...")
-                        time.sleep(BEDROCK_RETRY_DELAY * (2 ** attempt))
+                        time.sleep(BEDROCK_RETRY_DELAY * (2**attempt))
                     else:
-                        logger.error(f"Failed to get embeddings from Bedrock after {BEDROCK_MAX_RETRIES} retries: {e}")
+                        logger.error(
+                            f"Failed to get embeddings from Bedrock after {BEDROCK_MAX_RETRIES} retries: {e}"
+                        )
                         raise Exception(f"Bedrock embedding failed: {e}")
 
         return all_embeddings
-

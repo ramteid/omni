@@ -4,7 +4,12 @@ from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION, DEPLOYMENT_ENVIRONMENT
+from opentelemetry.sdk.resources import (
+    Resource,
+    SERVICE_NAME,
+    SERVICE_VERSION,
+    DEPLOYMENT_ENVIRONMENT,
+)
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from ulid import ULID
@@ -41,7 +46,9 @@ def init_telemetry(app, service_name: str = "omni-ai"):
         processor = BatchSpanProcessor(otlp_exporter)
         provider.add_span_processor(processor)
     else:
-        logger.info("No OTLP endpoint configured, telemetry will be collected locally only")
+        logger.info(
+            "No OTLP endpoint configured, telemetry will be collected locally only"
+        )
 
     # Set the global tracer provider
     trace.set_tracer_provider(provider)

@@ -43,14 +43,17 @@ from db import (
 boto3 = None
 smart_open = None
 
+
 def _import_bedrock_deps():
     """Import boto3 and smart_open lazily (only needed for Bedrock)"""
     global boto3, smart_open
     if boto3 is None:
         import boto3 as _boto3
         import smart_open as _smart_open
+
         boto3 = _boto3
         smart_open = _smart_open
+
 
 logger = logging.getLogger(__name__)
 
@@ -87,9 +90,9 @@ class S3StorageClient(StorageClient):
         self.bucket = bucket
         self.region = region
         if region:
-            self.s3_client = boto3.client('s3', region_name=region)
+            self.s3_client = boto3.client("s3", region_name=region)
         else:
-            self.s3_client = boto3.client('s3')
+            self.s3_client = boto3.client("s3")
         logger.info(f"Initialized S3 storage client for bucket: {bucket}")
 
         self.max_records_per_file = 1000
@@ -97,14 +100,21 @@ class S3StorageClient(StorageClient):
     async def upload_jsonl(self, path: str, records: AsyncGenerator[dict, None]) -> int:
         """Upload JSONL to S3."""
         num_records = 0
-        with smart_open.open(f"s3://{self.bucket}/{path}", 'w', transport_params={ 'min_part_size': 25 * 1024 * 1024 }, buffering=5 * 1024 * 1024) as f:
+        with smart_open.open(
+            f"s3://{self.bucket}/{path}",
+            "w",
+            transport_params={"min_part_size": 25 * 1024 * 1024},
+            buffering=5 * 1024 * 1024,
+        ) as f:
             async for record in records:
-                jsonl = json.dumps(record) + '\n'
+                jsonl = json.dumps(record) + "\n"
                 f.write(jsonl)
                 num_records += 1
 
                 if num_records % 100 == 0:
-                    logger.info(f"Uploaded {num_records} records to s3://{self.bucket}/{path}")
+                    logger.info(
+                        f"Uploaded {num_records} records to s3://{self.bucket}/{path}"
+                    )
 
         logger.info(f"Uploaded {num_records} records to s3://{self.bucket}/{path}")
         return num_records
@@ -113,12 +123,13 @@ class S3StorageClient(StorageClient):
         """Download JSONL from S3"""
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
-            None,
-            lambda: self.s3_client.get_object(Bucket=self.bucket, Key=path)
+            None, lambda: self.s3_client.get_object(Bucket=self.bucket, Key=path)
         )
 
-        content = response['Body'].read().decode('utf-8')
-        records = [json.loads(line) for line in content.strip().split('\n') if line.strip()]
+        content = response["Body"].read().decode("utf-8")
+        records = [
+            json.loads(line) for line in content.strip().split("\n") if line.strip()
+        ]
         logger.info(f"Downloaded {len(records)} records from s3://{self.bucket}/{path}")
         return records
 
@@ -127,12 +138,12 @@ class S3StorageClient(StorageClient):
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None,
-            lambda: self.s3_client.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
+            lambda: self.s3_client.list_objects_v2(Bucket=self.bucket, Prefix=prefix),
         )
 
         files = []
-        if 'Contents' in response:
-            files = [obj['Key'] for obj in response['Contents']]
+        if "Contents" in response:
+            files = [obj["Key"] for obj in response["Contents"]]
 
         logger.debug(f"Found {len(files)} files with prefix: {prefix}")
         return files
@@ -144,12 +155,7 @@ class S3StorageClient(StorageClient):
 class BatchInferenceProvider:
     """Abstract interface for batch inference providers"""
 
-    async def submit_job(
-        self,
-        input_path: str,
-        output_path: str,
-        job_name: str
-    ) -> str:
+    async def submit_job(self, input_path: str, output_path: str, job_name: str) -> str:
         """Submit batch job, return external_job_id"""
         raise NotImplementedError
 
@@ -166,17 +172,12 @@ class BedrockBatchProvider(BatchInferenceProvider):
         self.model_id = model_id
         self.role_arn = role_arn
         if region:
-            self.bedrock_client = boto3.client('bedrock', region_name=region)
+            self.bedrock_client = boto3.client("bedrock", region_name=region)
         else:
-            self.bedrock_client = boto3.client('bedrock')
+            self.bedrock_client = boto3.client("bedrock")
         logger.info(f"Initialized Bedrock batch provider with model: {model_id}")
 
-    async def submit_job(
-        self,
-        input_path: str,
-        output_path: str,
-        job_name: str
-    ) -> str:
+    async def submit_job(self, input_path: str, output_path: str, job_name: str) -> str:
         """Submit batch job to Bedrock"""
         loop = asyncio.get_event_loop()
 
@@ -186,20 +187,12 @@ class BedrockBatchProvider(BatchInferenceProvider):
                 roleArn=self.role_arn,
                 modelId=self.model_id,
                 jobName=job_name,
-                inputDataConfig={
-                    's3InputDataConfig': {
-                        's3Uri': input_path
-                    }
-                },
-                outputDataConfig={
-                    's3OutputDataConfig': {
-                        's3Uri': output_path
-                    }
-                }
-            )
+                inputDataConfig={"s3InputDataConfig": {"s3Uri": input_path}},
+                outputDataConfig={"s3OutputDataConfig": {"s3Uri": output_path}},
+            ),
         )
 
-        job_arn = response['jobArn']
+        job_arn = response["jobArn"]
         logger.info(f"Submitted Bedrock batch job: {job_arn}")
         return job_arn
 
@@ -212,28 +205,28 @@ class BedrockBatchProvider(BatchInferenceProvider):
                 None,
                 lambda: self.bedrock_client.get_model_invocation_job(
                     jobIdentifier=external_job_id
-                )
+                ),
             )
 
-            status = response['status']
-            error_message = response.get('message') if status == 'Failed' else None
+            status = response["status"]
+            error_message = response.get("message") if status == "Failed" else None
 
             # Map Bedrock status to our internal status
             status_map = {
-                'Submitted': 'submitted',
-                'InProgress': 'processing',
-                'Completed': 'completed',
-                'Failed': 'failed',
-                'Stopping': 'processing',
-                'Stopped': 'failed'
+                "Submitted": "submitted",
+                "InProgress": "processing",
+                "Completed": "completed",
+                "Failed": "failed",
+                "Stopping": "processing",
+                "Stopped": "failed",
             }
 
-            internal_status = status_map.get(status, 'processing')
+            internal_status = status_map.get(status, "processing")
             return (internal_status, error_message)
 
         except Exception as e:
             logger.error(f"Error getting job status for {external_job_id}: {e}")
-            return ('failed', str(e))
+            return ("failed", str(e))
 
 
 # ============================================================================
@@ -254,7 +247,7 @@ class EmbeddingBatchProcessor:
         batch_jobs_repo: EmbeddingBatchJobsRepository,
         content_storage,
         embedding_provider,
-        provider_type: str
+        provider_type: str,
     ):
         self.documents_repo = documents_repo
         self.queue_repo = queue_repo
@@ -273,25 +266,27 @@ class EmbeddingBatchProcessor:
             self.batch_provider = self._create_batch_provider()
 
         self.accumulation_state = {
-            'last_seen_count': 0,
-            'last_change_time': time.time()
+            "last_seen_count": 0,
+            "last_change_time": time.time(),
         }
 
     def _create_storage_client(self) -> StorageClient:
         """Factory for storage client (Bedrock only)"""
         if EMBEDDING_BATCH_S3_BUCKET:
             return S3StorageClient(EMBEDDING_BATCH_S3_BUCKET, AWS_REGION)
-        raise ValueError("EMBEDDING_BATCH_S3_BUCKET must be configured for Bedrock provider")
+        raise ValueError(
+            "EMBEDDING_BATCH_S3_BUCKET must be configured for Bedrock provider"
+        )
 
     def _create_batch_provider(self) -> BatchInferenceProvider:
         """Factory for batch provider (Bedrock only)"""
         if not BEDROCK_EMBEDDING_MODEL_ID or not EMBEDDING_BATCH_BEDROCK_ROLE_ARN:
-            raise ValueError("BEDROCK_EMBEDDING_MODEL_ID and EMBEDDING_BATCH_BEDROCK_ROLE_ARN must be configured for Bedrock provider")
+            raise ValueError(
+                "BEDROCK_EMBEDDING_MODEL_ID and EMBEDDING_BATCH_BEDROCK_ROLE_ARN must be configured for Bedrock provider"
+            )
 
         return BedrockBatchProvider(
-            BEDROCK_EMBEDDING_MODEL_ID,
-            EMBEDDING_BATCH_BEDROCK_ROLE_ARN,
-            AWS_REGION
+            BEDROCK_EMBEDDING_MODEL_ID, EMBEDDING_BATCH_BEDROCK_ROLE_ARN, AWS_REGION
         )
 
     # ------------------------------------------------------------------------
@@ -303,10 +298,7 @@ class EmbeddingBatchProcessor:
 
         if self.provider_type == "bedrock":
             # Use cloud batch inference for Bedrock
-            await asyncio.gather(
-                self.accumulation_loop(),
-                self.monitoring_loop()
-            )
+            await asyncio.gather(self.accumulation_loop(), self.monitoring_loop())
         else:
             # Use online processing for other providers (local, openai, jina)
             await self.online_processing_loop()
@@ -340,7 +332,9 @@ class EmbeddingBatchProcessor:
             try:
                 await self._process_single_document(item)
             except Exception as e:
-                logger.error(f"Failed to process document {item.document_id}: {e}", exc_info=True)
+                logger.error(
+                    f"Failed to process document {item.document_id}: {e}", exc_info=True
+                )
                 await self.queue_repo.mark_failed([item.id], str(e))
 
     async def _process_single_document(self, item: EmbeddingQueueItem):
@@ -367,11 +361,13 @@ class EmbeddingBatchProcessor:
                 task="retrieval.passage",
                 chunk_size=512,
                 chunking_mode="sentence",
-                n_sentences=None
+                n_sentences=None,
             )
 
             if not chunk_results or not chunk_results[0]:
-                logger.warning(f"No embeddings generated for document {item.document_id}")
+                logger.warning(
+                    f"No embeddings generated for document {item.document_id}"
+                )
                 await self.queue_repo.mark_failed([item.id], "No embeddings generated")
                 return
 
@@ -383,15 +379,17 @@ class EmbeddingBatchProcessor:
             # Prepare embeddings for bulk insert
             embeddings_to_insert = []
             for chunk_idx, chunk in enumerate(chunks):
-                embeddings_to_insert.append({
-                    'id': str(ulid.ULID()),
-                    'document_id': item.document_id,
-                    'chunk_index': chunk_idx,
-                    'chunk_start_offset': chunk.span[0],
-                    'chunk_end_offset': chunk.span[1],
-                    'embedding': chunk.embedding,
-                    'model_name': self.embedding_provider.get_model_name()
-                })
+                embeddings_to_insert.append(
+                    {
+                        "id": str(ulid.ULID()),
+                        "document_id": item.document_id,
+                        "chunk_index": chunk_idx,
+                        "chunk_start_offset": chunk.span[0],
+                        "chunk_end_offset": chunk.span[1],
+                        "embedding": chunk.embedding,
+                        "model_name": self.embedding_provider.get_model_name(),
+                    }
+                )
 
             # Bulk insert embeddings
             await self.embeddings_repo.bulk_insert(embeddings_to_insert)
@@ -400,12 +398,19 @@ class EmbeddingBatchProcessor:
             await self.queue_repo.mark_completed([item.id])
 
             # Update document embedding status
-            await self.documents_repo.update_embedding_status([item.document_id], 'completed')
+            await self.documents_repo.update_embedding_status(
+                [item.document_id], "completed"
+            )
 
-            logger.info(f"Processed document {item.document_id}: {len(chunks)} chunks embedded")
+            logger.info(
+                f"Processed document {item.document_id}: {len(chunks)} chunks embedded"
+            )
 
         except Exception as e:
-            logger.error(f"Embedding generation failed for {item.document_id}: {e}", exc_info=True)
+            logger.error(
+                f"Embedding generation failed for {item.document_id}: {e}",
+                exc_info=True,
+            )
             await self.queue_repo.mark_failed([item.id], str(e))
 
     # ------------------------------------------------------------------------
@@ -432,19 +437,18 @@ class EmbeddingBatchProcessor:
 
         # Update accumulation state
         current_time = time.time()
-        if current_count != self.accumulation_state['last_seen_count']:
-            self.accumulation_state['last_seen_count'] = current_count
-            self.accumulation_state['last_change_time'] = current_time
+        if current_count != self.accumulation_state["last_seen_count"]:
+            self.accumulation_state["last_seen_count"] = current_count
+            self.accumulation_state["last_change_time"] = current_time
 
-        time_since_last_change = current_time - self.accumulation_state['last_change_time']
+        time_since_last_change = (
+            current_time - self.accumulation_state["last_change_time"]
+        )
 
         # Check thresholds
-        should_create_batch = (
-            current_count >= EMBEDDING_BATCH_MIN_DOCUMENTS and
-            (
-                current_count >= EMBEDDING_BATCH_MAX_DOCUMENTS or
-                time_since_last_change >= EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS
-            )
+        should_create_batch = current_count >= EMBEDDING_BATCH_MIN_DOCUMENTS and (
+            current_count >= EMBEDDING_BATCH_MAX_DOCUMENTS
+            or time_since_last_change >= EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS
         )
 
         if should_create_batch:
@@ -455,8 +459,8 @@ class EmbeddingBatchProcessor:
             await asyncio.create_task(self._create_bedrock_batch())
 
             # Reset accumulation state
-            self.accumulation_state['last_seen_count'] = 0
-            self.accumulation_state['last_change_time'] = current_time
+            self.accumulation_state["last_seen_count"] = 0
+            self.accumulation_state["last_change_time"] = current_time
         else:
             logger.debug(
                 f"Not creating batch yet: {current_count} documents "
@@ -466,68 +470,95 @@ class EmbeddingBatchProcessor:
     async def _create_bedrock_batch(self):
         """Create and submit a new Bedrock batch job"""
         try:
-            batch_id = await self.batch_jobs_repo.create('bedrock')
+            batch_id = await self.batch_jobs_repo.create("bedrock")
         except Exception as e:
             logger.error(f"Failed to create batch: {e}", exc_info=True)
             return
 
         try:
-            await self.batch_jobs_repo.update_status(batch_id, status='preparing')
+            await self.batch_jobs_repo.update_status(batch_id, status="preparing")
 
             async def record_generator():
                 num_records_in_batch = 0
-                items = await self.queue_repo.get_pending_items(EMBEDDING_BATCH_MAX_DOCUMENTS)
+                items = await self.queue_repo.get_pending_items(
+                    EMBEDDING_BATCH_MAX_DOCUMENTS
+                )
                 for item in items:
-                    jsonl_records = await self._fetch_and_chunk_document_for_bedrock(item)
-                    if num_records_in_batch + len(jsonl_records) >= EMBEDDING_BATCH_MAX_DOCUMENTS:
-                        logger.info(f"Batch {batch_id} reached max documents ({num_records_in_batch})")
+                    jsonl_records = await self._fetch_and_chunk_document_for_bedrock(
+                        item
+                    )
+                    if (
+                        num_records_in_batch + len(jsonl_records)
+                        >= EMBEDDING_BATCH_MAX_DOCUMENTS
+                    ):
+                        logger.info(
+                            f"Batch {batch_id} reached max documents ({num_records_in_batch})"
+                        )
                         break
 
-                    logger.debug(f"Including {len(jsonl_records)} records from document {item.document_id} in batch {batch_id}")
+                    logger.debug(
+                        f"Including {len(jsonl_records)} records from document {item.document_id} in batch {batch_id}"
+                    )
                     await self.queue_repo.assign_to_batch(batch_id, [item.id])
                     for record in jsonl_records:
                         yield record
                     num_records_in_batch += len(jsonl_records)
 
-                await self.batch_jobs_repo.update_status(batch_id, status='preparing', document_count=num_records_in_batch)
+                await self.batch_jobs_repo.update_status(
+                    batch_id, status="preparing", document_count=num_records_in_batch
+                )
 
             # Upload to storage
             logger.info(f"Uploading batch {batch_id} to storage...")
             date = datetime.now().strftime("%Y-%m-%d")
             input_key = f"{date}/{batch_id}/input.jsonl"
-            num_records_uploaded = await self.storage_client.upload_jsonl(input_key, record_generator())
-            logger.info(f"Completed upload of {num_records_uploaded} to s3://{EMBEDDING_BATCH_S3_BUCKET}/{input_key}")
+            num_records_uploaded = await self.storage_client.upload_jsonl(
+                input_key, record_generator()
+            )
+            logger.info(
+                f"Completed upload of {num_records_uploaded} to s3://{EMBEDDING_BATCH_S3_BUCKET}/{input_key}"
+            )
 
             # Submit job
             input_path = f"s3://{EMBEDDING_BATCH_S3_BUCKET}/{input_key}"
             output_path = f"s3://{EMBEDDING_BATCH_S3_BUCKET}/{batch_id}/output"
             job_name = f"embedding-batch-{batch_id}"
             logger.info(f"Submitting batch job {batch_id} to provider...")
-            external_job_id = await self.batch_provider.submit_job(input_path, output_path, job_name)
-            logger.info(f"Submitted batch {batch_id} to provider, external_job_id: {external_job_id}")
+            external_job_id = await self.batch_provider.submit_job(
+                input_path, output_path, job_name
+            )
+            logger.info(
+                f"Submitted batch {batch_id} to provider, external_job_id: {external_job_id}"
+            )
 
             # Update batch job with submission details
             await self.batch_jobs_repo.update_status(
                 batch_id,
-                status='submitted',
+                status="submitted",
                 external_job_id=external_job_id,
                 input_storage_path=input_path,
                 output_storage_path=output_path,
-                document_count=num_records_uploaded
+                document_count=num_records_uploaded,
             )
 
             # Mark queue items as processing
             await self.queue_repo.mark_processing(batch_id)
 
-            logger.info(f"Batch {batch_id} submitted successfully (external_job_id: {external_job_id})")
+            logger.info(
+                f"Batch {batch_id} submitted successfully (external_job_id: {external_job_id})"
+            )
         except Exception as e:
             logger.error(f"Failed to prepare batch {batch_id}: {e}")
-            await self.batch_jobs_repo.update_status(batch_id, status='failed', error_message=str(e))
+            await self.batch_jobs_repo.update_status(
+                batch_id, status="failed", error_message=str(e)
+            )
             # Reset all items included in this batch
             items = await self.queue_repo.get_items_for_batch(batch_id)
             await self.queue_repo.mark_pending([item.id for item in items])
 
-    async def _fetch_and_chunk_document_for_bedrock(self, item: EmbeddingQueueItem) -> List[dict]:
+    async def _fetch_and_chunk_document_for_bedrock(
+        self, item: EmbeddingQueueItem
+    ) -> List[dict]:
         """Fetch a single document and generate JSONL records for Bedrock."""
         chunks = []
 
@@ -549,17 +580,21 @@ class EmbeddingBatchProcessor:
             for chunk_idx, (start_char, end_char) in enumerate(chunk_spans):
                 chunk_text = content_text[start_char:end_char]
 
-                chunks.append({
-                    'recordId': f"{item.document_id}:{chunk_idx}:{start_char}:{end_char}",
-                    'modelInput': {
-                        'inputText': chunk_text
+                chunks.append(
+                    {
+                        "recordId": f"{item.document_id}:{chunk_idx}:{start_char}:{end_char}",
+                        "modelInput": {"inputText": chunk_text},
                     }
-                })
+                )
 
-            logger.debug(f"Document {item.document_id} chunked into {len(chunks)} chunks.")
+            logger.debug(
+                f"Document {item.document_id} chunked into {len(chunks)} chunks."
+            )
 
         except Exception as e:
-            logger.error(f"Failed to process document {item.document_id}: {e}", exc_info=True)
+            logger.error(
+                f"Failed to process document {item.document_id}: {e}", exc_info=True
+            )
 
         return chunks
 
@@ -589,13 +624,15 @@ class EmbeddingBatchProcessor:
 
         for job in jobs:
             try:
-                status, error_message = await self.batch_provider.get_job_status(job.external_job_id)
+                status, error_message = await self.batch_provider.get_job_status(
+                    job.external_job_id
+                )
 
-                if status == 'completed':
+                if status == "completed":
                     logger.info(f"Batch job {job.id} completed, processing results")
                     await self._process_bedrock_results(job.id)
 
-                elif status == 'failed':
+                elif status == "failed":
                     logger.error(f"Batch job {job.id} failed: {error_message}")
                     await self._mark_batch_failed(job.id, error_message)
 
@@ -607,12 +644,13 @@ class EmbeddingBatchProcessor:
 
     async def _mark_batch_failed(self, batch_id: str, error_message: Optional[str]):
         """Mark batch job and all its items as failed"""
-        await self.batch_jobs_repo.update_status(batch_id, 'failed', error_message=error_message)
+        await self.batch_jobs_repo.update_status(
+            batch_id, "failed", error_message=error_message
+        )
 
         items = await self.queue_repo.get_items_for_batch(batch_id)
         await self.queue_repo.mark_failed(
-            [item.id for item in items],
-            error_message or "Batch job failed"
+            [item.id for item in items], error_message or "Batch job failed"
         )
 
     # ------------------------------------------------------------------------
@@ -641,11 +679,13 @@ class EmbeddingBatchProcessor:
             # Download and parse all output files
             all_output_lines = []
             for file_key in output_files:
-                if file_key.endswith('.jsonl') or file_key.endswith('.out'):
+                if file_key.endswith(".jsonl") or file_key.endswith(".out"):
                     lines = await self.storage_client.download_jsonl(file_key)
                     all_output_lines.extend(lines)
 
-            logger.info(f"Downloaded {len(all_output_lines)} output records for batch {batch_id}")
+            logger.info(
+                f"Downloaded {len(all_output_lines)} output records for batch {batch_id}"
+            )
 
             # Parse and group embeddings by document
             embeddings_by_doc = self._parse_bedrock_output(all_output_lines)
@@ -659,15 +699,19 @@ class EmbeddingBatchProcessor:
 
             # Update documents embedding_status
             document_ids = list(embeddings_by_doc.keys())
-            await self.documents_repo.update_embedding_status(document_ids, 'completed')
+            await self.documents_repo.update_embedding_status(document_ids, "completed")
 
             # Mark batch job as completed
-            await self.batch_jobs_repo.update_status(batch_id, 'completed')
+            await self.batch_jobs_repo.update_status(batch_id, "completed")
 
-            logger.info(f"Successfully processed batch {batch_id} with {len(document_ids)} documents")
+            logger.info(
+                f"Successfully processed batch {batch_id} with {len(document_ids)} documents"
+            )
 
         except Exception as e:
-            logger.error(f"Failed to process results for batch {batch_id}: {e}", exc_info=True)
+            logger.error(
+                f"Failed to process results for batch {batch_id}: {e}", exc_info=True
+            )
             await self._mark_batch_failed(batch_id, str(e))
 
     def _parse_bedrock_output(self, output_lines: List[dict]) -> Dict[str, List]:
@@ -676,32 +720,34 @@ class EmbeddingBatchProcessor:
 
         for line in output_lines:
             try:
-                record_id = line['recordId']
+                record_id = line["recordId"]
 
-                if 'error' in line:
+                if "error" in line:
                     logger.warning(f"Embedding error for {record_id}: {line['error']}")
                     continue
 
-                model_output = line.get('modelOutput', {})
-                embedding = model_output.get('embedding')
+                model_output = line.get("modelOutput", {})
+                embedding = model_output.get("embedding")
 
                 if not embedding:
                     logger.warning(f"No embedding in output for {record_id}")
                     continue
 
-                parts = record_id.split(':')
+                parts = record_id.split(":")
                 if len(parts) != 4:
                     logger.warning(f"Invalid record_id format: {record_id}")
                     continue
 
                 doc_id, chunk_idx, start, end = parts
 
-                embeddings_by_doc[doc_id].append({
-                    'chunk_index': int(chunk_idx),
-                    'start': int(start),
-                    'end': int(end),
-                    'embedding': embedding
-                })
+                embeddings_by_doc[doc_id].append(
+                    {
+                        "chunk_index": int(chunk_idx),
+                        "start": int(start),
+                        "end": int(end),
+                        "embedding": embedding,
+                    }
+                )
 
             except Exception as e:
                 logger.error(f"Error parsing output line: {e}", exc_info=True)
@@ -709,7 +755,7 @@ class EmbeddingBatchProcessor:
 
         # Sort chunks by index for each document
         for doc_id in embeddings_by_doc:
-            embeddings_by_doc[doc_id].sort(key=lambda x: x['chunk_index'])
+            embeddings_by_doc[doc_id].sort(key=lambda x: x["chunk_index"])
 
         logger.info(f"Grouped embeddings for {len(embeddings_by_doc)} documents")
         return embeddings_by_doc
@@ -727,25 +773,31 @@ class EmbeddingBatchProcessor:
         all_embeddings = []
         for doc_id, chunks in embeddings_by_doc.items():
             for chunk in chunks:
-                all_embeddings.append({
-                    'id': str(ulid.ULID()),
-                    'document_id': doc_id,
-                    'chunk_index': chunk['chunk_index'],
-                    'chunk_start_offset': chunk['start'],
-                    'chunk_end_offset': chunk['end'],
-                    'embedding': chunk['embedding'],
-                    'model_name': BEDROCK_EMBEDDING_MODEL_ID
-                })
+                all_embeddings.append(
+                    {
+                        "id": str(ulid.ULID()),
+                        "document_id": doc_id,
+                        "chunk_index": chunk["chunk_index"],
+                        "chunk_start_offset": chunk["start"],
+                        "chunk_end_offset": chunk["end"],
+                        "embedding": chunk["embedding"],
+                        "model_name": BEDROCK_EMBEDDING_MODEL_ID,
+                    }
+                )
 
         await self.embeddings_repo.bulk_insert(all_embeddings)
 
-        logger.info(f"Stored {len(all_embeddings)} embeddings for {len(document_ids)} documents")
+        logger.info(
+            f"Stored {len(all_embeddings)} embeddings for {len(document_ids)} documents"
+        )
 
 
 # ============================================================================
 # Public API for Integration
 # ============================================================================
-async def start_batch_processing(content_storage, embedding_provider, provider_type: str):
+async def start_batch_processing(
+    content_storage, embedding_provider, provider_type: str
+):
     """Start batch processing background tasks.
 
     Args:
@@ -771,7 +823,7 @@ async def start_batch_processing(content_storage, embedding_provider, provider_t
         batch_jobs_repo=batch_jobs_repo,
         content_storage=content_storage,
         embedding_provider=embedding_provider,
-        provider_type=provider_type
+        provider_type=provider_type,
     )
 
     # Start the processing loop

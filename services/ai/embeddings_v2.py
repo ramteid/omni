@@ -68,7 +68,7 @@ def forward(
     )
 
     # Move inputs to the same device as the model
-    if torch.cuda.is_available() and model.device.type == 'cuda':
+    if torch.cuda.is_available() and model.device.type == "cuda":
         inputs = {k: v.cuda() for k, v in inputs.items()}
     else:
         inputs = {k: v.cpu() for k, v in inputs.items()}
@@ -90,9 +90,7 @@ type BatchTokenSpanList = BatchSpanList
 
 
 def generate_sentence_chunks(
-    inputs: BatchEncoding, 
-    tokenizer: AutoTokenizer, 
-    k_sentences: int = 5
+    inputs: BatchEncoding, tokenizer: AutoTokenizer, k_sentences: int = 5
 ) -> tuple[BatchCharSpanList, BatchTokenSpanList]:
     """Generate overlapping chunks of K consecutive sentences."""
     start = time.time_ns()
@@ -112,20 +110,22 @@ def generate_sentence_chunks(
         # First, find all sentence boundaries
         sentence_boundaries = []
         sentence_start = 1
-        
+
         for j in range(1, eos_idx):
             if tokens[j] in [".", "!", "?"] or j == eos_idx - 1:
                 start_token_span = offset_mapping[sentence_start].tolist()
                 end_token_span = offset_mapping[j].tolist()
                 sentence_len = end_token_span[1] - start_token_span[0]
-                
+
                 if sentence_len >= 4:  # Meaningful sentence
-                    sentence_boundaries.append({
-                        'token_start': sentence_start,
-                        'token_end': j + 1,
-                        'char_start': start_token_span[0],
-                        'char_end': end_token_span[1] + 1
-                    })
+                    sentence_boundaries.append(
+                        {
+                            "token_start": sentence_start,
+                            "token_end": j + 1,
+                            "char_start": start_token_span[0],
+                            "char_end": end_token_span[1] + 1,
+                        }
+                    )
                     sentence_start = j + 1
 
         # Generate overlapping chunks of k_sentences
@@ -134,13 +134,13 @@ def generate_sentence_chunks(
 
         for start_idx in range(0, len(sentence_boundaries), k_sentences):
             end_idx = min(start_idx + k_sentences, len(sentence_boundaries))
-            
+
             if end_idx > start_idx:  # Valid chunk
-                chunk_token_start = sentence_boundaries[start_idx]['token_start']
-                chunk_token_end = sentence_boundaries[end_idx - 1]['token_end']
-                chunk_char_start = sentence_boundaries[start_idx]['char_start']
-                chunk_char_end = sentence_boundaries[end_idx - 1]['char_end']
-                
+                chunk_token_start = sentence_boundaries[start_idx]["token_start"]
+                chunk_token_end = sentence_boundaries[end_idx - 1]["token_end"]
+                chunk_char_start = sentence_boundaries[start_idx]["char_start"]
+                chunk_char_end = sentence_boundaries[end_idx - 1]["char_end"]
+
                 chunk_token_spans.append((chunk_token_start, chunk_token_end))
                 chunk_char_spans.append((chunk_char_start, chunk_char_end))
 
@@ -264,20 +264,22 @@ def generate_embeddings_sync(
     try:
         # Start timing
         start_time = time.time()
-        
+
         # Calculate total input size and batch size
         total_chars = sum(len(text) for text in texts)
         batch_size = len(texts)
-        
+
         logger.info(f"Starting embedding generation for {len(texts)} texts")
         model, tokenizer = load_model()
         logger.info("Model and tokenizer loaded successfully")
 
         tokens = tokenize(tokenizer, texts)
-        
+
         # Log number of input tokens
-        total_tokens = tokens['input_ids'].shape[0] * tokens['input_ids'].shape[1]
-        logger.info(f"Embedding input - batch_size: {batch_size}, total_chars: {total_chars}, total_tokens: {total_tokens} (shape: {tokens['input_ids'].shape})")
+        total_tokens = tokens["input_ids"].shape[0] * tokens["input_ids"].shape[1]
+        logger.info(
+            f"Embedding input - batch_size: {batch_size}, total_chars: {total_chars}, total_tokens: {total_tokens} (shape: {tokens['input_ids'].shape})"
+        )
 
         if chunking_mode == "none":
             logger.info(f"Skipping chunking for embeddings input {texts}, task {task}.")
@@ -288,12 +290,14 @@ def generate_embeddings_sync(
             ).tolist()  # Normalize to unit norm
 
             result = [[Chunk((0, len(t)), embeddings[i])] for i, t in enumerate(texts)]
-            
+
             # Log total processing time for no-chunking case
             end_time = time.time()
             total_time = end_time - start_time
-            logger.info(f"Embedding generation complete (no chunking) - total_time: {total_time:.2f}s, total_chunks: {len(result)}, chunks_per_text: [1 per text]")
-            
+            logger.info(
+                f"Embedding generation complete (no chunking) - total_time: {total_time:.2f}s, total_chunks: {len(result)}, chunks_per_text: [1 per text]"
+            )
+
             return result
 
         # Generate large chunks (existing logic)
@@ -312,7 +316,9 @@ def generate_embeddings_sync(
 
         for i in range(len(texts)):
             combined_char_spans = large_chunk_char_spans[i] + small_chunk_char_spans[i]
-            combined_token_spans = large_chunk_token_spans[i] + small_chunk_token_spans[i]
+            combined_token_spans = (
+                large_chunk_token_spans[i] + small_chunk_token_spans[i]
+            )
             batch_chunk_char_spans.append(combined_char_spans)
             batch_chunk_token_spans.append(combined_token_spans)
 
@@ -330,7 +336,7 @@ def generate_embeddings_sync(
             num_chunks = len(batch_chunk_char_spans[i])
             if num_chunks == 0:
                 # No chunks generated, create a single chunk for the entire text
-                chunk_embeddings = all_chunk_embeddings[chunk_idx:chunk_idx+1, :]
+                chunk_embeddings = all_chunk_embeddings[chunk_idx : chunk_idx + 1, :]
                 chunks = [Chunk((0, len(text)), chunk_embeddings[0].tolist())]
                 chunk_idx += 1
             else:
@@ -348,7 +354,9 @@ def generate_embeddings_sync(
         end_time = time.time()
         total_time = end_time - start_time
         total_chunks = sum(len(chunks_list) for chunks_list in all_chunks)
-        logger.info(f"Embedding generation complete - total_time: {total_time:.2f}s, total_chunks: {total_chunks}, chunks_per_text: {[len(c) for c in all_chunks]}")
+        logger.info(
+            f"Embedding generation complete - total_time: {total_time:.2f}s, total_chunks: {total_chunks}, chunks_per_text: {[len(c) for c in all_chunks]}"
+        )
 
         return all_chunks
     except Exception as e:

@@ -2,6 +2,7 @@
 Database repository for configuration management.
 Handles LLM and embedding configuration storage and retrieval.
 """
+
 import logging
 import json
 from typing import Optional
@@ -24,8 +25,8 @@ async def fetch_llm_config() -> Optional[dict]:
                 """
             )
 
-            if row and row['value']:
-                value = row['value']
+            if row and row["value"]:
+                value = row["value"]
                 if isinstance(value, str):
                     return json.loads(value)
                 return value
@@ -49,8 +50,8 @@ async def fetch_embedding_config() -> Optional[dict]:
                 """
             )
 
-            if row and row['value']:
-                value = row['value']
+            if row and row["value"]:
+                value = row["value"]
                 if isinstance(value, str):
                     return json.loads(value)
                 return value

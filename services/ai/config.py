@@ -49,13 +49,13 @@ def validate_embedding_dimensions(dims_str: str) -> int:
 def construct_database_url() -> str:
     """Construct database URL from individual components"""
     database_host = get_required_env("DATABASE_HOST")
-    database_username = get_required_env("DATABASE_USERNAME") 
+    database_username = get_required_env("DATABASE_USERNAME")
     database_name = get_required_env("DATABASE_NAME")
     database_password = get_required_env("DATABASE_PASSWORD")
     database_port = get_optional_env("DATABASE_PORT", "5432")
-    
+
     port = validate_port(database_port)
-    
+
     return f"postgresql://{quote_plus(database_username)}:{quote_plus(database_password)}@{database_host}:{port}/{database_name}"
 
 
@@ -70,7 +70,9 @@ EMBEDDING_PROVIDER = get_required_env("EMBEDDING_PROVIDER").lower()
 JINA_API_KEY = get_optional_env("JINA_API_KEY", "")
 JINA_MODEL = get_optional_env("JINA_MODEL", "jina-embeddings-v3")
 JINA_API_URL = get_optional_env("JINA_API_URL", "https://api.jina.ai/v1/embeddings")
-BEDROCK_EMBEDDING_MODEL_ID = get_optional_env("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0")
+BEDROCK_EMBEDDING_MODEL_ID = get_optional_env(
+    "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
+)
 EMBEDDING_MODEL = get_required_env("EMBEDDING_MODEL")
 EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
     get_required_env("EMBEDDING_DIMENSIONS")
@@ -78,12 +80,20 @@ EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
 
 # OpenAI embedding configuration
 OPENAI_EMBEDDING_API_KEY = get_optional_env("OPENAI_EMBEDDING_API_KEY", "")
-OPENAI_EMBEDDING_MODEL = get_optional_env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-OPENAI_EMBEDDING_DIMENSIONS = int(get_optional_env("OPENAI_EMBEDDING_DIMENSIONS", "1024"))
+OPENAI_EMBEDDING_MODEL = get_optional_env(
+    "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
+)
+OPENAI_EMBEDDING_DIMENSIONS = int(
+    get_optional_env("OPENAI_EMBEDDING_DIMENSIONS", "1024")
+)
 
 # Local embedding configuration (vLLM-based)
-LOCAL_EMBEDDINGS_URL = get_optional_env("LOCAL_EMBEDDINGS_URL", "http://vllm-embeddings:8001/v1")
-LOCAL_EMBEDDINGS_MODEL = get_optional_env("LOCAL_EMBEDDINGS_MODEL", "intfloat/e5-large-v2")
+LOCAL_EMBEDDINGS_URL = get_optional_env(
+    "LOCAL_EMBEDDINGS_URL", "http://vllm-embeddings:8001/v1"
+)
+LOCAL_EMBEDDINGS_MODEL = get_optional_env(
+    "LOCAL_EMBEDDINGS_MODEL", "intfloat/e5-large-v2"
+)
 
 # LLM configuration
 LLM_PROVIDER = get_optional_env("LLM_PROVIDER", "vllm").lower()
@@ -96,21 +106,38 @@ DEFAULT_TEMPERATURE = float(get_optional_env("DEFAULT_TEMPERATURE", "0.0"))
 DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))
 
 # AWS Bedrock configuration
-BEDROCK_MODEL_ID = get_optional_env("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
-TITLE_GENERATION_MODEL_ID = get_optional_env("TITLE_GENERATION_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+BEDROCK_MODEL_ID = get_optional_env(
+    "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"
+)
+TITLE_GENERATION_MODEL_ID = get_optional_env(
+    "TITLE_GENERATION_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+)
 AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
 
 # Embedding batch inference configuration
-ENABLE_EMBEDDING_BATCH_INFERENCE = get_optional_env("ENABLE_EMBEDDING_BATCH_INFERENCE", "false").lower() == "true"
+ENABLE_EMBEDDING_BATCH_INFERENCE = (
+    get_optional_env("ENABLE_EMBEDDING_BATCH_INFERENCE", "false").lower() == "true"
+)
 EMBEDDING_BATCH_S3_BUCKET = get_optional_env("EMBEDDING_BATCH_S3_BUCKET", "")
-EMBEDDING_BATCH_BEDROCK_ROLE_ARN = get_optional_env("EMBEDDING_BATCH_BEDROCK_ROLE_ARN", "")
+EMBEDDING_BATCH_BEDROCK_ROLE_ARN = get_optional_env(
+    "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", ""
+)
 
 # Embedding batch accumulation thresholds
-EMBEDDING_BATCH_MIN_DOCUMENTS = int(get_optional_env("EMBEDDING_BATCH_MIN_DOCUMENTS", "100"))
-EMBEDDING_BATCH_MAX_DOCUMENTS = int(get_optional_env("EMBEDDING_BATCH_MAX_DOCUMENTS", "50000"))
-EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS = int(get_optional_env("EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS", "300"))  # 5 minutes
+EMBEDDING_BATCH_MIN_DOCUMENTS = int(
+    get_optional_env("EMBEDDING_BATCH_MIN_DOCUMENTS", "100")
+)
+EMBEDDING_BATCH_MAX_DOCUMENTS = int(
+    get_optional_env("EMBEDDING_BATCH_MAX_DOCUMENTS", "50000")
+)
+EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS = int(
+    get_optional_env("EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS", "300")
+)  # 5 minutes
 
 # Embedding batch processing intervals
-EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL = int(get_optional_env("EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL", "10"))  # 10 seconds
-EMBEDDING_BATCH_MONITOR_POLL_INTERVAL = int(get_optional_env("EMBEDDING_BATCH_MONITOR_POLL_INTERVAL", "30"))  # 30 seconds
-
+EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL = int(
+    get_optional_env("EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL", "10")
+)  # 10 seconds
+EMBEDDING_BATCH_MONITOR_POLL_INTERVAL = int(
+    get_optional_env("EMBEDDING_BATCH_MONITOR_POLL_INTERVAL", "30")
+)  # 30 seconds

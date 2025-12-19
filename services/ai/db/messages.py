@@ -8,6 +8,7 @@ import json
 from .models import ChatMessage
 from .connection import get_db_pool
 
+
 class MessagesRepository:
     def __init__(self, pool: Optional[Pool] = None):
         self.pool = pool
@@ -18,11 +19,7 @@ class MessagesRepository:
             return self.pool
         return await get_db_pool()
 
-    async def create(
-        self,
-        chat_id: str,
-        message: Dict[str, Any]
-    ) -> ChatMessage:
+    async def create(self, chat_id: str, message: Dict[str, Any]) -> ChatMessage:
         """Create a new message in a chat"""
         pool = await self._get_pool()
 
@@ -45,11 +42,7 @@ class MessagesRepository:
             """
 
             row = await conn.fetchrow(
-                query,
-                message_id,
-                chat_id,
-                next_seq,
-                json.dumps(message)
+                query, message_id, chat_id, next_seq, json.dumps(message)
             )
 
         return ChatMessage.from_row(dict(row))

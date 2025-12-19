@@ -5,8 +5,7 @@ from typing import Optional
 
 
 def setup_logging(
-    level: Optional[str] = None,
-    format_string: Optional[str] = None
+    level: Optional[str] = None, format_string: Optional[str] = None
 ) -> None:
     """
     Configure logging for the AI service. Call this once at application startup.
@@ -28,10 +27,8 @@ def setup_logging(
     logging.basicConfig(
         level=getattr(logging, level.upper()),
         format=format_string,
-        handlers=[
-            logging.StreamHandler(sys.stdout)  # Log to stdout instead of stderr
-        ],
-        force=True  # Override any existing configuration
+        handlers=[logging.StreamHandler(sys.stdout)],  # Log to stdout instead of stderr
+        force=True,  # Override any existing configuration
     )
 
     # Suppress some noisy loggers

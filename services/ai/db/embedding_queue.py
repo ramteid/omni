@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EmbeddingQueueItem:
     """Represents an embedding_queue item"""
+
     id: str
     document_id: str
     status: str
@@ -59,7 +60,7 @@ class EmbeddingQueueRepository:
             ORDER BY created_at ASC
             LIMIT $1
             """,
-            limit
+            limit,
         )
         return [EmbeddingQueueItem(**dict(row)) for row in rows]
 
@@ -74,7 +75,7 @@ class EmbeddingQueueRepository:
             WHERE batch_job_id = $1
             ORDER BY created_at ASC
             """,
-            batch_id
+            batch_id,
         )
         return [EmbeddingQueueItem(**dict(row)) for row in rows]
 
@@ -91,7 +92,8 @@ class EmbeddingQueueRepository:
             SET batch_job_id = $1, status = 'pending'
             WHERE id = ANY($2)
             """,
-            batch_id, item_ids
+            batch_id,
+            item_ids,
         )
         logger.info(f"Assigned {len(item_ids)} items to batch {batch_id}")
 
@@ -105,7 +107,7 @@ class EmbeddingQueueRepository:
             SET status = 'processing'
             WHERE batch_job_id = $1
             """,
-            batch_id
+            batch_id,
         )
 
     async def mark_completed(self, item_ids: List[str]) -> None:
@@ -121,7 +123,7 @@ class EmbeddingQueueRepository:
             SET status = 'completed', processed_at = CURRENT_TIMESTAMP
             WHERE id = ANY($1)
             """,
-            item_ids
+            item_ids,
         )
         logger.info(f"Marked {len(item_ids)} queue items as completed")
 
@@ -138,7 +140,7 @@ class EmbeddingQueueRepository:
             SET status = 'pending', batch_job_id = NULL
             WHERE id = ANY($1)
             """,
-            item_ids
+            item_ids,
         )
         logger.info(f"Reset {len(item_ids)} queue items to pending")
 
@@ -155,6 +157,7 @@ class EmbeddingQueueRepository:
             SET status = 'failed', error_message = $2, processed_at = CURRENT_TIMESTAMP
             WHERE id = ANY($1)
             """,
-            item_ids, error
+            item_ids,
+            error,
         )
         logger.error(f"Marked {len(item_ids)} queue items as failed: {error}")

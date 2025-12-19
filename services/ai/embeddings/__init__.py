@@ -11,6 +11,7 @@ import re
 @dataclass
 class Chunk:
     """Represents a text chunk with its embedding and position in the original text."""
+
     span: tuple[int, int]  # (start_char, end_char) in original text
     embedding: List[float]
 
@@ -52,16 +53,14 @@ class EmbeddingProvider(ABC):
 
 # Common chunking utilities
 def chunk_by_sentences(
-    text: str,
-    chunk_size: int = 512,
-    overlap: int = 50
+    text: str, chunk_size: int = 512, overlap: int = 50
 ) -> List[Tuple[int, int]]:
     """
     Simple sentence-based chunking for text.
     Returns list of character spans for each chunk.
     """
     # Split text into sentences
-    sentence_pattern = r'[.!?]+[\s]+'
+    sentence_pattern = r"[.!?]+[\s]+"
     sentences = re.split(sentence_pattern, text)
 
     chunks = []
@@ -82,7 +81,9 @@ def chunk_by_sentences(
             # Start new chunk with overlap
             overlap_start = max(0, chunk_end - overlap)
             current_chunk_start = overlap_start
-            current_chunk_text = text[overlap_start:chunk_end][-overlap:] if overlap > 0 else ""
+            current_chunk_text = (
+                text[overlap_start:chunk_end][-overlap:] if overlap > 0 else ""
+            )
 
         current_chunk_text += sentence
         if i < len(sentences) - 1:
@@ -100,16 +101,13 @@ def chunk_by_sentences(
     return chunks
 
 
-def generate_sentence_chunks(
-    text: str,
-    k_sentences: int = 5
-) -> List[Tuple[int, int]]:
+def generate_sentence_chunks(text: str, k_sentences: int = 5) -> List[Tuple[int, int]]:
     """
     Generate overlapping chunks of K consecutive sentences.
     Returns list of character spans for each chunk.
     """
     # Split text into sentences with their positions
-    sentence_pattern = r'[.!?]+[\s]+'
+    sentence_pattern = r"[.!?]+[\s]+"
     sentences = []
     last_end = 0
 
@@ -129,7 +127,7 @@ def generate_sentence_chunks(
     # Generate chunks of k consecutive sentences
     chunks = []
     for i in range(0, len(sentences), k_sentences):
-        chunk_sentences = sentences[i:i + k_sentences]
+        chunk_sentences = sentences[i : i + k_sentences]
         if chunk_sentences:
             chunk_start = chunk_sentences[0][0]
             chunk_end = chunk_sentences[-1][1]
@@ -151,6 +149,7 @@ from .openai import OpenAIEmbeddingProvider
 QUERY_TASK = "retrieval.query"
 PASSAGE_TASK = "retrieval.passage"
 DEFAULT_TASK = PASSAGE_TASK
+
 
 # Factory function to create embedding providers
 def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider:

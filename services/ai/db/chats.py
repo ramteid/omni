@@ -7,6 +7,7 @@ from asyncpg import Pool
 from .models import Chat
 from .connection import get_db_pool
 
+
 class ChatsRepository:
     def __init__(self, pool: Optional[Pool] = None):
         self.pool = pool

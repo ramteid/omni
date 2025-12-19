@@ -221,10 +221,16 @@ class EmbeddingConfigCache:
             jina_api_key=JINA_API_KEY if JINA_API_KEY else None,
             jina_model=JINA_MODEL if JINA_MODEL else None,
             jina_api_url=JINA_API_URL if JINA_API_URL else None,
-            bedrock_model_id=BEDROCK_EMBEDDING_MODEL_ID if BEDROCK_EMBEDDING_MODEL_ID else None,
-            openai_api_key=OPENAI_EMBEDDING_API_KEY if OPENAI_EMBEDDING_API_KEY else None,
+            bedrock_model_id=(
+                BEDROCK_EMBEDDING_MODEL_ID if BEDROCK_EMBEDDING_MODEL_ID else None
+            ),
+            openai_api_key=(
+                OPENAI_EMBEDDING_API_KEY if OPENAI_EMBEDDING_API_KEY else None
+            ),
             openai_model=OPENAI_EMBEDDING_MODEL if OPENAI_EMBEDDING_MODEL else None,
-            openai_dimensions=OPENAI_EMBEDDING_DIMENSIONS if OPENAI_EMBEDDING_DIMENSIONS else None,
+            openai_dimensions=(
+                OPENAI_EMBEDDING_DIMENSIONS if OPENAI_EMBEDDING_DIMENSIONS else None
+            ),
             local_base_url=LOCAL_EMBEDDINGS_URL if LOCAL_EMBEDDINGS_URL else None,
             local_model=LOCAL_EMBEDDINGS_MODEL if LOCAL_EMBEDDINGS_MODEL else None,
         )

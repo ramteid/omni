@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class BatchJob:
     """Represents a batch job record from database"""
+
     id: str
     status: str
     provider: str
@@ -50,7 +51,8 @@ class EmbeddingBatchJobsRepository:
             INSERT INTO embedding_batch_jobs (id, status, provider)
             VALUES ($1, 'pending', $2)
             """,
-            job_id, provider
+            job_id,
+            provider,
         )
         logger.info(f"Created batch job {job_id}")
         return job_id
@@ -83,7 +85,7 @@ class EmbeddingBatchJobsRepository:
             FROM embedding_batch_jobs
             WHERE id = $1
             """,
-            job_id
+            job_id,
         )
 
         if row:
@@ -103,39 +105,39 @@ class EmbeddingBatchJobsRepository:
         """Update batch job status and other fields"""
         pool = await self._get_pool()
 
-        updates = ['status = $2']
+        updates = ["status = $2"]
         params: list = [job_id, status]
         param_idx = 3
 
         if external_job_id is not None:
-            updates.append(f'external_job_id = ${param_idx}')
+            updates.append(f"external_job_id = ${param_idx}")
             params.append(external_job_id)
             param_idx += 1
 
         if input_storage_path is not None:
-            updates.append(f'input_storage_path = ${param_idx}')
+            updates.append(f"input_storage_path = ${param_idx}")
             params.append(input_storage_path)
             param_idx += 1
 
         if output_storage_path is not None:
-            updates.append(f'output_storage_path = ${param_idx}')
+            updates.append(f"output_storage_path = ${param_idx}")
             params.append(output_storage_path)
             param_idx += 1
 
         if error_message is not None:
-            updates.append(f'error_message = ${param_idx}')
+            updates.append(f"error_message = ${param_idx}")
             params.append(error_message)
             param_idx += 1
 
         if document_count is not None:
-            updates.append(f'document_count = ${param_idx}')
+            updates.append(f"document_count = ${param_idx}")
             params.append(document_count)
             param_idx += 1
 
-        if status == 'submitted':
-            updates.append('submitted_at = CURRENT_TIMESTAMP')
-        elif status in ('completed', 'failed'):
-            updates.append('completed_at = CURRENT_TIMESTAMP')
+        if status == "submitted":
+            updates.append("submitted_at = CURRENT_TIMESTAMP")
+        elif status in ("completed", "failed"):
+            updates.append("completed_at = CURRENT_TIMESTAMP")
 
         query = f"""
             UPDATE embedding_batch_jobs

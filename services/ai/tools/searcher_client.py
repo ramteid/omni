@@ -11,6 +11,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
 class SearchRequest(BaseModel):
     query: str
     sources: Optional[List[str]] = None
@@ -28,6 +29,7 @@ class SearchRequest(BaseModel):
     include_facets: Optional[bool] = None
     ignore_typos: Optional[bool] = None
 
+
 class Document(BaseModel):
     id: str
     title: str
@@ -35,18 +37,23 @@ class Document(BaseModel):
     url: str | None
     source_type: str | None = None
 
+
 class SearchResult(BaseModel):
     document: Document
     highlights: list[str]
+
 
 class SearchResponse(BaseModel):
     results: list[SearchResult]
     total_count: int
     query_time_ms: int
 
+
 class SearcherError(httpx.HTTPStatusError):
     """Custom error for searcher API call failures."""
+
     pass
+
 
 class SearcherClient:
     """Client for calling omni-searcher service"""
@@ -54,11 +61,16 @@ class SearcherClient:
     def __init__(self):
         searcher_url = os.getenv("SEARCHER_URL")
         if not searcher_url:
-            print("ERROR: SEARCHER_URL environment variable is not set", file=sys.stderr)
-            print("Please set this variable to point to your searcher service", file=sys.stderr)
+            print(
+                "ERROR: SEARCHER_URL environment variable is not set", file=sys.stderr
+            )
+            print(
+                "Please set this variable to point to your searcher service",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
-        self.searcher_url = searcher_url.rstrip('/')
+        self.searcher_url = searcher_url.rstrip("/")
         self.client = httpx.AsyncClient(timeout=30.0)
 
     async def search_documents(self, request: SearchRequest) -> SearchResponse:
@@ -90,8 +102,7 @@ class SearcherClient:
             logger.info(f"Calling searcher service with query: {request.query}...")
 
             response = await self.client.post(
-                f"{self.searcher_url}/search",
-                json=search_payload
+                f"{self.searcher_url}/search", json=search_payload
             )
 
             if response.status_code == 200:
@@ -99,12 +110,14 @@ class SearcherClient:
                 logger.info(f"Search completed: {search_results.total_count} results")
                 return search_results
             else:
-                logger.error(f"Search service error: {response.status_code} - {response.text}")
+                logger.error(
+                    f"Search service error: {response.status_code} - {response.text}"
+                )
                 raise SearcherError(
                     message=f"Searcher API call failed: {response.status_code} {response.text}",
                     request=response.request,
                     response=response,
-                ) 
+                )
         except Exception as e:
             logger.error(f"Call to searcher service failed: {e}")
             raise

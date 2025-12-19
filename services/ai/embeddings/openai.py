@@ -54,7 +54,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         n_sentences: Optional[int] = None,
     ) -> List[List[Chunk]]:
         """Generate embeddings using OpenAI-compatible API with chunking support."""
-        return await self._generate_embeddings(texts, task, chunk_size, chunking_mode, n_sentences)
+        return await self._generate_embeddings(
+            texts, task, chunk_size, chunking_mode, n_sentences
+        )
 
     def get_model_name(self) -> str:
         """Get the name of the model being used."""
@@ -198,7 +200,9 @@ class OpenAIEmbeddingClient:
                             "Retry-After", OPENAI_RETRY_DELAY * (2**attempt)
                         )
                     )
-                    logger.warning(f"Rate limited, retrying after {retry_after} seconds")
+                    logger.warning(
+                        f"Rate limited, retrying after {retry_after} seconds"
+                    )
                     await asyncio.sleep(retry_after)
                 else:
                     error_msg = (

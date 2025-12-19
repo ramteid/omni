@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Document:
     """Document record from database"""
+
     id: str
     content_id: Optional[str]
 
@@ -20,6 +21,7 @@ class Document:
 @dataclass
 class ContentBlob:
     """Content blob record from database"""
+
     id: str
     content_type: Optional[str]
     storage_key: str
@@ -43,12 +45,11 @@ class DocumentsRepository:
         pool = await self._get_pool()
 
         row = await pool.fetchrow(
-            "SELECT id, content_id FROM documents WHERE id = $1",
-            document_id
+            "SELECT id, content_id FROM documents WHERE id = $1", document_id
         )
 
         if row:
-            return Document(id=row['id'], content_id=row['content_id'])
+            return Document(id=row["id"], content_id=row["content_id"])
         return None
 
     async def get_content_blob(self, content_id: str) -> Optional[ContentBlob]:
@@ -57,19 +58,21 @@ class DocumentsRepository:
 
         row = await pool.fetchrow(
             "SELECT id, content_type, storage_key, storage_backend FROM content_blobs WHERE id = $1",
-            content_id
+            content_id,
         )
 
         if row:
             return ContentBlob(
-                id=row['id'],
-                content_type=row['content_type'],
-                storage_key=row['storage_key'],
-                storage_backend=row['storage_backend']
+                id=row["id"],
+                content_type=row["content_type"],
+                storage_key=row["storage_key"],
+                storage_backend=row["storage_backend"],
             )
         return None
 
-    async def update_embedding_status(self, document_ids: List[str], status: str) -> None:
+    async def update_embedding_status(
+        self, document_ids: List[str], status: str
+    ) -> None:
         """Update embedding_status for documents"""
         if not document_ids:
             return
@@ -82,6 +85,9 @@ class DocumentsRepository:
             SET embedding_status = $2
             WHERE id = ANY($1)
             """,
-            document_ids, status
+            document_ids,
+            status,
         )
-        logger.info(f"Updated {len(document_ids)} documents to embedding_status: {status}")
+        logger.info(
+            f"Updated {len(document_ids)} documents to embedding_status: {status}"
+        )

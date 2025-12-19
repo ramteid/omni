@@ -33,7 +33,9 @@ class VLLMProvider(LLMProvider):
         """Stream response from vLLM service."""
         # vLLM doesn't support tools yet, so we ignore the tools parameter
         if tools:
-            logger.warning("vLLM provider does not support tools, ignoring tools parameter")
+            logger.warning(
+                "vLLM provider does not support tools, ignoring tools parameter"
+            )
 
         # Use provided messages or create from prompt
         msg_list = messages or [{"role": "user", "content": prompt}]
@@ -87,7 +89,9 @@ class VLLMProvider(LLMProvider):
 
         # For now, raise NotImplementedError for vLLM with tools
         # We'll implement this later if needed
-        raise NotImplementedError("vLLM provider MessageStreamEvent compatibility not yet implemented")
+        raise NotImplementedError(
+            "vLLM provider MessageStreamEvent compatibility not yet implemented"
+        )
 
     async def generate_response(
         self,
