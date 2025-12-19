@@ -146,6 +146,31 @@ async def startup_event():
                 model_id=embedding_config.bedrock_model_id,
                 region_name=region_name
             )
+        elif embedding_config.provider == "openai":
+            api_key = embedding_config.openai_api_key or OPENAI_EMBEDDING_API_KEY
+            if not api_key:
+                raise ValueError("OPENAI_EMBEDDING_API_KEY is required when using OpenAI provider")
+
+            model = embedding_config.openai_model or OPENAI_EMBEDDING_MODEL
+            dimensions = embedding_config.openai_dimensions or OPENAI_EMBEDDING_DIMENSIONS
+
+            logger.info(f"Initializing OpenAI embedding provider with model: {model}")
+            app.state.embedding_provider = create_embedding_provider(
+                "openai",
+                api_key=api_key,
+                model=model,
+                dimensions=dimensions
+            )
+        elif embedding_config.provider == "local":
+            base_url = embedding_config.local_base_url or LOCAL_EMBEDDINGS_URL
+            model = embedding_config.local_model or LOCAL_EMBEDDINGS_MODEL
+
+            logger.info(f"Initializing local (vLLM) embedding provider with model: {model} at {base_url}")
+            app.state.embedding_provider = create_embedding_provider(
+                "local",
+                base_url=base_url,
+                model=model
+            )
         else:
             raise ValueError(f"Unknown embedding provider: {embedding_config.provider}")
 
@@ -193,17 +218,18 @@ async def startup_event():
         app.state.searcher_tool = SearcherTool()
         logger.info("Initialized searcher client")
 
-        # Initialize content storage and start batch processing if enabled
-        if ENABLE_EMBEDDING_BATCH_INFERENCE:
-            app.state.content_storage = create_content_storage()
-            logger.info("Initialized content storage for batch processing")
+        # Initialize content storage and start batch processing
+        # Batch processing is the main embeddings processor for document indexing
+        app.state.content_storage = create_content_storage()
+        logger.info("Initialized content storage for batch processing")
 
-            # Start batch processing in background
-            asyncio.create_task(start_batch_processing(
-                app.state.content_storage,
-                app.state.embedding_provider
-            ))
-            logger.info("Started embedding batch processing")
+        # Start batch processing in background (always enabled)
+        asyncio.create_task(start_batch_processing(
+            app.state.content_storage,
+            app.state.embedding_provider,
+            embedding_config.provider  # Pass provider type for routing
+        ))
+        logger.info(f"Started embedding batch processing with provider: {embedding_config.provider}")
 
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")

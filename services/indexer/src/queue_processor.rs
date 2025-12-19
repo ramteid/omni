@@ -692,24 +692,26 @@ impl QueueProcessor {
         let document_ids: Vec<String> = upserted_documents.iter().map(|d| d.id.clone()).collect();
         repo.batch_mark_as_indexed(document_ids.clone()).await?;
 
-        // Add documents to embedding queue
+        // Batch add documents to embedding queue
         let embedding_start = std::time::Instant::now();
-        let mut embedding_tasks = Vec::new();
-        for upserted_doc in upserted_documents.iter() {
-            let embedding_queue = self.state.embedding_queue.clone();
-            let doc_id = upserted_doc.id.clone();
-
-            embedding_tasks.push(tokio::spawn(async move {
-                if let Err(e) = embedding_queue.enqueue(doc_id.clone()).await {
-                    error!("Failed to queue embeddings for document {}: {}", doc_id, e);
-                }
-            }));
+        let doc_ids_for_embedding: Vec<String> =
+            upserted_documents.iter().map(|d| d.id.clone()).collect();
+        if !doc_ids_for_embedding.is_empty() {
+            if let Err(e) = self
+                .state
+                .embedding_queue
+                .enqueue_batch(doc_ids_for_embedding.clone())
+                .await
+            {
+                error!(
+                    "Failed to batch queue embeddings for {} documents: {}",
+                    doc_ids_for_embedding.len(),
+                    e
+                );
+            }
         }
-
-        // Wait for all embedding queue operations to complete
-        futures::future::join_all(embedding_tasks).await;
         debug!(
-            "Embedding queue operations took {:?}",
+            "Embedding queue batch operation took {:?}",
             embedding_start.elapsed()
         );
 
@@ -778,32 +780,32 @@ impl QueueProcessor {
         }
 
         if !updated_documents.is_empty() {
-            // Queue embeddings and mark as indexed
-            let mut embedding_tasks = Vec::new();
-            for (_event_ids, updated_doc) in updated_documents {
-                let embedding_queue = self.state.embedding_queue.clone();
-                let doc_id = updated_doc.id.clone();
+            // Collect document IDs for batch operations
+            let doc_ids: Vec<String> = updated_documents
+                .iter()
+                .map(|(_, doc)| doc.id.clone())
+                .collect();
 
-                embedding_tasks.push(tokio::spawn(async move {
-                    if let Err(e) = embedding_queue.enqueue(doc_id.clone()).await {
-                        error!(
-                            "Failed to queue embeddings for updated document {}: {}",
-                            doc_id, e
-                        );
-                    }
-                }));
-
-                // Mark as indexed
-                if let Err(e) = repo.mark_as_indexed(&updated_doc.id).await {
-                    error!(
-                        "Failed to mark document {} as indexed: {}",
-                        updated_doc.id, e
-                    );
-                }
+            // Batch queue embeddings
+            if let Err(e) = self
+                .state
+                .embedding_queue
+                .enqueue_batch(doc_ids.clone())
+                .await
+            {
+                error!(
+                    "Failed to batch queue embeddings for {} updated documents: {}",
+                    doc_ids.len(),
+                    e
+                );
             }
 
-            // Wait for all embedding operations to complete
-            futures::future::join_all(embedding_tasks).await;
+            // Mark all as indexed
+            for doc_id in &doc_ids {
+                if let Err(e) = repo.mark_as_indexed(doc_id).await {
+                    error!("Failed to mark document {} as indexed: {}", doc_id, e);
+                }
+            }
         }
 
         info!(

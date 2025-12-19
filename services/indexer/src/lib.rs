@@ -1,4 +1,3 @@
-// pub mod embedding_processor; // No longer needed - omni-ai handles all embedding processing
 pub mod error;
 pub mod queue_processor;
 
@@ -601,15 +600,6 @@ pub async fn run_server() -> anyhow::Result<()> {
         }
     });
 
-    // Start embedding processor
-    // NOTE: Embedding processor commented out - omni-ai now handles all embedding processing
-    // let embedding_processor = embedding_processor::EmbeddingProcessor::new(app_state.clone());
-    // let embedding_handle = tokio::spawn(async move {
-    //     if let Err(e) = embedding_processor.start().await {
-    //         error!("Embedding processor failed: {}", e);
-    //     }
-    // });
-
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Indexer service listening on {}", addr);
 
@@ -624,9 +614,6 @@ pub async fn run_server() -> anyhow::Result<()> {
         _ = processor_handle => {
             error!("Event processor task completed unexpectedly");
         }
-        // _ = embedding_handle => {
-        //     error!("Embedding processor task completed unexpectedly");
-        // }
     }
 
     Ok(())

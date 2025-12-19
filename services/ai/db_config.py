@@ -152,11 +152,20 @@ def invalidate_llm_config_cache():
 class EmbeddingConfig:
     """Embedding configuration data class"""
 
-    provider: str
+    provider: str  # "jina", "bedrock", "openai", "local"
+    # Jina fields
     jina_api_key: Optional[str]
     jina_model: Optional[str]
     jina_api_url: Optional[str]
+    # Bedrock fields
     bedrock_model_id: Optional[str]
+    # OpenAI fields
+    openai_api_key: Optional[str]
+    openai_model: Optional[str]
+    openai_dimensions: Optional[int]
+    # Local fields (vLLM-based)
+    local_base_url: Optional[str]
+    local_model: Optional[str]
 
 
 class EmbeddingConfigCache:
@@ -189,17 +198,35 @@ class EmbeddingConfigCache:
                 jina_model=config_data.get("jinaModel"),
                 jina_api_url=config_data.get("jinaApiUrl"),
                 bedrock_model_id=config_data.get("bedrockModelId"),
+                openai_api_key=config_data.get("openaiApiKey"),
+                openai_model=config_data.get("openaiModel"),
+                openai_dimensions=config_data.get("openaiDimensions"),
+                local_base_url=config_data.get("localBaseUrl"),
+                local_model=config_data.get("localModel"),
             )
         return None
 
     def _get_env_fallback_config(self) -> EmbeddingConfig:
         """Get configuration from environment variables as fallback"""
+        from config import (
+            OPENAI_EMBEDDING_API_KEY,
+            OPENAI_EMBEDDING_MODEL,
+            OPENAI_EMBEDDING_DIMENSIONS,
+            LOCAL_EMBEDDINGS_URL,
+            LOCAL_EMBEDDINGS_MODEL,
+        )
+
         return EmbeddingConfig(
             provider=EMBEDDING_PROVIDER,
             jina_api_key=JINA_API_KEY if JINA_API_KEY else None,
             jina_model=JINA_MODEL if JINA_MODEL else None,
             jina_api_url=JINA_API_URL if JINA_API_URL else None,
             bedrock_model_id=BEDROCK_EMBEDDING_MODEL_ID if BEDROCK_EMBEDDING_MODEL_ID else None,
+            openai_api_key=OPENAI_EMBEDDING_API_KEY if OPENAI_EMBEDDING_API_KEY else None,
+            openai_model=OPENAI_EMBEDDING_MODEL if OPENAI_EMBEDDING_MODEL else None,
+            openai_dimensions=OPENAI_EMBEDDING_DIMENSIONS if OPENAI_EMBEDDING_DIMENSIONS else None,
+            local_base_url=LOCAL_EMBEDDINGS_URL if LOCAL_EMBEDDINGS_URL else None,
+            local_model=LOCAL_EMBEDDINGS_MODEL if LOCAL_EMBEDDINGS_MODEL else None,
         )
 
     async def get_config(self) -> EmbeddingConfig:

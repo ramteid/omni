@@ -2,22 +2,40 @@ import { eq } from 'drizzle-orm'
 import { db } from './index'
 import { configuration } from './schema'
 
-export type EmbeddingProvider = 'jina' | 'bedrock'
+export type EmbeddingProvider = 'local' | 'jina' | 'openai' | 'bedrock'
 
 export interface EmbeddingConfig {
     provider: EmbeddingProvider
+    // Jina fields
     jinaApiKey?: string | null
     jinaModel?: string | null
     jinaApiUrl?: string | null
+    // Bedrock fields
     bedrockModelId?: string | null
+    // OpenAI fields
+    openaiApiKey?: string | null
+    openaiModel?: string | null
+    openaiDimensions?: number | null
+    // Local fields
+    localBaseUrl?: string | null
+    localModel?: string | null
 }
 
 export interface EmbeddingConfigData {
     provider: EmbeddingProvider
+    // Jina fields
     jinaApiKey?: string | null
     jinaModel?: string | null
     jinaApiUrl?: string | null
+    // Bedrock fields
     bedrockModelId?: string | null
+    // OpenAI fields
+    openaiApiKey?: string | null
+    openaiModel?: string | null
+    openaiDimensions?: number | null
+    // Local fields
+    localBaseUrl?: string | null
+    localModel?: string | null
 }
 
 const EMBEDDING_CONFIG_KEY = 'embedding_config'
@@ -41,10 +59,19 @@ export async function upsertEmbeddingConfig(data: EmbeddingConfigData): Promise<
 
     const configValue: EmbeddingConfig = {
         provider: data.provider,
+        // Jina fields
         jinaApiKey: data.jinaApiKey || null,
         jinaModel: data.jinaModel || null,
         jinaApiUrl: data.jinaApiUrl || null,
+        // Bedrock fields
         bedrockModelId: data.bedrockModelId || null,
+        // OpenAI fields
+        openaiApiKey: data.openaiApiKey || null,
+        openaiModel: data.openaiModel || null,
+        openaiDimensions: data.openaiDimensions || null,
+        // Local fields
+        localBaseUrl: data.localBaseUrl || null,
+        localModel: data.localModel || null,
     }
 
     if (existing) {

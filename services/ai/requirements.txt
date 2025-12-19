@@ -9,6 +9,7 @@ httpx==0.28.1
 # LLM providers
 anthropic==0.68.1
 boto3==1.40.40  # For AWS Bedrock
+openai==1.82.0  # For OpenAI and vLLM embeddings (OpenAI-compatible API)
 
 # ML/AI libraries
 torch==2.7.1

@@ -76,6 +76,15 @@ EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
     get_required_env("EMBEDDING_DIMENSIONS")
 )
 
+# OpenAI embedding configuration
+OPENAI_EMBEDDING_API_KEY = get_optional_env("OPENAI_EMBEDDING_API_KEY", "")
+OPENAI_EMBEDDING_MODEL = get_optional_env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+OPENAI_EMBEDDING_DIMENSIONS = int(get_optional_env("OPENAI_EMBEDDING_DIMENSIONS", "1024"))
+
+# Local embedding configuration (vLLM-based)
+LOCAL_EMBEDDINGS_URL = get_optional_env("LOCAL_EMBEDDINGS_URL", "http://vllm-embeddings:8001/v1")
+LOCAL_EMBEDDINGS_MODEL = get_optional_env("LOCAL_EMBEDDINGS_MODEL", "intfloat/e5-large-v2")
+
 # LLM configuration
 LLM_PROVIDER = get_optional_env("LLM_PROVIDER", "vllm").lower()
 VLLM_URL = get_optional_env("VLLM_URL", "http://vllm:8000")  # Make optional

@@ -11,17 +11,35 @@
 
     let { data, form }: { data: PageData; form: ActionData } = $props()
 
+    type Provider = 'local' | 'jina' | 'openai' | 'bedrock'
+
     // Form state with defaults
-    let provider = $state<'jina' | 'bedrock'>(data.config?.provider || 'jina')
+    let provider = $state<Provider>(data.config?.provider || 'jina')
+    // Local fields
+    let localBaseUrl = $state(data.config?.localBaseUrl || 'http://vllm-embeddings:8001/v1')
+    let localModel = $state(data.config?.localModel || 'intfloat/e5-large-v2')
+    // Jina fields
     let jinaApiKey = $state('')
     let jinaModel = $state(data.config?.jinaModel || 'jina-embeddings-v3')
     let jinaApiUrl = $state(data.config?.jinaApiUrl || 'https://api.jina.ai/v1/embeddings')
+    // OpenAI fields
+    let openaiApiKey = $state('')
+    let openaiModel = $state(data.config?.openaiModel || 'text-embedding-3-small')
+    let openaiDimensions = $state(data.config?.openaiDimensions || 1536)
+    // Bedrock fields
     let bedrockModelId = $state(data.config?.bedrockModelId || 'amazon.titan-embed-text-v2:0')
+    // Form state
     let isSubmitting = $state(false)
 
     // Model suggestions based on provider
     const modelSuggestions = {
+        local: [
+            'intfloat/e5-large-v2',
+            'BAAI/bge-large-en-v1.5',
+            'sentence-transformers/all-MiniLM-L6-v2',
+        ],
         jina: ['jina-embeddings-v3', 'jina-embeddings-v2-base-en'],
+        openai: ['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002'],
         bedrock: [
             'amazon.titan-embed-text-v2:0',
             'amazon.titan-embed-text-v1',
@@ -91,8 +109,17 @@
                     <Card.Content>
                         <RadioGroup.Root bind:value={provider} name="provider" class="space-y-3">
                             <div class="flex items-center space-x-2">
+                                <RadioGroup.Item value="local" id="local" />
+                                <Label for="local" class="font-normal"
+                                    >Local (Self-hosted via vLLM)</Label>
+                            </div>
+                            <div class="flex items-center space-x-2">
                                 <RadioGroup.Item value="jina" id="jina" />
                                 <Label for="jina" class="font-normal">Jina AI (Cloud API)</Label>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <RadioGroup.Item value="openai" id="openai" />
+                                <Label for="openai" class="font-normal">OpenAI</Label>
                             </div>
                             <div class="flex items-center space-x-2">
                                 <RadioGroup.Item value="bedrock" id="bedrock" />
@@ -102,7 +129,55 @@
                     </Card.Content>
                 </Card.Root>
 
-                <!-- Provider-specific Configuration -->
+                <!-- Local Configuration -->
+                {#if provider === 'local'}
+                    <Card.Root>
+                        <Card.Header>
+                            <Card.Title>Local Embedding Server Configuration</Card.Title>
+                            <Card.Description>
+                                Configure connection to a self-hosted embedding server (e.g., vLLM
+                                serving embedding models)
+                            </Card.Description>
+                        </Card.Header>
+                        <Card.Content class="space-y-4">
+                            <div class="space-y-2">
+                                <Label for="localBaseUrl">Base URL *</Label>
+                                <Input
+                                    id="localBaseUrl"
+                                    name="localBaseUrl"
+                                    bind:value={localBaseUrl}
+                                    placeholder="http://vllm-embeddings:8001/v1"
+                                    required={provider === 'local'} />
+                                <p class="text-muted-foreground text-sm">
+                                    URL of your local embedding server (OpenAI-compatible API)
+                                </p>
+                            </div>
+
+                            <div class="space-y-2">
+                                <Label for="localModel">Model *</Label>
+                                <Input
+                                    id="localModel"
+                                    name="localModel"
+                                    bind:value={localModel}
+                                    placeholder="intfloat/e5-large-v2"
+                                    required={provider === 'local'} />
+                                <p class="text-muted-foreground text-sm">
+                                    Model name as configured on your embedding server
+                                </p>
+                                <div class="text-muted-foreground text-xs">
+                                    <p class="mb-1 font-medium">Common models:</p>
+                                    <ul class="list-inside list-disc space-y-0.5">
+                                        {#each modelSuggestions.local as suggestion}
+                                            <li>{suggestion}</li>
+                                        {/each}
+                                    </ul>
+                                </div>
+                            </div>
+                        </Card.Content>
+                    </Card.Root>
+                {/if}
+
+                <!-- Jina Configuration -->
                 {#if provider === 'jina'}
                     <Card.Root>
                         <Card.Header>
@@ -168,6 +243,76 @@
                     </Card.Root>
                 {/if}
 
+                <!-- OpenAI Configuration -->
+                {#if provider === 'openai'}
+                    <Card.Root>
+                        <Card.Header>
+                            <Card.Title>OpenAI Configuration</Card.Title>
+                            <Card.Description>
+                                Configure connection to OpenAI embedding API
+                            </Card.Description>
+                        </Card.Header>
+                        <Card.Content class="space-y-4">
+                            <div class="space-y-2">
+                                <Label for="openaiApiKey"
+                                    >API Key {data.hasOpenaiApiKey ? '' : '*'}</Label>
+                                <Input
+                                    id="openaiApiKey"
+                                    name="openaiApiKey"
+                                    type="password"
+                                    bind:value={openaiApiKey}
+                                    placeholder={data.hasOpenaiApiKey
+                                        ? 'Leave empty to keep current key'
+                                        : 'sk-...'}
+                                    required={provider === 'openai' && !data.hasOpenaiApiKey} />
+                                <p class="text-muted-foreground text-sm">
+                                    {data.hasOpenaiApiKey
+                                        ? 'Leave empty to keep current key, or enter new key to update'
+                                        : 'Your OpenAI API key'}
+                                </p>
+                            </div>
+
+                            <div class="space-y-2">
+                                <Label for="openaiModel">Model *</Label>
+                                <Input
+                                    id="openaiModel"
+                                    name="openaiModel"
+                                    bind:value={openaiModel}
+                                    placeholder="text-embedding-3-small"
+                                    required={provider === 'openai'} />
+                                <p class="text-muted-foreground text-sm">
+                                    OpenAI embedding model to use
+                                </p>
+                                <div class="text-muted-foreground text-xs">
+                                    <p class="mb-1 font-medium">Available models:</p>
+                                    <ul class="list-inside list-disc space-y-0.5">
+                                        {#each modelSuggestions.openai as suggestion}
+                                            <li>{suggestion}</li>
+                                        {/each}
+                                    </ul>
+                                </div>
+                            </div>
+
+                            <div class="space-y-2">
+                                <Label for="openaiDimensions">Dimensions</Label>
+                                <Input
+                                    id="openaiDimensions"
+                                    name="openaiDimensions"
+                                    type="number"
+                                    bind:value={openaiDimensions}
+                                    placeholder="1536"
+                                    min="1"
+                                    max="3072" />
+                                <p class="text-muted-foreground text-sm">
+                                    Embedding dimensions (text-embedding-3-* supports 256-3072,
+                                    ada-002 is fixed at 1536)
+                                </p>
+                            </div>
+                        </Card.Content>
+                    </Card.Root>
+                {/if}
+
+                <!-- Bedrock Configuration -->
                 {#if provider === 'bedrock'}
                     <Card.Root>
                         <Card.Header>

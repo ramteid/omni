@@ -145,6 +145,7 @@ def generate_sentence_chunks(
 # Import all providers after base class definition
 from .jina import JinaEmbeddingProvider
 from .bedrock import BedrockEmbeddingProvider
+from .openai import OpenAIEmbeddingProvider
 
 # Constants for task types
 QUERY_TASK = "retrieval.query"
@@ -157,7 +158,7 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
     Factory function to create embedding provider based on type.
 
     Args:
-        provider_type: Type of provider ('jina', 'bedrock')
+        provider_type: Type of provider ('jina', 'bedrock', 'openai', 'local')
         **kwargs: Provider-specific configuration
             For 'jina':
                 - api_key: JINA API key
@@ -166,6 +167,13 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
             For 'bedrock':
                 - model_id: AWS Bedrock model ID (e.g., 'amazon.titan-embed-text-v2:0')
                 - region_name: AWS region
+            For 'openai':
+                - api_key: OpenAI API key
+                - model: OpenAI model name (e.g., 'text-embedding-3-small')
+                - dimensions: Optional embedding dimensions
+            For 'local':
+                - base_url: Local embedding server URL (e.g., 'http://vllm-embeddings:8001/v1')
+                - model: Model name (e.g., 'intfloat/e5-large-v2')
     """
     if provider_type.lower() == "jina":
         api_key = kwargs.get("api_key")
@@ -184,6 +192,29 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
             raise ValueError("region_name is required for Bedrock provider")
         return BedrockEmbeddingProvider(model_id, region_name)
 
+    elif provider_type.lower() == "openai":
+        api_key = kwargs.get("api_key")
+        if not api_key:
+            raise ValueError("api_key is required for OpenAI provider")
+        model = kwargs.get("model", "text-embedding-3-small")
+        dimensions = kwargs.get("dimensions", 1024)
+        return OpenAIEmbeddingProvider(
+            api_key=api_key,
+            model=model,
+            base_url="https://api.openai.com/v1",
+            dimensions=dimensions,
+        )
+
+    elif provider_type.lower() == "local":
+        base_url = kwargs.get("base_url", "http://vllm-embeddings:8001/v1")
+        model = kwargs.get("model", "intfloat/e5-large-v2")
+        return OpenAIEmbeddingProvider(
+            api_key="not-needed",
+            model=model,
+            base_url=base_url,
+            dimensions=None,
+        )
+
     else:
         raise ValueError(f"Unknown embedding provider type: {provider_type}")
 
@@ -193,6 +224,7 @@ __all__ = [
     "Chunk",
     "JinaEmbeddingProvider",
     "BedrockEmbeddingProvider",
+    "OpenAIEmbeddingProvider",
     "create_embedding_provider",
     "QUERY_TASK",
     "PASSAGE_TASK",
