@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use shared::{
-    models::{Document, Facet},
+    models::{AttributeFilter, Document, Facet},
     SourceType,
 };
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Hash, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +18,13 @@ pub struct SearchRequest {
     pub query: String,
     pub source_types: Option<Vec<SourceType>>,
     pub content_types: Option<Vec<String>>,
+    /// Attribute filters for filtering by document attributes.
+    /// Keys are attribute names, values are AttributeFilter specifications.
+    /// Examples:
+    /// - `{"status": "Done"}` - exact match
+    /// - `{"labels": ["bug", "urgent"]}` - match any of these values
+    /// - `{"date": {"gte": "2024-01-01", "lte": "2024-12-31"}}` - date range
+    pub attribute_filters: Option<HashMap<String, AttributeFilter>>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub mode: Option<SearchMode>,

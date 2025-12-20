@@ -1,9 +1,11 @@
 use crate::{
     db::error::DatabaseError,
-    models::{Document, Facet, FacetValue},
+    models::{AttributeFilter, Document, Facet, FacetValue},
     SourceType,
 };
+use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
+use std::collections::HashMap;
 use tracing::debug;
 
 #[derive(FromRow)]
@@ -45,7 +47,7 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE id = $1
             "#,
@@ -66,7 +68,7 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE id = ANY($1)
             "#,
@@ -83,7 +85,7 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             FROM documents
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
@@ -129,7 +131,7 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE tsv_content @@ websearch_to_tsquery('english', $1)
             ORDER BY (
@@ -169,6 +171,7 @@ impl DocumentRepository {
         query: &str,
         source_types: Option<&[SourceType]>,
         content_types: Option<&[String]>,
+        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
         limit: i64,
         offset: i64,
         user_email: Option<&str>,
@@ -211,6 +214,61 @@ impl DocumentRepository {
             param_idx += 1;
         }
 
+        // Build attribute filter conditions using ParadeDB's JSON query syntax
+        if let Some(attr_filters) = attribute_filters {
+            for (key, filter) in attr_filters {
+                let field = format!("attributes.{}", key);
+                match filter {
+                    AttributeFilter::Exact(value) => {
+                        // Use paradedb.term for exact match on JSON field
+                        let term_value = json_value_to_term_string(value);
+                        filters.push(format!(
+                            "id @@@ paradedb.term('{}', '{}')",
+                            field,
+                            term_value.replace('\'', "''")
+                        ));
+                    }
+                    AttributeFilter::AnyOf(values) => {
+                        // OR multiple term queries for array membership
+                        let conditions: Vec<String> = values
+                            .iter()
+                            .map(|v| {
+                                let term_value = json_value_to_term_string(v);
+                                format!(
+                                    "id @@@ paradedb.term('{}', '{}')",
+                                    field,
+                                    term_value.replace('\'', "''")
+                                )
+                            })
+                            .collect();
+                        if !conditions.is_empty() {
+                            filters.push(format!("({})", conditions.join(" OR ")));
+                        }
+                    }
+                    AttributeFilter::Range { gte, lte } => {
+                        // For range queries on dates/numbers, use string comparison
+                        // ParadeDB range queries require fast fields, falling back to JSONB ops
+                        if let Some(gte_val) = gte {
+                            let gte_str = json_value_to_term_string(gte_val);
+                            filters.push(format!(
+                                "attributes->>'{}' >= '{}'",
+                                key.replace('\'', "''"),
+                                gte_str.replace('\'', "''")
+                            ));
+                        }
+                        if let Some(lte_val) = lte {
+                            let lte_str = json_value_to_term_string(lte_val);
+                            filters.push(format!(
+                                "attributes->>'{}' <= '{}'",
+                                key.replace('\'', "''"),
+                                lte_str.replace('\'', "''")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(email) = user_email {
             filters.push(self.generate_permission_filter(email));
         }
@@ -229,7 +287,7 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at,
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at,
                    paradedb.score(id) as score
             FROM documents
             WHERE {}
@@ -320,7 +378,7 @@ impl DocumentRepository {
             )
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at,
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at,
                    ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1), 32) as base_rank,
                    (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - (regexp_replace(metadata->>'updated_at', '^\+00', ''))::timestamptz)) / 86400.0 / -365.0)) * 0.3)::real as recency_boost,
                    (CASE WHEN title ILIKE '%' || $1 || '%' THEN 1.4 ELSE 1.0 END)::real as title_boost,
@@ -365,7 +423,7 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE source_id = $1
             ORDER BY created_at DESC
@@ -387,7 +445,7 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE source_id = $1 AND external_id = $2
             "#,
@@ -403,11 +461,11 @@ impl DocumentRepository {
     pub async fn create(&self, document: Document) -> Result<Document, DatabaseError> {
         let created_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions, attributes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             "#
         )
         .bind(&document.id)
@@ -417,6 +475,7 @@ impl DocumentRepository {
         .bind(&document.content_id)
         .bind(&document.metadata)
         .bind(&document.permissions)
+        .bind(&document.attributes)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| match e {
@@ -439,16 +498,17 @@ impl DocumentRepository {
         let updated_document = sqlx::query_as::<_, Document>(
             r#"
             UPDATE documents
-            SET 
-                title = $2, 
-                content_id = $3, 
-                metadata = $4, 
+            SET
+                title = $2,
+                content_id = $3,
+                metadata = $4,
                 permissions = $5,
-                content = $6
+                attributes = $6,
+                content = $7
             WHERE id = $1
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             "#,
         )
         .bind(id)
@@ -456,6 +516,7 @@ impl DocumentRepository {
         .bind(&document.content_id)
         .bind(&document.metadata)
         .bind(&document.permissions)
+        .bind(&document.attributes)
         .bind(content)
         .fetch_optional(&self.pool)
         .await?;
@@ -473,12 +534,12 @@ impl DocumentRepository {
         let updated_document = sqlx::query_as::<_, Document>(
             r#"
             UPDATE documents
-            SET title = $2, content_id = $3, metadata = $4, permissions = $5,
-                tsv_content = setweight(to_tsvector('english', $2), 'A') || setweight(to_tsvector('english', $6), 'B')
+            SET title = $2, content_id = $3, metadata = $4, permissions = $5, attributes = $6,
+                tsv_content = setweight(to_tsvector('english', $2), 'A') || setweight(to_tsvector('english', $7), 'B')
             WHERE id = $1
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             "#,
         )
         .bind(id)
@@ -486,6 +547,7 @@ impl DocumentRepository {
         .bind(&document.content_id)
         .bind(&document.metadata)
         .bind(&document.permissions)
+        .bind(&document.attributes)
         .bind(content)
         .fetch_optional(&self.pool)
         .await?;
@@ -524,21 +586,22 @@ impl DocumentRepository {
     ) -> Result<Document, DatabaseError> {
         let upserted_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at, tsv_content)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                    setweight(to_tsvector('english', $4), 'A') || setweight(to_tsvector('english', $15), 'B'))
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, created_at, updated_at, last_indexed_at, tsv_content)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                    setweight(to_tsvector('english', $4), 'A') || setweight(to_tsvector('english', $16), 'B'))
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = EXCLUDED.title,
                 content_id = EXCLUDED.content_id,
                 metadata = EXCLUDED.metadata,
                 permissions = EXCLUDED.permissions,
+                attributes = EXCLUDED.attributes,
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = EXCLUDED.last_indexed_at,
-                tsv_content = setweight(to_tsvector('english', EXCLUDED.title), 'A') || setweight(to_tsvector('english', $15), 'B')
+                tsv_content = setweight(to_tsvector('english', EXCLUDED.title), 'A') || setweight(to_tsvector('english', $16), 'B')
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             "#
         )
         .bind(&document.id)
@@ -552,6 +615,7 @@ impl DocumentRepository {
         .bind(&document.url)
         .bind(&document.metadata)
         .bind(&document.permissions)
+        .bind(&document.attributes)
         .bind(&document.created_at)
         .bind(&document.updated_at)
         .bind(&document.last_indexed_at)
@@ -773,6 +837,8 @@ impl DocumentRepository {
             documents.iter().map(|d| d.metadata.clone()).collect();
         let permissions: Vec<serde_json::Value> =
             documents.iter().map(|d| d.permissions.clone()).collect();
+        let attributes: Vec<serde_json::Value> =
+            documents.iter().map(|d| d.attributes.clone()).collect();
         let created_ats: Vec<sqlx::types::time::OffsetDateTime> =
             documents.iter().map(|d| d.created_at).collect();
         let updated_ats: Vec<sqlx::types::time::OffsetDateTime> =
@@ -783,40 +849,42 @@ impl DocumentRepository {
         let upserted_documents = sqlx::query_as::<_, Document>(
             r#"
             INSERT INTO documents (
-                id, 
-                source_id, 
-                external_id, 
-                title, 
-                content_id, 
-                content_type, 
-                file_size, 
-                file_extension, 
-                url, 
-                metadata, 
-                permissions, 
-                created_at, 
-                updated_at, 
-                last_indexed_at, 
+                id,
+                source_id,
+                external_id,
+                title,
+                content_id,
+                content_type,
+                file_size,
+                file_extension,
+                url,
+                metadata,
+                permissions,
+                attributes,
+                created_at,
+                updated_at,
+                last_indexed_at,
                 content
             )
             SELECT *
             FROM UNNEST(
                 $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
-                $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[],
-                $12::timestamptz[], $13::timestamptz[], $14::timestamptz[], $15::text[]
-            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at, content)
+                $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[], $12::jsonb[],
+                $13::timestamptz[], $14::timestamptz[], $15::timestamptz[], $16::text[]
+            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, created_at, updated_at, last_indexed_at, content)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = EXCLUDED.title,
                 content_id = EXCLUDED.content_id,
                 metadata = EXCLUDED.metadata,
                 permissions = EXCLUDED.permissions,
+                attributes = EXCLUDED.attributes,
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = EXCLUDED.last_indexed_at,
                 content = EXCLUDED.content
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
             "#
         )
         .bind(&ids)
@@ -830,91 +898,7 @@ impl DocumentRepository {
         .bind(&urls)
         .bind(&metadata)
         .bind(&permissions)
-        .bind(&created_ats)
-        .bind(&updated_ats)
-        .bind(&last_indexed_ats)
-        .bind(&contents)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(upserted_documents)
-    }
-
-    // Batch operations for improved performance
-    #[deprecated(note = "Use batch_upsert instead.")]
-    pub async fn batch_upsert_v0(
-        &self,
-        documents: Vec<Document>,
-        contents: Vec<String>,
-    ) -> Result<Vec<Document>, DatabaseError> {
-        if documents.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Build arrays for the batch upsert
-        let ids: Vec<String> = documents.iter().map(|d| d.id.clone()).collect();
-        let source_ids: Vec<String> = documents.iter().map(|d| d.source_id.clone()).collect();
-        let external_ids: Vec<String> = documents.iter().map(|d| d.external_id.clone()).collect();
-        let titles: Vec<String> = documents.iter().map(|d| d.title.clone()).collect();
-        let content_ids: Vec<Option<String>> =
-            documents.iter().map(|d| d.content_id.clone()).collect();
-        let content_types: Vec<Option<String>> =
-            documents.iter().map(|d| d.content_type.clone()).collect();
-        let file_sizes: Vec<Option<i64>> = documents.iter().map(|d| d.file_size).collect();
-        let file_extensions: Vec<Option<String>> =
-            documents.iter().map(|d| d.file_extension.clone()).collect();
-        let urls: Vec<Option<String>> = documents.iter().map(|d| d.url.clone()).collect();
-        let metadata: Vec<serde_json::Value> =
-            documents.iter().map(|d| d.metadata.clone()).collect();
-        let permissions: Vec<serde_json::Value> =
-            documents.iter().map(|d| d.permissions.clone()).collect();
-        let created_ats: Vec<sqlx::types::time::OffsetDateTime> =
-            documents.iter().map(|d| d.created_at).collect();
-        let updated_ats: Vec<sqlx::types::time::OffsetDateTime> =
-            documents.iter().map(|d| d.updated_at).collect();
-        let last_indexed_ats: Vec<sqlx::types::time::OffsetDateTime> =
-            documents.iter().map(|d| d.last_indexed_at).collect();
-
-        let upserted_documents = sqlx::query_as::<_, Document>(
-            r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at, tsv_content)
-            SELECT
-                id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at,
-                setweight(to_tsvector('english', title), 'A') || setweight(to_tsvector('english', content), 'B') as tsv_content
-            FROM UNNEST(
-                $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
-                $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[],
-                $12::timestamptz[], $13::timestamptz[], $14::timestamptz[], $15::text[]
-            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, created_at, updated_at, last_indexed_at, content)
-            ON CONFLICT (source_id, external_id)
-            DO UPDATE SET
-                title = EXCLUDED.title,
-                content_id = EXCLUDED.content_id,
-                metadata = EXCLUDED.metadata,
-                permissions = EXCLUDED.permissions,
-                updated_at = EXCLUDED.updated_at,
-                last_indexed_at = EXCLUDED.last_indexed_at,
-                tsv_content = setweight(to_tsvector('english', EXCLUDED.title), 'A') || setweight(to_tsvector('english', (
-                    SELECT content FROM UNNEST($15::text[]) WITH ORDINALITY AS c(content, ord)
-                    WHERE ord = (SELECT ord FROM UNNEST($3::text[]) WITH ORDINALITY AS e(external_id, ord) WHERE e.external_id = EXCLUDED.external_id LIMIT 1)
-                    LIMIT 1
-                )), 'B')
-            RETURNING id, source_id, external_id, title, content_id, content_type,
-                      file_size, file_extension, url,
-                      metadata, permissions, created_at, updated_at, last_indexed_at
-            "#
-        )
-        .bind(&ids)
-        .bind(&source_ids)
-        .bind(&external_ids)
-        .bind(&titles)
-        .bind(&content_ids)
-        .bind(&content_types)
-        .bind(&file_sizes)
-        .bind(&file_extensions)
-        .bind(&urls)
-        .bind(&metadata)
-        .bind(&permissions)
+        .bind(&attributes)
         .bind(&created_ats)
         .bind(&updated_ats)
         .bind(&last_indexed_ats)
@@ -969,5 +953,17 @@ impl DocumentRepository {
             .await?;
 
         Ok(result.rows_affected() as i64)
+    }
+}
+
+/// Convert a JSON value to a string suitable for ParadeDB term queries
+fn json_value_to_term_string(value: &JsonValue) -> String {
+    match value {
+        JsonValue::String(s) => s.clone(),
+        JsonValue::Number(n) => n.to_string(),
+        JsonValue::Bool(b) => b.to_string(),
+        JsonValue::Null => "null".to_string(),
+        // For arrays and objects, serialize to JSON string
+        _ => value.to_string(),
     }
 }

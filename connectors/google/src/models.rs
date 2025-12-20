@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use serde_json::json;
+use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use sqlx::types::time::OffsetDateTime;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -69,7 +70,53 @@ impl From<GoogleDriveFile> for FolderMetadata {
     }
 }
 
+/// Structured attributes for Google Drive files, used for filtering and faceting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoogleDriveFileAttributes {
+    pub mime_type: String,
+}
+
+impl GoogleDriveFileAttributes {
+    pub fn into_attributes(self) -> DocumentAttributes {
+        let mut attrs = HashMap::new();
+        attrs.insert("mime_type".into(), json!(self.mime_type));
+        attrs
+    }
+}
+
+/// Structured attributes for Gmail threads, used for filtering and faceting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GmailThreadAttributes {
+    pub sender: Option<String>,
+    pub labels: Vec<String>,
+    pub message_count: usize,
+    pub date: Option<String>, // ISO 8601 date (YYYY-MM-DD) for date range queries
+}
+
+impl GmailThreadAttributes {
+    pub fn into_attributes(self) -> DocumentAttributes {
+        let mut attrs = HashMap::new();
+        if let Some(sender) = self.sender {
+            attrs.insert("sender".into(), json!(sender));
+        }
+        if !self.labels.is_empty() {
+            attrs.insert("labels".into(), json!(self.labels));
+        }
+        attrs.insert("message_count".into(), json!(self.message_count));
+        if let Some(date) = self.date {
+            attrs.insert("date".into(), json!(date));
+        }
+        attrs
+    }
+}
+
 impl GoogleDriveFile {
+    pub fn to_attributes(&self) -> GoogleDriveFileAttributes {
+        GoogleDriveFileAttributes {
+            mime_type: self.mime_type.clone(),
+        }
+    }
+
     pub fn to_connector_event(
         &self,
         sync_run_id: &str,
@@ -88,24 +135,18 @@ impl GoogleDriveFile {
         }
 
         let mut extra = HashMap::new();
-        extra.insert("file_id".to_string(), serde_json::json!(self.id));
-        extra.insert(
-            "shared".to_string(),
-            serde_json::json!(self.shared.unwrap_or(false)),
-        );
+        extra.insert("file_id".to_string(), json!(self.id));
+        extra.insert("shared".to_string(), json!(self.shared.unwrap_or(false)));
 
         // Store Google Drive specific hierarchical data
         let mut google_drive_metadata = HashMap::new();
         if let Some(parents) = &self.parents {
-            google_drive_metadata.insert("parents".to_string(), serde_json::json!(parents));
+            google_drive_metadata.insert("parents".to_string(), json!(parents));
             if let Some(parent) = parents.first() {
-                google_drive_metadata.insert("parent_id".to_string(), serde_json::json!(parent));
+                google_drive_metadata.insert("parent_id".to_string(), json!(parent));
             }
         }
-        extra.insert(
-            "google_drive".to_string(),
-            serde_json::json!(google_drive_metadata),
-        );
+        extra.insert("google_drive".to_string(), json!(google_drive_metadata));
 
         let metadata = DocumentMetadata {
             title: Some(self.name.clone()),
@@ -133,6 +174,8 @@ impl GoogleDriveFile {
             groups: vec![],
         };
 
+        let attributes = self.to_attributes().into_attributes();
+
         ConnectorEvent::DocumentCreated {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
@@ -140,6 +183,7 @@ impl GoogleDriveFile {
             content_id: content_id.to_string(),
             metadata,
             permissions,
+            attributes: Some(attributes),
         }
     }
 }
@@ -441,6 +485,42 @@ impl GmailThread {
         Ok(content_parts.join("\n"))
     }
 
+    pub fn to_attributes(&self) -> GmailThreadAttributes {
+        // Extract sender from first message
+        let sender = self
+            .messages
+            .first()
+            .and_then(|msg| self.extract_header_value(msg, "From"));
+
+        // Collect unique labels from all messages
+        let labels: Vec<String> = self
+            .messages
+            .iter()
+            .filter_map(|msg| msg.label_ids.as_ref())
+            .flatten()
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        // Convert latest_date (millis timestamp) to ISO date
+        let date = if !self.latest_date.is_empty() {
+            self.latest_date.parse::<i64>().ok().and_then(|millis| {
+                DateTime::from_timestamp(millis / 1000, 0)
+                    .map(|dt| dt.format("%Y-%m-%d").to_string())
+            })
+        } else {
+            None
+        };
+
+        GmailThreadAttributes {
+            sender,
+            labels,
+            message_count: self.total_messages,
+            date,
+        }
+    }
+
     pub fn to_connector_event(
         &self,
         sync_run_id: &str,
@@ -449,14 +529,11 @@ impl GmailThread {
         _gmail_client: &crate::gmail::GmailClient,
     ) -> Result<ConnectorEvent, anyhow::Error> {
         let mut extra = HashMap::new();
-        extra.insert("thread_id".to_string(), serde_json::json!(self.thread_id));
-        extra.insert(
-            "message_count".to_string(),
-            serde_json::json!(self.total_messages),
-        );
+        extra.insert("thread_id".to_string(), json!(self.thread_id));
+        extra.insert("message_count".to_string(), json!(self.total_messages));
         extra.insert(
             "participants".to_string(),
-            serde_json::json!(self.participants.iter().collect::<Vec<_>>()),
+            json!(self.participants.iter().collect::<Vec<_>>()),
         );
 
         // Parse latest date for metadata
@@ -475,11 +552,11 @@ impl GmailThread {
             } else {
                 self.subject.clone()
             }),
-            author: None,           // Could extract from first message's From header
-            created_at: updated_at, // Use latest message date as created date for threads
+            author: None,
+            created_at: updated_at,
             updated_at,
             mime_type: Some("application/x-gmail-thread".to_string()),
-            size: None, // Could calculate total thread size
+            size: None,
             url: Some(format!(
                 "https://mail.google.com/mail/u/0/#inbox/{}",
                 self.thread_id
@@ -494,6 +571,8 @@ impl GmailThread {
             groups: vec![],
         };
 
+        let attributes = self.to_attributes().into_attributes();
+
         Ok(ConnectorEvent::DocumentCreated {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
@@ -501,6 +580,7 @@ impl GmailThread {
             content_id: content_id.to_string(),
             metadata,
             permissions,
+            attributes: Some(attributes),
         })
     }
 }

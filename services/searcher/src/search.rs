@@ -216,6 +216,7 @@ impl SearchEngine {
         let start_time = Instant::now();
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
+        let attribute_filters = request.attribute_filters.as_ref();
 
         debug!("Running fulltext search for {}", &request.query);
         let (documents_with_scores, corrected_query) = (
@@ -223,6 +224,7 @@ impl SearchEngine {
                 &request.query,
                 sources,
                 content_types,
+                attribute_filters,
                 request.limit(),
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),

@@ -4,7 +4,8 @@ use futures::future::join_all;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository, SyncRunRepository};
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
-    ConnectorEvent, ConnectorEventQueueItem, Document, DocumentMetadata, DocumentPermissions,
+    ConnectorEvent, ConnectorEventQueueItem, Document, DocumentAttributes, DocumentMetadata,
+    DocumentPermissions,
 };
 use shared::queue::EventQueue;
 use sqlx::postgres::PgListener;
@@ -386,6 +387,7 @@ impl QueueProcessor {
                     content_id,
                     metadata,
                     permissions,
+                    attributes,
                     ..
                 } => {
                     let document = self.create_document_from_event(
@@ -394,6 +396,7 @@ impl QueueProcessor {
                         content_id,
                         metadata,
                         permissions,
+                        attributes,
                     )?;
 
                     // Use source_id + external_id as deduplication key
@@ -413,6 +416,7 @@ impl QueueProcessor {
                     content_id,
                     metadata,
                     permissions,
+                    attributes,
                     ..
                 } => {
                     let document = self
@@ -422,6 +426,7 @@ impl QueueProcessor {
                             content_id,
                             metadata,
                             permissions,
+                            attributes,
                         )
                         .await?;
                     if let Some(doc) = document {
@@ -565,10 +570,15 @@ impl QueueProcessor {
         content_id: String,
         metadata: DocumentMetadata,
         permissions: DocumentPermissions,
+        attributes: Option<DocumentAttributes>,
     ) -> Result<Document> {
         let now = sqlx::types::time::OffsetDateTime::now_utc();
         let metadata_json = self.convert_metadata_to_json(&metadata)?;
         let permissions_json = serde_json::to_value(&permissions)?;
+        let attributes_json = attributes
+            .map(|a| serde_json::to_value(&a))
+            .transpose()?
+            .unwrap_or(serde_json::json!({}));
 
         // Extract file extension from URL or mime type
         let file_extension = metadata.url.as_ref().and_then(|url| {
@@ -599,6 +609,7 @@ impl QueueProcessor {
             url: metadata.url,
             metadata: metadata_json,
             permissions: permissions_json,
+            attributes: attributes_json,
             created_at: now,
             updated_at: now,
             last_indexed_at,
@@ -612,6 +623,7 @@ impl QueueProcessor {
         content_id: String,
         metadata: DocumentMetadata,
         permissions: Option<DocumentPermissions>,
+        attributes: Option<DocumentAttributes>,
     ) -> Result<Option<Document>> {
         let repo = DocumentRepository::new(self.state.db_pool.pool());
 
@@ -624,6 +636,9 @@ impl QueueProcessor {
             document.metadata = metadata_json;
             if let Some(perms) = permissions {
                 document.permissions = serde_json::to_value(&perms)?;
+            }
+            if let Some(attrs) = attributes {
+                document.attributes = serde_json::to_value(&attrs)?;
             }
             document.updated_at = now;
 
@@ -976,6 +991,7 @@ impl ProcessorContext {
                 content_id,
                 metadata,
                 permissions,
+                attributes,
             } => {
                 self.handle_document_created(
                     source_id,
@@ -983,6 +999,7 @@ impl ProcessorContext {
                     content_id,
                     metadata,
                     permissions,
+                    attributes,
                 )
                 .await?;
             }
@@ -993,6 +1010,7 @@ impl ProcessorContext {
                 content_id,
                 metadata,
                 permissions,
+                attributes,
             } => {
                 self.handle_document_updated(
                     source_id,
@@ -1000,6 +1018,7 @@ impl ProcessorContext {
                     content_id,
                     metadata,
                     permissions,
+                    attributes,
                 )
                 .await?;
             }
@@ -1023,6 +1042,7 @@ impl ProcessorContext {
         content_id: String,
         metadata: DocumentMetadata,
         permissions: DocumentPermissions,
+        attributes: Option<DocumentAttributes>,
     ) -> Result<()> {
         info!(
             "Processing document created/updated: {} from source {}",
@@ -1032,6 +1052,7 @@ impl ProcessorContext {
         let now = sqlx::types::time::OffsetDateTime::now_utc();
         let metadata_json = serde_json::to_value(&metadata)?;
         let permissions_json = serde_json::to_value(&permissions)?;
+        let attributes_json = serde_json::to_value(&attributes.unwrap_or_default())?;
 
         // Extract file extension from URL or mime type
         let file_extension = metadata.url.as_ref().and_then(|url| {
@@ -1059,6 +1080,7 @@ impl ProcessorContext {
             url: metadata.url.clone(),
             metadata: metadata_json,
             permissions: permissions_json,
+            attributes: attributes_json,
             created_at: now,
             updated_at: now,
             last_indexed_at: now,
@@ -1123,6 +1145,7 @@ impl ProcessorContext {
         content_id: String,
         metadata: DocumentMetadata,
         permissions: Option<DocumentPermissions>,
+        attributes: Option<DocumentAttributes>,
     ) -> Result<()> {
         info!(
             "Processing document updated: {} from source {}",
@@ -1141,6 +1164,9 @@ impl ProcessorContext {
             document.metadata = metadata_json;
             if let Some(perms) = permissions {
                 document.permissions = serde_json::to_value(&perms)?;
+            }
+            if let Some(attrs) = attributes {
+                document.attributes = serde_json::to_value(&attrs)?;
             }
             document.updated_at = now;
 

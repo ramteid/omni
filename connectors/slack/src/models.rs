@@ -1,6 +1,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use serde_json::json;
+use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
 
@@ -106,6 +107,36 @@ pub struct MessageGroup {
     pub messages: Vec<(SlackMessage, String)>, // (message, author_name)
     pub is_thread: bool,
     pub thread_ts: Option<String>,
+}
+
+/// Structured attributes for Slack messages, used for filtering and faceting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackMessageAttributes {
+    pub channel_name: String,
+    pub is_thread: bool,
+}
+
+impl SlackMessageAttributes {
+    pub fn into_attributes(self) -> DocumentAttributes {
+        let mut attrs = HashMap::new();
+        attrs.insert("channel_name".into(), json!(self.channel_name));
+        attrs.insert("is_thread".into(), json!(self.is_thread));
+        attrs
+    }
+}
+
+/// Structured attributes for Slack files, used for filtering and faceting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackFileAttributes {
+    pub channel_name: String,
+}
+
+impl SlackFileAttributes {
+    pub fn into_attributes(self) -> DocumentAttributes {
+        let mut attrs = HashMap::new();
+        attrs.insert("channel_name".into(), json!(self.channel_name));
+        attrs
+    }
 }
 
 impl MessageGroup {
@@ -287,6 +318,8 @@ impl MessageGroup {
             groups: vec![self.channel_id.clone()],
         };
 
+        let attributes = self.to_attributes().into_attributes();
+
         ConnectorEvent::DocumentCreated {
             sync_run_id,
             source_id,
@@ -294,6 +327,14 @@ impl MessageGroup {
             content_id,
             metadata,
             permissions,
+            attributes: Some(attributes),
+        }
+    }
+
+    pub fn to_attributes(&self) -> SlackMessageAttributes {
+        SlackMessageAttributes {
+            channel_name: self.channel_name.clone(),
+            is_thread: self.is_thread,
         }
     }
 }
@@ -313,14 +354,11 @@ impl SlackFile {
 
         // Store Slack-specific file metadata
         let mut slack_metadata = HashMap::new();
-        slack_metadata.insert("channel_id".to_string(), serde_json::json!(channel_id));
-        slack_metadata.insert(
-            "channel_name".to_string(),
-            serde_json::json!(channel_name.clone()),
-        );
-        slack_metadata.insert("file_name".to_string(), serde_json::json!(self.name));
-        slack_metadata.insert("file_id".to_string(), serde_json::json!(self.id));
-        extra.insert("slack".to_string(), serde_json::json!(slack_metadata));
+        slack_metadata.insert("channel_id".to_string(), json!(channel_id.clone()));
+        slack_metadata.insert("channel_name".to_string(), json!(channel_name.clone()));
+        slack_metadata.insert("file_name".to_string(), json!(self.name));
+        slack_metadata.insert("file_id".to_string(), json!(self.id));
+        extra.insert("slack".to_string(), json!(slack_metadata));
 
         let metadata = DocumentMetadata {
             title: self.title.clone().or_else(|| Some(self.name.clone())),
@@ -330,7 +368,7 @@ impl SlackFile {
             mime_type: self.mimetype.clone(),
             size: Some(self.size.to_string()),
             url: self.permalink.clone(),
-            path: Some(format!("#{}/{}", channel_name, self.name)), // Display as channel/filename
+            path: Some(format!("#{}/{}", channel_name, self.name)),
             extra: Some(extra),
         };
 
@@ -340,6 +378,11 @@ impl SlackFile {
             groups: vec![channel_id],
         };
 
+        let attributes = SlackFileAttributes {
+            channel_name: channel_name.clone(),
+        }
+        .into_attributes();
+
         ConnectorEvent::DocumentCreated {
             sync_run_id,
             source_id,
@@ -347,6 +390,7 @@ impl SlackFile {
             content_id,
             metadata,
             permissions,
+            attributes: Some(attributes),
         }
     }
 }

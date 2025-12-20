@@ -1,6 +1,7 @@
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use serde_json::json;
+use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 
@@ -255,6 +256,74 @@ pub struct JiraComponent {
     pub description: Option<String>,
 }
 
+/// Structured attributes for JIRA issues, used for filtering and faceting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraIssueAttributes {
+    pub issue_key: String,
+    pub issue_type: String,
+    pub status: String,
+    pub status_category: String,
+    pub project_key: String,
+    pub project_name: String,
+    pub priority: Option<String>,
+    pub assignee: Option<String>,
+    pub assignee_email: Option<String>,
+    pub reporter: Option<String>,
+    pub reporter_email: Option<String>,
+    pub labels: Vec<String>,
+    pub components: Vec<String>,
+}
+
+impl JiraIssueAttributes {
+    pub fn into_attributes(self) -> DocumentAttributes {
+        let mut attrs = HashMap::new();
+        attrs.insert("issue_key".into(), json!(self.issue_key));
+        attrs.insert("issue_type".into(), json!(self.issue_type));
+        attrs.insert("status".into(), json!(self.status));
+        attrs.insert("status_category".into(), json!(self.status_category));
+        attrs.insert("project_key".into(), json!(self.project_key));
+        attrs.insert("project_name".into(), json!(self.project_name));
+        if let Some(priority) = self.priority {
+            attrs.insert("priority".into(), json!(priority));
+        }
+        if let Some(assignee) = self.assignee {
+            attrs.insert("assignee".into(), json!(assignee));
+        }
+        if let Some(email) = self.assignee_email {
+            attrs.insert("assignee_email".into(), json!(email));
+        }
+        if let Some(reporter) = self.reporter {
+            attrs.insert("reporter".into(), json!(reporter));
+        }
+        if let Some(email) = self.reporter_email {
+            attrs.insert("reporter_email".into(), json!(email));
+        }
+        if !self.labels.is_empty() {
+            attrs.insert("labels".into(), json!(self.labels));
+        }
+        if !self.components.is_empty() {
+            attrs.insert("components".into(), json!(self.components));
+        }
+        attrs
+    }
+}
+
+/// Structured attributes for Confluence pages, used for filtering and faceting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluencePageAttributes {
+    pub space_id: String,
+    pub status: String,
+}
+
+impl ConfluencePageAttributes {
+    pub fn into_attributes(self) -> DocumentAttributes {
+        let mut attrs = HashMap::new();
+        attrs.insert("space_id".into(), json!(self.space_id));
+        attrs.insert("status".into(), json!(self.status));
+        attrs
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JiraSearchResponse {
     pub issues: Vec<JiraIssue>,
@@ -281,13 +350,19 @@ impl ConfluencePage {
     }
 
     fn strip_html_tags(&self, html: &str) -> String {
-        // Simple HTML tag stripping - in production, consider using a proper HTML parser
         let re = regex::Regex::new(r"<[^>]*>").unwrap();
         re.replace_all(html, " ")
             .into_owned()
             .split_whitespace()
             .collect::<Vec<&str>>()
             .join(" ")
+    }
+
+    pub fn to_attributes(&self) -> ConfluencePageAttributes {
+        ConfluencePageAttributes {
+            space_id: self.space_id.clone(),
+            status: format!("{:?}", self.status).to_lowercase(),
+        }
     }
 
     pub fn to_connector_event(
@@ -298,27 +373,17 @@ impl ConfluencePage {
         content_id: String,
     ) -> ConnectorEvent {
         let document_id = format!("confluence_page_{}_{}", self.space_id, self.id);
-        let mut extra = HashMap::new();
-
-        // Store Confluence-specific hierarchical data
-        let mut confluence_metadata = HashMap::new();
-        confluence_metadata.insert("space_id".to_string(), serde_json::json!(self.space_id));
-        confluence_metadata.insert("parent_id".to_string(), serde_json::json!(self.parent_id));
-        confluence_metadata.insert("status".to_string(), serde_json::json!(self.status));
-        confluence_metadata.insert(
-            "version".to_string(),
-            serde_json::json!(self.version.number),
-        );
-
-        extra.insert(
-            "confluence".to_string(),
-            serde_json::json!(confluence_metadata),
-        );
-
         let url = format!("{}/wiki{}", base_url, self.links.webui.clone());
-
-        // For now, just use the page name
         let path = self.title.clone();
+
+        // Display metadata (not for filtering)
+        let mut extra = HashMap::new();
+        let mut confluence_extra = HashMap::new();
+        confluence_extra.insert("space_id".to_string(), json!(self.space_id));
+        confluence_extra.insert("parent_id".to_string(), json!(self.parent_id));
+        confluence_extra.insert("status".to_string(), json!(self.status));
+        confluence_extra.insert("version".to_string(), json!(self.version.number));
+        extra.insert("confluence".to_string(), json!(confluence_extra));
 
         let metadata = DocumentMetadata {
             title: Some(self.title.clone()),
@@ -332,12 +397,13 @@ impl ConfluencePage {
             extra: Some(extra),
         };
 
-        // For now, make all documents public
         let permissions = DocumentPermissions {
             public: true,
             users: vec![],
             groups: vec![],
         };
+
+        let attributes = self.to_attributes().into_attributes();
 
         ConnectorEvent::DocumentCreated {
             sync_run_id,
@@ -346,6 +412,7 @@ impl ConfluencePage {
             content_id,
             metadata,
             permissions,
+            attributes: Some(attributes),
         }
     }
 }
@@ -395,42 +462,70 @@ impl JiraIssue {
         text.trim().to_string()
     }
 
+    /// Generate textual content for FTS indexing and embeddings.
+    /// Only includes human-written text, NOT structured fields.
+    /// Structured fields go in `to_attributes()` for filtering.
     pub fn to_document_content(&self) -> String {
-        let mut content = format!("Summary: {}\n\n", self.fields.summary);
+        let mut content = String::new();
 
+        // Summary is the issue title - include it
+        content.push_str(&self.fields.summary);
+        content.push_str("\n\n");
+
+        // Description is the main textual content
         let description = self.extract_description_text();
         if !description.is_empty() {
-            content.push_str(&format!("Description:\n{}\n\n", description));
+            content.push_str(&description);
+            content.push_str("\n\n");
         }
 
-        content.push_str(&format!("Issue Type: {}\n", self.fields.issuetype.name));
-        content.push_str(&format!("Status: {}\n", self.fields.status.name));
-        content.push_str(&format!("Project: {}\n", self.fields.project.name));
-
-        if let Some(priority) = &self.fields.priority {
-            content.push_str(&format!("Priority: {}\n", priority.name));
-        }
-
-        if let Some(assignee) = &self.fields.assignee {
-            content.push_str(&format!("Assignee: {}\n", assignee.display_name));
-        }
-
-        if let Some(reporter) = &self.fields.reporter {
-            content.push_str(&format!("Reporter: {}\n", reporter.display_name));
-        }
-
-        if let Some(labels) = &self.fields.labels {
-            if !labels.is_empty() {
-                content.push_str(&format!("Labels: {}\n", labels.join(", ")));
-            }
-        }
-
+        // Comments are user-written text content
         let comments = self.extract_comments_text();
         if !comments.is_empty() {
-            content.push_str(&format!("\nComments:\n{}", comments));
+            content.push_str(&comments);
         }
 
-        content
+        content.trim().to_string()
+    }
+
+    /// Generate structured attributes for filtering and faceting.
+    pub fn to_attributes(&self) -> JiraIssueAttributes {
+        JiraIssueAttributes {
+            issue_key: self.key.clone(),
+            issue_type: self.fields.issuetype.name.clone(),
+            status: self.fields.status.name.clone(),
+            status_category: self.fields.status.status_category.name.clone(),
+            project_key: self.fields.project.key.clone(),
+            project_name: self.fields.project.name.clone(),
+            priority: self.fields.priority.as_ref().map(|p| p.name.clone()),
+            assignee: self
+                .fields
+                .assignee
+                .as_ref()
+                .map(|a| a.display_name.clone()),
+            assignee_email: self
+                .fields
+                .assignee
+                .as_ref()
+                .and_then(|a| a.email_address.clone()),
+            reporter: self
+                .fields
+                .reporter
+                .as_ref()
+                .map(|r| r.display_name.clone()),
+            reporter_email: self
+                .fields
+                .reporter
+                .as_ref()
+                .and_then(|r| r.email_address.clone()),
+            labels: self.fields.labels.clone().unwrap_or_default(),
+            components: self
+                .fields
+                .components
+                .as_ref()
+                .map(|c| c.iter().map(|comp| comp.name.clone()).collect())
+                .unwrap_or_default(),
+        }
     }
 
     pub fn to_connector_event(
@@ -456,45 +551,26 @@ impl JiraIssue {
                     .unwrap_or(OffsetDateTime::UNIX_EPOCH)
             });
 
+        // Display metadata (not for filtering)
         let mut extra = HashMap::new();
-
-        // Store Jira-specific metadata
-        let mut jira_metadata = HashMap::new();
-        jira_metadata.insert("issue_key".to_string(), serde_json::json!(self.key));
-        jira_metadata.insert(
-            "project_id".to_string(),
-            serde_json::json!(self.fields.project.id),
-        );
-        jira_metadata.insert(
-            "project_key".to_string(),
-            serde_json::json!(self.fields.project.key),
-        );
-        jira_metadata.insert(
-            "project_name".to_string(),
-            serde_json::json!(self.fields.project.name),
-        );
-        jira_metadata.insert(
-            "issue_type".to_string(),
-            serde_json::json!(self.fields.issuetype.name),
-        );
-        jira_metadata.insert(
-            "status".to_string(),
-            serde_json::json!(self.fields.status.name),
-        );
-        jira_metadata.insert(
+        let mut jira_extra = HashMap::new();
+        jira_extra.insert("issue_key".to_string(), json!(self.key));
+        jira_extra.insert("project_id".to_string(), json!(self.fields.project.id));
+        jira_extra.insert("project_key".to_string(), json!(self.fields.project.key));
+        jira_extra.insert("project_name".to_string(), json!(self.fields.project.name));
+        jira_extra.insert("issue_type".to_string(), json!(self.fields.issuetype.name));
+        jira_extra.insert("status".to_string(), json!(self.fields.status.name));
+        jira_extra.insert(
             "status_category".to_string(),
-            serde_json::json!(self.fields.status.status_category.name),
+            json!(self.fields.status.status_category.name),
         );
-
         if let Some(priority) = &self.fields.priority {
-            jira_metadata.insert("priority".to_string(), serde_json::json!(priority.name));
+            jira_extra.insert("priority".to_string(), json!(priority.name));
         }
-
         if let Some(labels) = &self.fields.labels {
-            jira_metadata.insert("labels".to_string(), serde_json::json!(labels));
+            jira_extra.insert("labels".to_string(), json!(labels));
         }
-
-        extra.insert("jira".to_string(), serde_json::json!(jira_metadata));
+        extra.insert("jira".to_string(), json!(jira_extra));
 
         let url = Some(format!("{}/browse/{}", base_url, self.key));
 
@@ -506,7 +582,7 @@ impl JiraIssue {
             mime_type: Some("text/plain".to_string()),
             size: Some(self.to_document_content().len().to_string()),
             url,
-            path: Some(format!("{}/{}", self.fields.project.name, self.key)), // Display as Project/Issue
+            path: Some(format!("{}/{}", self.fields.project.name, self.key)),
             extra: Some(extra),
         };
 
@@ -516,6 +592,8 @@ impl JiraIssue {
             groups: vec![format!("jira_project_{}", self.fields.project.key)],
         };
 
+        let attributes = self.to_attributes().into_attributes();
+
         ConnectorEvent::DocumentCreated {
             sync_run_id,
             source_id,
@@ -523,6 +601,7 @@ impl JiraIssue {
             content_id,
             metadata,
             permissions,
+            attributes: Some(attributes),
         }
     }
 }

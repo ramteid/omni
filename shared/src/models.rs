@@ -125,6 +125,7 @@ pub struct Document {
     pub url: Option<String>,
     pub metadata: JsonValue,
     pub permissions: JsonValue,
+    pub attributes: JsonValue, // Structured key-value attributes for filtering
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::iso8601")]
@@ -238,6 +239,29 @@ pub struct DocumentPermissions {
     pub groups: Vec<String>,
 }
 
+/// Structured attributes for filtering and faceting.
+/// Stored as JSONB, indexed by ParadeDB for FTS and filtering.
+/// NOT included in embeddings - only textual content is embedded.
+pub type DocumentAttributes = HashMap<String, JsonValue>;
+
+/// Attribute filter for search queries.
+/// Supports exact match, multi-value OR, and range queries.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum AttributeFilter {
+    /// Single value exact match
+    Exact(JsonValue),
+    /// Multiple values (OR match)
+    AnyOf(Vec<JsonValue>),
+    /// Range query (for dates, numbers)
+    Range {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gte: Option<JsonValue>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        lte: Option<JsonValue>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConnectorEvent {
@@ -248,6 +272,8 @@ pub enum ConnectorEvent {
         content_id: String,
         metadata: DocumentMetadata,
         permissions: DocumentPermissions,
+        #[serde(default)]
+        attributes: Option<DocumentAttributes>,
     },
     DocumentUpdated {
         sync_run_id: String,
@@ -256,6 +282,8 @@ pub enum ConnectorEvent {
         content_id: String,
         metadata: DocumentMetadata,
         permissions: Option<DocumentPermissions>,
+        #[serde(default)]
+        attributes: Option<DocumentAttributes>,
     },
     DocumentDeleted {
         sync_run_id: String,
