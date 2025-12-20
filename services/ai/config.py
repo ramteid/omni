@@ -4,9 +4,9 @@ from urllib.parse import quote_plus
 
 
 def get_required_env(key: str) -> str:
-    """Get required environment variable with validation"""
+    """Get required environment variable with validation. Empty strings are treated as absent."""
     value = os.getenv(key)
-    if not value:
+    if not value or value.strip() == "":
         print(
             f"ERROR: Required environment variable '{key}' is not set", file=sys.stderr
         )
@@ -18,8 +18,11 @@ def get_required_env(key: str) -> str:
 
 
 def get_optional_env(key: str, default: str) -> str:
-    """Get optional environment variable with default"""
-    return os.getenv(key, default)
+    """Get optional environment variable with default. Empty strings are treated as absent."""
+    value = os.getenv(key)
+    if value is None or value.strip() == "":
+        return default
+    return value
 
 
 def validate_port(port_str: str) -> int:
@@ -93,6 +96,17 @@ LOCAL_EMBEDDINGS_URL = get_optional_env(
 )
 LOCAL_EMBEDDINGS_MODEL = get_optional_env(
     "LOCAL_EMBEDDINGS_MODEL", "nomic-ai/nomic-embed-text-v1.5"
+)
+VLLM_EMBEDDINGS_MAX_MODEL_LEN = int(
+    get_optional_env("VLLM_EMBEDDINGS_MAX_MODEL_LEN", "0")
+)
+
+# JINA embedding configuration
+JINA_MAX_MODEL_LEN = int(get_optional_env("JINA_MAX_MODEL_LEN", "8192"))
+
+# Bedrock embedding configuration
+BEDROCK_EMBEDDING_MAX_MODEL_LEN = int(
+    get_optional_env("BEDROCK_EMBEDDING_MAX_MODEL_LEN", "8192")
 )
 
 # LLM configuration

@@ -76,11 +76,8 @@ _queue_processor_task = None
 class EmbeddingRequest(BaseModel):
     texts: list[str]
     task: str | None = DEFAULT_TASK
-    chunk_size: int | None = (
-        512  # Chunk size in tokens for both fixed and sentence modes
-    )
-    chunking_mode: str | None = "sentence"  # "sentence", "fixed", "semantic", or "none"
-    n_sentences: int | None = None  # Number of sentences per chunk (sentence mode only)
+    chunk_size: int | None = 512  # Chunk size in tokens
+    chunking_mode: str | None = "sentence"  # "sentence", "fixed", or "none"
     priority: Literal["high", "normal", "low"] | None = "normal"
 
 
@@ -136,8 +133,8 @@ async def startup_event():
                 embedding_config.provider,
                 api_key=embedding_config.jina_api_key,
                 model=embedding_config.jina_model,
-                api_url=embedding_config.jina_api_url
-                or "https://api.jina.ai/v1/embeddings",
+                api_url=embedding_config.jina_api_url,
+                max_model_len=JINA_MAX_MODEL_LEN,
             )
         elif embedding_config.provider == "bedrock":
             if not embedding_config.bedrock_model_id:
@@ -153,6 +150,7 @@ async def startup_event():
                 embedding_config.provider,
                 model_id=embedding_config.bedrock_model_id,
                 region_name=region_name,
+                max_model_len=BEDROCK_EMBEDDING_MAX_MODEL_LEN,
             )
         elif embedding_config.provider == "openai":
             api_key = embedding_config.openai_api_key or OPENAI_EMBEDDING_API_KEY
@@ -178,7 +176,10 @@ async def startup_event():
                 f"Initializing local (vLLM) embedding provider with model: {model} at {base_url}"
             )
             app.state.embedding_provider = create_embedding_provider(
-                "local", base_url=base_url, model=model
+                "local",
+                base_url=base_url,
+                model=model,
+                max_model_len=VLLM_EMBEDDINGS_MAX_MODEL_LEN,
             )
         else:
             raise ValueError(f"Unknown embedding provider: {embedding_config.provider}")
@@ -282,7 +283,6 @@ async def process_embedding_queue():
                     request.task,
                     request.chunk_size,
                     request.chunking_mode,
-                    request.n_sentences,
                 )
 
                 response = EmbeddingResponse(
@@ -361,20 +361,19 @@ async def health_check():
 
 @app.post("/embeddings", response_model=EmbeddingResponse)
 async def generate_embeddings(request: EmbeddingRequest):
-    """Generate embeddings for input texts using configurable chunking
+    """Generate embeddings for input texts using configurable chunking.
 
     Chunking behavior:
     - fixed mode: chunk_size sets the number of tokens per chunk
-    - sentence mode:
-      - If n_sentences is provided: groups n_sentences per chunk
-      - If only chunk_size is provided: groups sentences until chunk_size tokens limit
+    - sentence mode: groups sentences until chunk_size tokens limit
+    - none mode: embed entire text without chunking
     """
     logger.info(
-        f"Generating embeddings for {len(request.texts)} texts with priority={request.priority}, chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}, n_sentences={request.n_sentences}"
+        f"Generating embeddings for {len(request.texts)} texts with priority={request.priority}, chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}"
     )
 
     # Validate chunking method
-    valid_chunking_modes = ["sentence", "fixed", "semantic", "none"]
+    valid_chunking_modes = ["sentence", "fixed", "none"]
     if request.chunking_mode not in valid_chunking_modes:
         raise HTTPException(
             status_code=422,

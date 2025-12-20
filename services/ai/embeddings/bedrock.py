@@ -3,31 +3,30 @@ import time
 import boto3
 import json
 
-from . import EmbeddingProvider, Chunk, chunk_by_sentences, generate_sentence_chunks
+from . import EmbeddingProvider, Chunk
+from chunking import chunk_by_sentences_chars, chunk_by_chars
 
 logger = logging.getLogger(__name__)
-
-# Task mappings for Bedrock API
-QUERY_TASK = "retrieval.query"
-PASSAGE_TASK = "retrieval.passage"
-DEFAULT_TASK = PASSAGE_TASK
-
-# Bedrock constants
-BEDROCK_MAX_RETRIES = 3
-BEDROCK_RETRY_DELAY = 1.0
 
 
 class BedrockEmbeddingProvider(EmbeddingProvider):
     """Provider for AWS Bedrock Embeddings API (Amazon Titan)."""
 
-    def __init__(self, model_id: str, region_name: str):
+    CHARS_PER_TOKEN = 3
+
+    def __init__(self, model_id: str, region_name: str, max_model_len: int):
         self.model_id = model_id
         self.region_name = region_name
+        self.max_model_len = max_model_len
 
         if not model_id:
             raise ValueError("model_id is required when using Bedrock model provider.")
 
         self.client = BedrockEmbeddingClient(self.model_id, self.region_name)
+
+        logger.info(
+            f"Initialized Bedrock embedding provider - model: {model_id}, max_model_len: {max_model_len}"
+        )
 
     async def generate_embeddings(
         self,
@@ -35,14 +34,12 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
         task: str,
         chunk_size: int,
         chunking_mode: str,
-        n_sentences: int | None = None,
     ) -> list[list[Chunk]]:
         """
         Generate embeddings using AWS Bedrock with chunking support.
         """
-        # Create client instance with our configuration
         result = self._generate_embeddings_with_bedrock(
-            texts, task, chunk_size, chunking_mode, n_sentences
+            texts, task, chunk_size, chunking_mode
         )
         return result
 
@@ -53,17 +50,17 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
     def _generate_embeddings_with_bedrock(
         self,
         texts: list[str],
-        task: str = DEFAULT_TASK,
-        chunk_size: int = 512,
-        chunking_mode: str = "sentence",
-        n_sentences: int | None = None,
+        task: str,
+        chunk_size: int,
+        chunking_mode: str,
     ) -> list[list[Chunk]]:
-        """
-        Generate embeddings using AWS Bedrock with chunking support.
-        This function matches the interface of generate_embeddings_sync from embeddings_v2.py
-        """
+        """Generate embeddings using AWS Bedrock with chunking support."""
 
         start_time = time.time()
+
+        # Cap chunk_size at max_model_len and convert to chars
+        effective_chunk_size = min(chunk_size, self.max_model_len)
+        max_chars = effective_chunk_size * self.CHARS_PER_TOKEN
 
         try:
             logger.info(f"Starting Bedrock embedding generation for {len(texts)} texts")
@@ -72,69 +69,44 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
             for text in texts:
                 if chunking_mode == "none":
-                    # No chunking - embed entire text
-                    logger.info(f"Skipping chunking for text (mode: none)")
-                    embeddings = self.client.generate_embeddings([text], task)
+                    embeddings = self.client.generate_embeddings([text])
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
                 elif chunking_mode == "sentence":
-                    # Sentence-based chunking
-                    if n_sentences:
-                        # Use k-sentence chunking
-                        chunk_spans = generate_sentence_chunks(text, n_sentences)
-                    else:
-                        # Use size-based sentence chunking
-                        chunk_spans = chunk_by_sentences(text, chunk_size)
+                    char_spans = chunk_by_sentences_chars(text, max_chars)
 
-                    # Also generate small overlapping chunks (5 sentences)
-                    small_chunk_spans = generate_sentence_chunks(text, k_sentences=5)
+                    chunk_texts = [text[start:end] for start, end in char_spans]
 
-                    # Combine all chunk spans
-                    all_spans = chunk_spans + small_chunk_spans
-
-                    # Extract text for each chunk
-                    chunk_texts = [text[start:end] for start, end in all_spans]
-
-                    # Generate embeddings for all chunks
                     if chunk_texts:
-                        embeddings = self.client.generate_embeddings(chunk_texts, task)
+                        embeddings = self.client.generate_embeddings(chunk_texts)
                         chunks = [
                             Chunk(span, embedding)
-                            for span, embedding in zip(all_spans, embeddings)
+                            for span, embedding in zip(char_spans, embeddings)
                         ]
                     else:
-                        # Fallback to entire text
-                        embeddings = self.client.generate_embeddings([text], task)
+                        embeddings = self.client.generate_embeddings([text])
                         chunks = [Chunk((0, len(text)), embeddings[0])]
 
                 elif chunking_mode == "fixed":
-                    # Fixed-size chunking
-                    chunks_list = []
-                    for i in range(0, len(text), chunk_size):
-                        chunk_text = text[i : i + chunk_size]
-                        chunks_list.append((i, min(i + len(chunk_text), len(text))))
+                    char_spans = chunk_by_chars(text, max_chars)
 
-                    # Extract text for each chunk
-                    chunk_texts = [text[start:end] for start, end in chunks_list]
+                    chunk_texts = [text[start:end] for start, end in char_spans]
 
-                    # Generate embeddings
-                    embeddings = self.client.generate_embeddings(chunk_texts, task)
+                    embeddings = self.client.generate_embeddings(chunk_texts)
                     chunks = [
                         Chunk(span, embedding)
-                        for span, embedding in zip(chunks_list, embeddings)
+                        for span, embedding in zip(char_spans, embeddings)
                     ]
 
                 else:
-                    # Default to no chunking for unsupported modes
                     logger.warning(
                         f"Unsupported chunking mode: {chunking_mode}, using no chunking"
                     )
-                    embeddings = self.client.generate_embeddings([text], task)
+                    embeddings = self.client.generate_embeddings([text])
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
                 all_chunks.append(chunks)
 
-            # Log processing time
             end_time = time.time()
             total_time = end_time - start_time
             total_chunks = sum(len(chunks_list) for chunks_list in all_chunks)
@@ -151,7 +123,10 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
 
 class BedrockEmbeddingClient:
-    """Client for AWS Bedrock Embedding API"""
+    """Client for AWS Bedrock Embedding API."""
+
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1.0
 
     def __init__(self, model_id: str, region_name: str):
         self.model_id = model_id
@@ -160,63 +135,48 @@ class BedrockEmbeddingClient:
         if not self.model_id:
             raise ValueError("model_id is required for Bedrock embeddings")
 
-        # Create Bedrock Runtime client
         if region_name:
             self.client = boto3.client("bedrock-runtime", region_name=region_name)
             logger.info(f"Created Bedrock client for region: {region_name}")
         else:
-            # Auto-detect region from ECS environment
             self.client = boto3.client("bedrock-runtime")
             logger.info("Created Bedrock client with auto-detected region")
 
-    def generate_embeddings(
-        self, texts: list[str], task: str = DEFAULT_TASK
-    ) -> list[list[float]]:
-        """Generate embeddings for a list of texts"""
-
-        # Handle empty input
+    def generate_embeddings(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings for a list of texts."""
         if not texts:
             return []
 
         all_embeddings = []
 
         for text in texts:
-            # Create the request for the model
             native_request = {"inputText": text}
-
-            # Convert the native request to JSON
             request_body = json.dumps(native_request)
 
-            # Retry logic with exponential backoff
-            for attempt in range(BEDROCK_MAX_RETRIES):
+            for attempt in range(self.MAX_RETRIES):
                 try:
-                    # Invoke the model with the request
                     response = self.client.invoke_model(
                         modelId=self.model_id, body=request_body
                     )
 
-                    # Decode the model's native response body
                     model_response = json.loads(response["body"].read())
-
-                    # Extract the generated embedding
                     embedding = model_response["embedding"]
                     all_embeddings.append(embedding)
 
-                    # Log token count if available
                     if "inputTextTokenCount" in model_response:
                         logger.debug(
                             f"Input tokens: {model_response['inputTextTokenCount']}, Embedding size: {len(embedding)}"
                         )
 
-                    break  # Success, exit retry loop
+                    break
 
                 except Exception as e:
-                    if attempt < BEDROCK_MAX_RETRIES - 1:
+                    if attempt < self.MAX_RETRIES - 1:
                         logger.warning(f"Bedrock API error: {e}, retrying...")
-                        time.sleep(BEDROCK_RETRY_DELAY * (2**attempt))
+                        time.sleep(self.RETRY_DELAY * (2**attempt))
                     else:
                         logger.error(
-                            f"Failed to get embeddings from Bedrock after {BEDROCK_MAX_RETRIES} retries: {e}"
+                            f"Failed to get embeddings from Bedrock after {self.MAX_RETRIES} retries: {e}"
                         )
                         raise Exception(f"Bedrock embedding failed: {e}")
 

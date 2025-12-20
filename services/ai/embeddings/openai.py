@@ -3,7 +3,10 @@ import time
 import httpx
 import asyncio
 
-from . import EmbeddingProvider, Chunk, chunk_by_sentences, generate_sentence_chunks
+from transformers import AutoTokenizer
+
+from . import EmbeddingProvider, Chunk
+from chunking import Chunker
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +30,13 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         model: str,
         base_url: str = "https://api.openai.com/v1",
         dimensions: int | None = None,
+        max_model_len: int | None = None,
     ):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.dimensions = dimensions
+        self.max_model_len = max_model_len
 
         self.client = OpenAIEmbeddingClient(
             api_key=self.api_key,
@@ -40,8 +45,18 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             dimensions=self.dimensions,
         )
 
+        # Initialize tokenizer and chunker for local models with max_model_len
+        if max_model_len:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model, trust_remote_code=True
+            )
+            self.chunker = Chunker("sentence")
+        else:
+            self.tokenizer = None
+            self.chunker = None
+
         logger.info(
-            f"Initialized OpenAI embedding provider - model: {model}, base_url: {base_url}"
+            f"Initialized OpenAI embedding provider - model: {model}, base_url: {base_url}, max_model_len: {max_model_len}"
         )
 
     async def generate_embeddings(
@@ -50,12 +65,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         task: str,
         chunk_size: int,
         chunking_mode: str,
-        n_sentences: int | None = None,
     ) -> list[list[Chunk]]:
         """Generate embeddings using OpenAI-compatible API with chunking support."""
-        return await self._generate_embeddings(
-            texts, task, chunk_size, chunking_mode, n_sentences
-        )
+        return await self._generate_embeddings(texts, task, chunk_size, chunking_mode)
 
     def get_model_name(self) -> str:
         """Get the name of the model being used."""
@@ -65,13 +77,17 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self,
         texts: list[str],
         task: str,
-        chunk_size: int = 512,
-        chunking_mode: str = "sentence",
-        n_sentences: int | None = None,
+        chunk_size: int,
+        chunking_mode: str,
     ) -> list[list[Chunk]]:
         """Generate embeddings with chunking support."""
 
         start_time = time.time()
+
+        # Cap chunk_size at max_model_len if set
+        effective_chunk_size = chunk_size
+        if self.max_model_len:
+            effective_chunk_size = min(chunk_size, self.max_model_len)
 
         try:
             logger.info(f"Starting OpenAI embedding generation for {len(texts)} texts")
@@ -84,41 +100,41 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
                 elif chunking_mode == "sentence":
-                    if n_sentences:
-                        chunk_spans = generate_sentence_chunks(text, n_sentences)
-                    else:
-                        chunk_spans = chunk_by_sentences(text, chunk_size)
+                    if not self.chunker or not self.tokenizer:
+                        raise ValueError(
+                            "Sentence chunking requires max_model_len to be set for tokenizer initialization"
+                        )
+                    _, char_spans = self.chunker.chunk_by_sentences(
+                        text, effective_chunk_size, self.tokenizer
+                    )
 
-                    # Also generate small overlapping chunks (5 sentences)
-                    small_chunk_spans = generate_sentence_chunks(text, k_sentences=5)
-
-                    # Combine all chunk spans
-                    all_spans = chunk_spans + small_chunk_spans
-
-                    chunk_texts = [text[start:end] for start, end in all_spans]
+                    chunk_texts = [text[start:end] for start, end in char_spans]
 
                     if chunk_texts:
                         embeddings = await self.client.generate_embeddings(chunk_texts)
                         chunks = [
                             Chunk(span, embedding)
-                            for span, embedding in zip(all_spans, embeddings)
+                            for span, embedding in zip(char_spans, embeddings)
                         ]
                     else:
                         embeddings = await self.client.generate_embeddings([text])
                         chunks = [Chunk((0, len(text)), embeddings[0])]
 
                 elif chunking_mode == "fixed":
-                    chunks_list = []
-                    for i in range(0, len(text), chunk_size):
-                        chunk_text = text[i : i + chunk_size]
-                        chunks_list.append((i, min(i + len(chunk_text), len(text))))
+                    if not self.chunker or not self.tokenizer:
+                        raise ValueError(
+                            "Fixed chunking requires max_model_len to be set for tokenizer initialization"
+                        )
+                    _, char_spans = self.chunker.chunk_by_tokens(
+                        text, effective_chunk_size, self.tokenizer
+                    )
 
-                    chunk_texts = [text[start:end] for start, end in chunks_list]
+                    chunk_texts = [text[start:end] for start, end in char_spans]
 
                     embeddings = await self.client.generate_embeddings(chunk_texts)
                     chunks = [
                         Chunk(span, embedding)
-                        for span, embedding in zip(chunks_list, embeddings)
+                        for span, embedding in zip(char_spans, embeddings)
                     ]
 
                 else:

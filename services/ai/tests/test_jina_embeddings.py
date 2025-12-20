@@ -72,7 +72,6 @@ async def test_chunking_modes():
                 task=DEFAULT_TASK,
                 chunk_size=100,
                 chunking_mode=mode,
-                n_sentences=2 if mode == "sentence" else None,
             )
 
             print(f"  Generated {len(result[0])} chunks")
@@ -129,7 +128,6 @@ def test_sync_wrapper():
             task=DEFAULT_TASK,
             chunk_size=512,
             chunking_mode="none",
-            n_sentences=None,
         )
 
         print(f"Generated {len(result)} text results")

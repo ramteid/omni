@@ -1,5 +1,6 @@
 import bisect
 import logging
+import re
 from typing import Dict, List, Optional, Tuple, Union
 
 from llama_index.core.node_parser import SemanticSplitterNodeParser
@@ -11,6 +12,56 @@ from transformers import AutoTokenizer
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
 CHUNKING_STRATEGIES = ["semantic", "fixed", "sentence"]
+
+
+def chunk_by_sentences_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
+    """Chunk text by sentences, keeping chunks under max_chars (character-based)."""
+    sentence_pattern = r"[.!?]+[\s]+"
+    sentences = []
+    last_end = 0
+
+    for match in re.finditer(sentence_pattern, text):
+        sentence_end = match.end()
+        if last_end < sentence_end:
+            sentences.append((last_end, sentence_end))
+        last_end = sentence_end
+
+    if last_end < len(text):
+        sentences.append((last_end, len(text)))
+
+    if not sentences:
+        return [(0, len(text))]
+
+    chunks = []
+    chunk_start = 0
+    last_sentence_end = 0
+
+    for sent_start, sent_end in sentences:
+        current_chunk_len = sent_end - chunk_start
+
+        if current_chunk_len > max_chars and last_sentence_end > chunk_start:
+            chunks.append((chunk_start, last_sentence_end))
+            chunk_start = last_sentence_end
+
+        last_sentence_end = sent_end
+
+    if chunk_start < len(text):
+        chunks.append((chunk_start, len(text)))
+
+    return chunks if chunks else [(0, len(text))]
+
+
+def chunk_by_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
+    """Chunk text by fixed character count."""
+    if not text or max_chars < 1:
+        return []
+
+    chunks = []
+    for i in range(0, len(text), max_chars):
+        chunk_end = min(i + max_chars, len(text))
+        chunks.append((i, chunk_end))
+
+    return chunks if chunks else [(0, len(text))]
 
 
 class Chunker:
@@ -125,71 +176,6 @@ class Chunker:
     def chunk_by_sentences(
         self,
         text: str,
-        n_sentences: int,
-        tokenizer: "AutoTokenizer",
-    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
-        if not text or n_sentences < 1:
-            return [], []
-
-        tokens = tokenizer.encode_plus(
-            text, return_offsets_mapping=True, add_special_tokens=False
-        )
-        token_offsets = tokens.offset_mapping
-
-        if not token_offsets:
-            return [], []
-
-        token_spans = []
-        char_spans = []
-        chunk_start = 0
-        count_chunks = 0
-
-        for i in range(0, len(token_offsets)):
-            if (
-                i < len(tokens.tokens(0))
-                and tokens.tokens(0)[i] in (".", "!", "?")
-                and (
-                    (len(tokens.tokens(0)) == i + 1)
-                    or (
-                        i + 1 < len(token_offsets)
-                        and tokens.token_to_chars(i).end
-                        != tokens.token_to_chars(i + 1).start
-                    )
-                )
-            ):
-                count_chunks += 1
-                if count_chunks == n_sentences and i + 1 > chunk_start:
-                    # Get character indices from token offsets
-                    char_start = token_offsets[chunk_start][0]
-                    char_end = token_offsets[i][1]
-
-                    # Validate bounds
-                    if (
-                        char_start < char_end
-                        and char_start >= 0
-                        and char_end <= len(text)
-                    ):
-                        token_spans.append((chunk_start, i + 1))
-                        char_spans.append((char_start, char_end))
-
-                    chunk_start = i + 1
-                    count_chunks = 0
-
-        # Handle the last chunk if there's remaining text
-        if chunk_start < len(token_offsets):
-            char_start = token_offsets[chunk_start][0]
-            char_end = token_offsets[-1][1]
-
-            # Validate bounds
-            if char_start < char_end and char_start >= 0 and char_end <= len(text):
-                token_spans.append((chunk_start, len(token_offsets)))
-                char_spans.append((char_start, char_end))
-
-        return token_spans, char_spans
-
-    def chunk_sentences_by_tokens(
-        self,
-        text: str,
         chunk_size: int,
         tokenizer: "AutoTokenizer",
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
@@ -268,7 +254,6 @@ class Chunker:
         tokenizer: "AutoTokenizer",
         chunking_strategy: str = None,
         chunk_size: Optional[int] = None,
-        n_sentences: Optional[int] = None,
         embedding_model_name: Optional[str] = None,
     ):
         chunking_strategy = chunking_strategy or self.chunking_strategy
@@ -283,11 +268,6 @@ class Chunker:
                 raise ValueError("Chunk size must be >= 4.")
             return self.chunk_by_tokens(text, chunk_size, tokenizer)
         elif chunking_strategy == "sentence":
-            if n_sentences is not None:
-                # Use n_sentences-based chunking
-                return self.chunk_by_sentences(text, n_sentences, tokenizer)
-            else:
-                # Use token-based sentence chunking with chunk_size
-                return self.chunk_sentences_by_tokens(text, chunk_size, tokenizer)
+            return self.chunk_by_sentences(text, chunk_size, tokenizer)
         else:
             raise ValueError("Unsupported chunking strategy")

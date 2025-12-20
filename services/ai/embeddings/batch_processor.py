@@ -361,7 +361,6 @@ class EmbeddingBatchProcessor:
                 task="retrieval.passage",
                 chunk_size=512,
                 chunking_mode="sentence",
-                n_sentences=None,
             )
 
             if not chunk_results or not chunk_results[0]:
