@@ -136,6 +136,28 @@ impl QueueProcessor {
             }
         }
 
+        // Recover stale embedding queue items
+        match self
+            .embedding_queue
+            .recover_stale_processing_items(300)
+            .await
+        {
+            Ok(recovered) => {
+                if recovered > 0 {
+                    info!(
+                        "Recovered {} stale embedding processing items on startup",
+                        recovered
+                    );
+                }
+            }
+            Err(e) => {
+                error!(
+                    "Failed to recover stale embedding processing items on startup: {}",
+                    e
+                );
+            }
+        }
+
         let mut listener = PgListener::connect_with(self.state.db_pool.pool()).await?;
         listener.listen("indexer_queue").await?;
 
@@ -201,12 +223,29 @@ impl QueueProcessor {
                             );
                         }
                     }
+                    // Cleanup embedding queue
+                    if let Ok(deleted) = self.embedding_queue.cleanup_completed(7).await {
+                        if deleted > 0 {
+                            info!("Cleaned up {} old completed embedding queue items", deleted);
+                        }
+                    }
+                    if let Ok(deleted) = self.embedding_queue.cleanup_failed(7).await {
+                        if deleted > 0 {
+                            info!("Cleaned up {} old failed embedding queue items", deleted);
+                        }
+                    }
                 }
                 _ = recovery_interval.tick() => {
                     // Periodic recovery of stale processing items
                     if let Ok(recovered) = self.event_queue.recover_stale_processing_items(300).await {
                         if recovered > 0 {
                             info!("Recovered {} stale processing items during periodic cleanup", recovered);
+                        }
+                    }
+                    // Periodic recovery of stale embedding processing items
+                    if let Ok(recovered) = self.embedding_queue.recover_stale_processing_items(300).await {
+                        if recovered > 0 {
+                            info!("Recovered {} stale embedding processing items during periodic cleanup", recovered);
                         }
                     }
                 }

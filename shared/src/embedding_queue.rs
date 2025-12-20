@@ -249,6 +249,23 @@ impl EmbeddingQueue {
         Ok(result.rows_affected() as i64)
     }
 
+    pub async fn cleanup_failed(&self, days_old: i32) -> Result<i64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM embedding_queue
+            WHERE status = $2
+              AND retry_count >= 3
+              AND updated_at < CURRENT_TIMESTAMP - INTERVAL '1 day' * $1
+            "#,
+        )
+        .bind(days_old)
+        .bind(EmbeddingQueueStatus::Failed.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() as i64)
+    }
+
     pub async fn get_queue_stats(&self) -> Result<QueueStats> {
         let row = sqlx::query(
             r#"
