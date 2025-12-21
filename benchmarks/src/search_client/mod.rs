@@ -88,6 +88,7 @@ pub fn create_search_request(query: String, search_mode: SearchMode) -> SearchRe
         offset: Some(0),
         source_types: None,
         content_types: None,
+        attribute_filters: None,
         include_facets: Some(false),
         user_email: None,
         user_id: None,

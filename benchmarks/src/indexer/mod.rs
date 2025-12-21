@@ -409,6 +409,7 @@ impl BenchmarkIndexer {
             content_id,
             metadata,
             permissions,
+            attributes: None,
         })
     }
 

@@ -354,6 +354,7 @@ impl FileSystemEventProcessor {
                     users: vec![],
                     groups: vec![],
                 }),
+                attributes: None,
             }
         };
 

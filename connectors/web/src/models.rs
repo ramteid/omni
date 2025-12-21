@@ -200,6 +200,7 @@ impl WebPage {
             content_id,
             metadata,
             permissions,
+            attributes: None,
         }
     }
 }
