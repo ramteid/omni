@@ -1,4 +1,5 @@
 pub mod factory;
+pub mod gc;
 pub mod postgres;
 pub mod s3;
 

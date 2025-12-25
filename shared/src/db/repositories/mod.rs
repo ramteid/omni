@@ -1,3 +1,4 @@
+pub mod content_blob;
 pub mod document;
 pub mod embedding;
 pub mod service_credentials;
@@ -5,6 +6,7 @@ pub mod source;
 pub mod sync_run;
 pub mod user;
 
+pub use content_blob::{ContentBlobRepository, OrphanStats};
 pub use document::DocumentRepository;
 pub use embedding::EmbeddingRepository;
 pub use service_credentials::ServiceCredentialsRepo;

@@ -23,8 +23,9 @@ use axum::{
 use error::Result as IndexerResult;
 use serde_json::json;
 use shared::{
+    storage::gc::{ContentBlobGC, GCConfig, GCResult},
     telemetry::{self, TelemetryConfig},
-    IndexerConfig,
+    IndexerConfig, OrphanStats,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::net::SocketAddr;
@@ -107,6 +108,8 @@ pub fn create_app(state: AppState) -> Router {
         .route("/documents/:id", put(update_document))
         .route("/documents/:id", delete(delete_document))
         .route("/service-credentials", post(create_service_credentials))
+        .route("/admin/gc/run", post(run_gc))
+        .route("/admin/gc/stats", get(gc_stats))
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
@@ -548,6 +551,36 @@ async fn create_service_credentials(
             }))
         }
     }
+}
+
+async fn run_gc(State(state): State<AppState>) -> IndexerResult<Json<GCResult>> {
+    let gc = ContentBlobGC::new(
+        state.db_pool.pool().clone(),
+        state.content_storage.clone(),
+        GCConfig::from_env(),
+    );
+
+    let result = gc
+        .run()
+        .await
+        .map_err(|e| IndexerError::Internal(format!("GC failed: {}", e)))?;
+
+    Ok(Json(result))
+}
+
+async fn gc_stats(State(state): State<AppState>) -> IndexerResult<Json<OrphanStats>> {
+    let gc = ContentBlobGC::new(
+        state.db_pool.pool().clone(),
+        state.content_storage.clone(),
+        GCConfig::from_env(),
+    );
+
+    let stats = gc
+        .get_orphan_stats()
+        .await
+        .map_err(|e| IndexerError::Internal(format!("Failed to get GC stats: {}", e)))?;
+
+    Ok(Json(stats))
 }
 
 pub async fn run_server() -> anyhow::Result<()> {

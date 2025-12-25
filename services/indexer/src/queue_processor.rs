@@ -8,6 +8,7 @@ use shared::models::{
     DocumentPermissions,
 };
 use shared::queue::EventQueue;
+use shared::storage::gc::{ContentBlobGC, GCConfig};
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
@@ -166,6 +167,7 @@ impl QueueProcessor {
         let mut retry_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut cleanup_interval = interval(Duration::from_secs(3600)); // 1 hour
         let mut recovery_interval = interval(Duration::from_secs(300)); // 5 minutes
+        let mut gc_interval = interval(Duration::from_secs(3600 * 6)); // 6 hours
 
         // Process any existing events first
         if let Err(e) = self.process_batch_safe().await {
@@ -246,6 +248,27 @@ impl QueueProcessor {
                     if let Ok(recovered) = self.embedding_queue.recover_stale_processing_items(300).await {
                         if recovered > 0 {
                             info!("Recovered {} stale embedding processing items during periodic cleanup", recovered);
+                        }
+                    }
+                }
+                _ = gc_interval.tick() => {
+                    // Content blob garbage collection
+                    let gc = ContentBlobGC::new(
+                        self.state.db_pool.pool().clone(),
+                        self.state.content_storage.clone(),
+                        GCConfig::from_env(),
+                    );
+                    match gc.run().await {
+                        Ok(result) => {
+                            if result.blobs_deleted > 0 {
+                                info!(
+                                    "Content blob GC completed: deleted={}, bytes_reclaimed={}",
+                                    result.blobs_deleted, result.bytes_reclaimed
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!("Content blob GC failed: {}", e);
                         }
                     }
                 }
