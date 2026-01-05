@@ -14,12 +14,6 @@ Thank you for your interest in contributing to Omni! This document provides guid
 - [Style Guidelines](#style-guidelines)
 - [Community](#community)
 
-## Code of Conduct
-
-We are committed to providing a welcoming and inclusive environment. Please be respectful and considerate in all interactions.
-
-(This doc is a work-in-progress, so some info might be out-of-date. We will update this shortly.)
-
 ## Getting Started
 
 1. **Fork the repository** on GitHub
@@ -57,9 +51,6 @@ We are committed to providing a welcoming and inclusive environment. Please be r
 
 3. **Access the application**:
    - Web UI: http://localhost:3000
-   - Searcher API: http://localhost:3001
-   - Indexer API: http://localhost:3002
-   - AI Service: http://localhost:3003
 
 ### Development Workflow
 
@@ -124,12 +115,8 @@ omni/
 
 4. **Commit with meaningful messages**:
    ```bash
-   git commit -m "feat: add new search filter capability"
+   git commit -m "Add new search filter capability"
    ```
-
-### Commit Message Format
-
-We follow the recommendations from the [Google Eng Practices Documentation](https://google.github.io/eng-practices/review/developer/cl-descriptions.html).
 
 ## Testing
 
@@ -162,10 +149,8 @@ pytest
 
 ### Writing Tests
 
-- Add unit tests for all new functionality
-- Include integration tests for API endpoints
-- Test error cases and edge conditions
-- Aim for >80% code coverage
+- Prefer integration tests
+- Avoid unnecessary unit tests for the sake of coverage
 
 ## Submitting Changes
 
