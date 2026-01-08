@@ -18,14 +18,14 @@ use crate::gmail::{GmailClient, MessageFormat};
 use crate::models::{
     GmailThread, SyncRequest, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
+use crate::sdk_client::SdkClient;
 use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
     ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
     SyncType, WebhookChannel as DatabaseWebhookChannel,
 };
-use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
-use shared::{AIClient, ObjectStorage, RateLimiter, Repository, SourceRepository};
+use shared::{AIClient, RateLimiter, Repository, SourceRepository};
 
 struct ActiveSync {
     cancelled: AtomicBool,
@@ -37,8 +37,7 @@ pub struct SyncManager {
     drive_client: DriveClient,
     gmail_client: GmailClient,
     admin_client: Arc<AdminClient>,
-    event_queue: EventQueue,
-    content_storage: Arc<dyn ObjectStorage>,
+    sdk_client: SdkClient,
     service_credentials_repo: ServiceCredentialsRepo,
     source_repo: SourceRepository,
     sync_run_repo: SyncRunRepository,
@@ -232,8 +231,8 @@ impl SyncManager {
         redis_client: RedisClient,
         ai_service_url: String,
         admin_client: Arc<AdminClient>,
+        sdk_client: SdkClient,
     ) -> Result<Self> {
-        let event_queue = EventQueue::new(pool.clone());
         let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
 
         // Google API Rate limits:
@@ -256,7 +255,6 @@ impl SyncManager {
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone(), ai_client.clone());
         let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
 
-        let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
         let source_repo = SourceRepository::new(&pool);
         let sync_run_repo = SyncRunRepository::new(&pool);
 
@@ -266,8 +264,7 @@ impl SyncManager {
             drive_client,
             gmail_client,
             admin_client,
-            event_queue,
-            content_storage,
+            sdk_client,
             service_credentials_repo,
             source_repo,
             sync_run_repo,
@@ -378,17 +375,6 @@ impl SyncManager {
         );
 
         Ok((drive_format, gmail_format))
-    }
-
-    fn get_storage_prefix(sync_run: &SyncRun) -> String {
-        format!(
-            "{}/{}",
-            sync_run
-                .created_at
-                .format(&time::format_description::well_known::Iso8601::DATE)
-                .unwrap_or_else(|_| "unknown-date".to_string()),
-            sync_run.id
-        )
     }
 
     pub async fn sync_all_sources(&self) -> Result<()> {
@@ -682,19 +668,14 @@ impl SyncManager {
         let mut processed = 0;
         let mut updated = 0;
 
-        // Create storage prefix from sync_run
-        let storage_prefix = Self::get_storage_prefix(sync_run);
-
         // Process files concurrently within the batch
         let tasks = files.into_iter().map(|user_file| {
             let service_auth = service_auth.clone();
             let source_id = source_id.to_string();
             let sync_run_id = sync_run.id.clone();
-            let storage_prefix = storage_prefix.clone();
             let sync_state = sync_state.clone();
             let drive_client = self.drive_client.clone();
-            let event_queue = self.event_queue.clone();
-            let content_storage = self.content_storage.clone();
+            let sdk_client = self.sdk_client.clone();
 
             async move {
                 debug!("Processing file: {} ({}) for user: {}", user_file.file.name, user_file.file.id, user_file.user_email);
@@ -708,7 +689,7 @@ impl SyncManager {
                 match result {
                     Ok(content) => {
                         if !content.is_empty() {
-                            match content_storage.store_text(&content, Some(&storage_prefix)).await {
+                            match sdk_client.store_content(&sync_run_id, &content).await {
                                 Ok(content_id) => {
                                     // Resolve the full path for this file
                                     let file_path = match self
@@ -733,7 +714,7 @@ impl SyncManager {
                                         file_path,
                                     );
 
-                                    match event_queue.enqueue(&source_id, &event).await {
+                                    match sdk_client.emit_event(&sync_run_id, &source_id, event).await {
                                         Ok(_) => {
                                             if let Some(modified_time) = &user_file.file.modified_time {
                                                 if let Err(e) = sync_state
@@ -1049,12 +1030,6 @@ impl SyncManager {
         )
     }
 
-    async fn publish_connector_event(&self, event: ConnectorEvent) -> Result<()> {
-        let source_id = event.source_id();
-        self.event_queue.enqueue(source_id, &event).await?;
-        Ok(())
-    }
-
     async fn publish_deletion_event(
         &self,
         sync_run_id: &str,
@@ -1067,7 +1042,9 @@ impl SyncManager {
             document_id: document_id.to_string(),
         };
 
-        self.publish_connector_event(event).await
+        self.sdk_client
+            .emit_event(sync_run_id, source_id, event)
+            .await
     }
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
@@ -1400,9 +1377,6 @@ impl SyncManager {
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
         let access_token = service_auth.get_access_token(&user_email).await?;
 
-        // Create rate limiter for incremental sync API calls
-        let rate_limiter = Arc::new(RateLimiter::new(5, 3)); // 5 req/sec, 3 retries
-
         // For incremental sync, we would ideally use the changes API with a stored page token
         // For now, we'll just get the latest changes using the current start page token
         let start_page_token = self
@@ -1415,9 +1389,6 @@ impl SyncManager {
             .sync_run_repo
             .create(&source.id, SyncType::Incremental)
             .await?;
-
-        // Create storage prefix from sync_run
-        let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         // List recent changes
         match self
@@ -1474,15 +1445,15 @@ impl SyncManager {
                                                     }
                                                 };
 
-                                                // Store content in LOB and get OID
+                                                // Store content via SDK and get content_id
                                                 let content_id = match self
-                                                    .content_storage
-                                                    .store_text(&content, Some(&storage_prefix))
+                                                    .sdk_client
+                                                    .store_content(&sync_run.id, &content)
                                                     .await
                                                 {
-                                                    Ok(oid) => oid,
+                                                    Ok(id) => id,
                                                     Err(e) => {
-                                                        error!("Failed to store content in LOB storage for file {}: {}", file.name, e);
+                                                        error!("Failed to store content via SDK for file {}: {}", file.name, e);
                                                         continue;
                                                     }
                                                 };
@@ -1494,7 +1465,11 @@ impl SyncManager {
                                                     file_path,
                                                 );
 
-                                                match self.publish_connector_event(event).await {
+                                                match self
+                                                    .sdk_client
+                                                    .emit_event(&sync_run.id, &source.id, event)
+                                                    .await
+                                                {
                                                     Ok(_) => {
                                                         updated_count += 1;
                                                         if let Some(modified_time) =
@@ -1918,9 +1893,6 @@ impl SyncManager {
     ) -> Result<(usize, usize)> {
         info!("Processing Gmail for user: {}", user_email);
 
-        // Create storage prefix from sync_run
-        let storage_prefix = Self::get_storage_prefix(sync_run);
-
         let mut total_processed = 0;
         let mut total_updated = 0;
         let mut page_token: Option<String> = None;
@@ -2111,12 +2083,8 @@ impl SyncManager {
                     match gmail_thread.aggregate_content(&self.gmail_client) {
                         Ok(content) => {
                             if !content.trim().is_empty() {
-                                // Store content in LOB storage
-                                match self
-                                    .content_storage
-                                    .store_text(&content, Some(&storage_prefix))
-                                    .await
-                                {
+                                // Store content via SDK
+                                match self.sdk_client.store_content(&sync_run.id, &content).await {
                                     Ok(content_id) => {
                                         // Create connector event
                                         match gmail_thread.to_connector_event(
@@ -2127,8 +2095,8 @@ impl SyncManager {
                                         ) {
                                             Ok(event) => {
                                                 match self
-                                                    .event_queue
-                                                    .enqueue(source_id, &event)
+                                                    .sdk_client
+                                                    .emit_event(&sync_run.id, source_id, event)
                                                     .await
                                                 {
                                                     Ok(_) => {

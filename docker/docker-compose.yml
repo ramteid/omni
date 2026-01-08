@@ -283,10 +283,11 @@ services:
     expose:
       - "${GOOGLE_CONNECTOR_PORT}"
     environment:
-      <<: [*db-config, *redis-config, *otel-config, *storage-config]
+      <<: [*db-config, *redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${GOOGLE_CONNECTOR_PORT}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
+      CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
       GOOGLE_SYNC_INTERVAL_SECONDS: ${GOOGLE_SYNC_INTERVAL_SECONDS}
       GOOGLE_MAX_AGE_DAYS: ${GOOGLE_MAX_AGE_DAYS:-730}
       GOOGLE_WEBHOOK_URL: ${GOOGLE_WEBHOOK_URL}
@@ -302,6 +303,8 @@ services:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully
+      connector-manager:
+        condition: service_started
     restart: unless-stopped
     logging: *default-logging
 

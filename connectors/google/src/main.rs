@@ -15,7 +15,10 @@ mod cache;
 mod drive;
 mod gmail;
 mod models;
+mod sdk_client;
 mod sync;
+
+use sdk_client::SdkClient;
 
 use admin::AdminClient;
 use api::{create_router, ApiState};
@@ -53,12 +56,15 @@ async fn main() -> Result<()> {
     let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
     let admin_client = Arc::new(AdminClient::with_rate_limiter(rate_limiter.clone()));
 
+    let sdk_client = SdkClient::from_env()?;
+
     let sync_manager = Arc::new(
         SyncManager::new(
             db_pool.pool().clone(),
             redis_client,
             config.ai_service_url.clone(),
             Arc::clone(&admin_client),
+            sdk_client,
         )
         .await?,
     );
@@ -68,6 +74,7 @@ async fn main() -> Result<()> {
         sync_manager: Arc::clone(&sync_manager),
         credentials_service: Arc::clone(&credentials_service),
         admin_client: Arc::clone(&admin_client),
+        active_syncs: Arc::new(dashmap::DashSet::new()),
     };
 
     // Create HTTP server

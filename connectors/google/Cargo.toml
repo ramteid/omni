@@ -42,3 +42,7 @@ docx-rs = "0.4"
 calamine = "0.22"
 zip = "0.6"
 quick-xml = "0.31"
+# HTTP server dependencies
+dashmap = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
