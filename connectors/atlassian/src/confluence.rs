@@ -2,50 +2,34 @@ use anyhow::{anyhow, Result};
 use futures::stream::StreamExt;
 use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorEvent, SyncRun, SyncType};
-use shared::queue::EventQueue;
-use shared::ObjectStorage;
-use std::sync::Arc;
+use shared::models::{ConnectorEvent, SyncType};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianClient;
 use crate::models::{ConfluencePage, ConfluencePageStatus, ConfluenceSpace};
+use crate::sdk_client::SdkClient;
 use crate::sync::SyncState;
 
 pub struct ConfluenceProcessor {
     client: AtlassianClient,
-    event_queue: EventQueue,
-    content_storage: Arc<dyn ObjectStorage>,
+    sdk_client: SdkClient,
     sync_run_repo: SyncRunRepository,
     sync_state: SyncState,
 }
 
 impl ConfluenceProcessor {
     pub fn new(
-        event_queue: EventQueue,
-        content_storage: Arc<dyn ObjectStorage>,
+        sdk_client: SdkClient,
         sync_run_repo: SyncRunRepository,
         redis_client: RedisClient,
     ) -> Self {
         Self {
             client: AtlassianClient::new(),
-            event_queue,
-            content_storage,
+            sdk_client,
             sync_run_repo,
             sync_state: SyncState::new(redis_client),
         }
-    }
-
-    fn get_storage_prefix(sync_run: &SyncRun) -> String {
-        format!(
-            "{}/{}",
-            sync_run
-                .created_at
-                .format(&time::format_description::well_known::Iso8601::DATE)
-                .unwrap_or_else(|_| "unknown-date".to_string()),
-            sync_run.id
-        )
     }
 
     pub async fn sync_all_spaces(
@@ -82,7 +66,6 @@ impl ConfluenceProcessor {
         );
 
         let sync_run = self.sync_run_repo.create(source_id, sync_type).await?;
-        let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         let result: Result<u32> = async {
             let spaces = self.get_accessible_spaces(creds).await?;
@@ -95,16 +78,16 @@ impl ConfluenceProcessor {
                 );
 
                 match self
-                    .sync_space_pages(creds, source_id, &sync_run.id, &space.id, &storage_prefix)
+                    .sync_space_pages(creds, source_id, &sync_run.id, &space.id)
                     .await
                 {
                     Ok(pages_count) => {
                         total_pages_processed += pages_count;
                         info!("Synced {} pages from space: {}", pages_count, space.id);
-                        // Update scanned count
-                        self.sync_run_repo
-                            .increment_scanned(&sync_run.id, pages_count as i32)
-                            .await?;
+                        // Update scanned count via SDK
+                        if let Err(e) = self.sdk_client.increment_scanned(&sync_run.id).await {
+                            error!("Failed to increment scanned count: {}", e);
+                        }
                     }
                     Err(e) => {
                         error!("Failed to sync space {}: {}", space.id, e);
@@ -146,7 +129,6 @@ impl ConfluenceProcessor {
         source_id: &str,
         sync_run_id: &str,
         space_id: &str,
-        storage_prefix: &str,
     ) -> Result<u32> {
         let mut total_pages = 0;
         let mut pages_batch = Vec::with_capacity(100);
@@ -159,33 +141,19 @@ impl ConfluenceProcessor {
             pages_batch.push(page);
 
             if pages_batch.len() >= 100 {
-                let events = self
-                    .process_pages(
-                        pages_batch,
-                        source_id,
-                        sync_run_id,
-                        &creds.base_url,
-                        storage_prefix,
-                    )
+                let count = self
+                    .process_pages(pages_batch, source_id, sync_run_id, &creds.base_url)
                     .await?;
-                total_pages += events.len() as u32;
-                self.queue_events(events).await?;
+                total_pages += count;
                 pages_batch = Vec::with_capacity(100);
             }
         }
 
         if !pages_batch.is_empty() {
-            let events = self
-                .process_pages(
-                    pages_batch,
-                    source_id,
-                    sync_run_id,
-                    &creds.base_url,
-                    storage_prefix,
-                )
+            let count = self
+                .process_pages(pages_batch, source_id, sync_run_id, &creds.base_url)
                 .await?;
-            total_pages += events.len() as u32;
-            self.queue_events(events).await?;
+            total_pages += count;
         }
 
         info!(
@@ -213,9 +181,8 @@ impl ConfluenceProcessor {
         source_id: &str,
         sync_run_id: &str,
         base_url: &str,
-        storage_prefix: &str,
-    ) -> Result<Vec<ConnectorEvent>> {
-        let mut events = Vec::new();
+    ) -> Result<u32> {
+        let mut count = 0;
 
         for page in pages {
             // Skip non-current pages (drafts, trashed, etc.)
@@ -277,16 +244,12 @@ impl ConfluenceProcessor {
                 content.len()
             );
 
-            // Store content in storage
-            let content_id = match self
-                .content_storage
-                .store_text(&content, Some(storage_prefix))
-                .await
-            {
-                Ok(oid) => oid,
+            // Store content via SDK
+            let content_id = match self.sdk_client.store_content(sync_run_id, &content).await {
+                Ok(id) => id,
                 Err(e) => {
                     error!(
-                        "Failed to store content in storage for Confluence page {}: {}",
+                        "Failed to store content via SDK for Confluence page {}: {}",
                         page.title, e
                     );
                     continue;
@@ -299,7 +262,21 @@ impl ConfluenceProcessor {
                 base_url,
                 content_id,
             );
-            events.push(event);
+
+            // Emit event via SDK
+            if let Err(e) = self
+                .sdk_client
+                .emit_event(sync_run_id, source_id, event)
+                .await
+            {
+                error!(
+                    "Failed to emit event for Confluence page {}: {}",
+                    page.title, e
+                );
+                continue;
+            }
+
+            count += 1;
 
             // Update sync state
             if let Err(e) = self
@@ -311,17 +288,7 @@ impl ConfluenceProcessor {
             }
         }
 
-        Ok(events)
-    }
-
-    async fn queue_events(&self, events: Vec<ConnectorEvent>) -> Result<()> {
-        for event in events {
-            if let Err(e) = self.event_queue.enqueue(event.source_id(), &event).await {
-                error!("Failed to queue Confluence event: {}", e);
-                // Continue processing other events
-            }
-        }
-        Ok(())
+        Ok(count)
     }
 
     pub async fn sync_single_page(
@@ -363,45 +330,52 @@ impl ConfluenceProcessor {
             .sync_run_repo
             .create(source_id, SyncType::Incremental)
             .await?;
-        let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         let content_id = self
-            .content_storage
-            .store_text(&content, Some(&storage_prefix))
+            .sdk_client
+            .store_content(&sync_run.id, &content)
             .await
             .map_err(|e| {
                 anyhow!(
-                    "Failed to store content in storage for Confluence page {}: {}",
+                    "Failed to store content via SDK for Confluence page {}: {}",
                     page.title,
                     e
                 )
             })?;
 
         let event = page.to_connector_event(
-            sync_run.id,
+            sync_run.id.clone(),
             source_id.to_string(),
             &creds.base_url,
             content_id,
         );
-        self.event_queue.enqueue(source_id, &event).await?;
+        self.sdk_client
+            .emit_event(&sync_run.id, source_id, event)
+            .await?;
 
         info!("Successfully queued page: {}", page.title);
         Ok(())
     }
 
-    pub async fn delete_page(&self, source_id: &str, space_key: &str, page_id: &str) -> Result<()> {
+    pub async fn delete_page(
+        &self,
+        source_id: &str,
+        sync_run_id: &str,
+        space_key: &str,
+        page_id: &str,
+    ) -> Result<()> {
         info!("Deleting Confluence page: {}", page_id);
 
         let document_id = format!("confluence_page_{}_{}", space_key, page_id);
-        // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
-        let placeholder_sync_run_id = shared::utils::generate_ulid();
-        let event = shared::models::ConnectorEvent::DocumentDeleted {
-            sync_run_id: placeholder_sync_run_id,
+        let event = ConnectorEvent::DocumentDeleted {
+            sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
             document_id,
         };
 
-        self.event_queue.enqueue(source_id, &event).await?;
+        self.sdk_client
+            .emit_event(sync_run_id, source_id, event)
+            .await?;
         info!("Successfully queued deletion for page: {}", page_id);
         Ok(())
     }

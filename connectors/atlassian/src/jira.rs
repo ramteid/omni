@@ -1,46 +1,27 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorEvent, SyncRun, SyncType};
-use shared::queue::EventQueue;
-use shared::ObjectStorage;
-use std::sync::Arc;
+use shared::models::{ConnectorEvent, SyncType};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianClient;
 use crate::models::JiraIssue;
+use crate::sdk_client::SdkClient;
 
 pub struct JiraProcessor {
     client: AtlassianClient,
-    event_queue: EventQueue,
-    content_storage: Arc<dyn ObjectStorage>,
+    sdk_client: SdkClient,
     sync_run_repo: SyncRunRepository,
 }
 
 impl JiraProcessor {
-    pub fn new(
-        event_queue: EventQueue,
-        content_storage: Arc<dyn ObjectStorage>,
-        sync_run_repo: SyncRunRepository,
-    ) -> Self {
+    pub fn new(sdk_client: SdkClient, sync_run_repo: SyncRunRepository) -> Self {
         Self {
             client: AtlassianClient::new(),
-            event_queue,
-            content_storage,
+            sdk_client,
             sync_run_repo,
         }
-    }
-
-    fn get_storage_prefix(sync_run: &SyncRun) -> String {
-        format!(
-            "{}/{}",
-            sync_run
-                .created_at
-                .format(&time::format_description::well_known::Iso8601::DATE)
-                .unwrap_or_else(|_| "unknown-date".to_string()),
-            sync_run.id
-        )
     }
 
     pub async fn sync_all_projects(
@@ -51,7 +32,6 @@ impl JiraProcessor {
         info!("Starting JIRA projects sync for source: {}", source_id);
 
         let sync_run = self.sync_run_repo.create(source_id, SyncType::Full).await?;
-        let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         let projects = match self.get_accessible_projects(creds).await {
             Ok(p) => p,
@@ -79,7 +59,7 @@ impl JiraProcessor {
             info!("Syncing JIRA project: {} ({})", project_name, project_key);
 
             match self
-                .sync_project_issues(creds, source_id, project_key, &storage_prefix, &sync_run.id)
+                .sync_project_issues(creds, source_id, project_key, &sync_run.id)
                 .await
             {
                 Ok(issues_count) => {
@@ -88,10 +68,10 @@ impl JiraProcessor {
                         "Synced {} issues from project: {}",
                         issues_count, project_key
                     );
-                    // Update scanned count
-                    self.sync_run_repo
-                        .increment_scanned(&sync_run.id, issues_count as i32)
-                        .await?;
+                    // Update scanned count via SDK
+                    if let Err(e) = self.sdk_client.increment_scanned(&sync_run.id).await {
+                        error!("Failed to increment scanned count: {}", e);
+                    }
                 }
                 Err(e) => {
                     error!("Failed to sync project {}: {}", project_key, e);
@@ -132,7 +112,6 @@ impl JiraProcessor {
             .sync_run_repo
             .create(source_id, SyncType::Incremental)
             .await?;
-        let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         let since_str = since.format("%Y-%m-%d %H:%M").to_string();
         let mut total_issues = 0;
@@ -157,18 +136,11 @@ impl JiraProcessor {
                 }
 
                 let issues_count = response.issues.len();
-                let events = self
-                    .process_issues(
-                        response.issues,
-                        source_id,
-                        &creds.base_url,
-                        &storage_prefix,
-                        &sync_run.id,
-                    )
+                let count = self
+                    .process_issues(response.issues, source_id, &creds.base_url, &sync_run.id)
                     .await?;
-                self.queue_events(events).await?;
 
-                total_issues += issues_count as u32;
+                total_issues += count;
                 start_at += PAGE_SIZE;
 
                 debug!(
@@ -210,7 +182,6 @@ impl JiraProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
         project_key: &str,
-        storage_prefix: &str,
         sync_run_id: &str,
     ) -> Result<u32> {
         let mut total_issues = 0;
@@ -246,18 +217,11 @@ impl JiraProcessor {
             }
 
             let issues_count = response.issues.len();
-            let events = self
-                .process_issues(
-                    response.issues,
-                    source_id,
-                    &creds.base_url,
-                    storage_prefix,
-                    sync_run_id,
-                )
+            let count = self
+                .process_issues(response.issues, source_id, &creds.base_url, sync_run_id)
                 .await?;
-            self.queue_events(events).await?;
 
-            total_issues += issues_count as u32;
+            total_issues += count;
             start_at += PAGE_SIZE;
 
             debug!(
@@ -289,10 +253,9 @@ impl JiraProcessor {
         issues: Vec<JiraIssue>,
         source_id: &str,
         base_url: &str,
-        storage_prefix: &str,
         sync_run_id: &str,
-    ) -> Result<Vec<ConnectorEvent>> {
-        let mut events = Vec::new();
+    ) -> Result<u32> {
+        let mut count = 0;
 
         for issue in issues {
             let content = issue.to_document_content();
@@ -308,15 +271,12 @@ impl JiraProcessor {
                 content.len()
             );
 
-            let content_id = match self
-                .content_storage
-                .store_text(&content, Some(storage_prefix))
-                .await
-            {
-                Ok(oid) => oid,
+            // Store content via SDK
+            let content_id = match self.sdk_client.store_content(sync_run_id, &content).await {
+                Ok(id) => id,
                 Err(e) => {
                     error!(
-                        "Failed to store content in storage for Jira issue {}: {}",
+                        "Failed to store content via SDK for Jira issue {}: {}",
                         issue.key, e
                     );
                     continue;
@@ -329,20 +289,21 @@ impl JiraProcessor {
                 base_url,
                 content_id,
             );
-            events.push(event);
-        }
 
-        Ok(events)
-    }
-
-    async fn queue_events(&self, events: Vec<ConnectorEvent>) -> Result<()> {
-        for event in events {
-            if let Err(e) = self.event_queue.enqueue(event.source_id(), &event).await {
-                error!("Failed to queue JIRA event: {}", e);
-                // Continue processing other events
+            // Emit event via SDK
+            if let Err(e) = self
+                .sdk_client
+                .emit_event(sync_run_id, source_id, event)
+                .await
+            {
+                error!("Failed to emit event for JIRA issue {}: {}", issue.key, e);
+                continue;
             }
+
+            count += 1;
         }
-        Ok(())
+
+        Ok(count)
     }
 
     pub async fn sync_single_issue(
@@ -357,7 +318,6 @@ impl JiraProcessor {
             .sync_run_repo
             .create(source_id, SyncType::Incremental)
             .await?;
-        let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         let fields = vec![
             "summary",
@@ -389,12 +349,12 @@ impl JiraProcessor {
             }
 
             let content_id = self
-                .content_storage
-                .store_text(&content, Some(&storage_prefix))
+                .sdk_client
+                .store_content(&sync_run.id, &content)
                 .await
                 .map_err(|e| {
                     anyhow!(
-                        "Failed to store content in storage for Jira issue {}: {}",
+                        "Failed to store content via SDK for Jira issue {}: {}",
                         issue.key,
                         e
                     )
@@ -406,7 +366,9 @@ impl JiraProcessor {
                 &creds.base_url,
                 content_id,
             );
-            self.event_queue.enqueue(source_id, &event).await?;
+            self.sdk_client
+                .emit_event(&sync_run.id, source_id, event)
+                .await?;
 
             info!("Successfully queued issue: {}", issue.fields.summary);
             Ok(())
@@ -432,21 +394,22 @@ impl JiraProcessor {
     pub async fn delete_issue(
         &self,
         source_id: &str,
+        sync_run_id: &str,
         project_key: &str,
         issue_key: &str,
     ) -> Result<()> {
         info!("Deleting JIRA issue: {}", issue_key);
 
         let document_id = format!("jira_issue_{}_{}", project_key, issue_key);
-        // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
-        let placeholder_sync_run_id = shared::utils::generate_ulid();
-        let event = shared::models::ConnectorEvent::DocumentDeleted {
-            sync_run_id: placeholder_sync_run_id,
+        let event = ConnectorEvent::DocumentDeleted {
+            sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
             document_id,
         };
 
-        self.event_queue.enqueue(source_id, &event).await?;
+        self.sdk_client
+            .emit_event(sync_run_id, source_id, event)
+            .await?;
         info!("Successfully queued deletion for issue: {}", issue_key);
         Ok(())
     }
@@ -464,7 +427,6 @@ impl JiraProcessor {
             .sync_run_repo
             .create(source_id, SyncType::Incremental)
             .await?;
-        let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         let mut total_issues = 0;
         let mut start_at = 0;
@@ -505,18 +467,11 @@ impl JiraProcessor {
                 }
 
                 let issues_count = response.issues.len();
-                let events = self
-                    .process_issues(
-                        response.issues,
-                        source_id,
-                        &creds.base_url,
-                        &storage_prefix,
-                        &sync_run.id,
-                    )
+                let count = self
+                    .process_issues(response.issues, source_id, &creds.base_url, &sync_run.id)
                     .await?;
-                self.queue_events(events).await?;
 
-                total_issues += issues_count as u32;
+                total_issues += count;
                 start_at += page_size;
 
                 debug!(

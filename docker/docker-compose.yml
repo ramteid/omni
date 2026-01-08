@@ -336,9 +336,10 @@ services:
     expose:
       - "${ATLASSIAN_CONNECTOR_PORT}"
     environment:
-      <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
+      <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${ATLASSIAN_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
       ATLASSIAN_BASE_URL: ${ATLASSIAN_BASE_URL}
       ATLASSIAN_USER_EMAIL: ${ATLASSIAN_USER_EMAIL}
       ATLASSIAN_API_TOKEN: ${ATLASSIAN_API_TOKEN}
@@ -353,6 +354,8 @@ services:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully
+      connector-manager:
+        condition: service_started
     restart: unless-stopped
     logging: *default-logging
 

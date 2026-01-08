@@ -16,9 +16,11 @@ mod config;
 mod confluence;
 mod jira;
 mod models;
+mod sdk_client;
 mod sync;
 
 use config::AtlassianConnectorConfig;
+use sdk_client::SdkClient;
 
 use api::{create_router, ApiState};
 use sync::SyncManager;
@@ -38,8 +40,10 @@ async fn main() -> Result<()> {
 
     let db_pool = DatabasePool::from_config(&config.database).await?;
 
+    let sdk_client = SdkClient::from_env()?;
+
     let sync_manager = Arc::new(Mutex::new(
-        SyncManager::new(db_pool.pool().clone(), redis_client).await?,
+        SyncManager::new(db_pool.pool().clone(), redis_client, sdk_client).await?,
     ));
 
     // Create API state

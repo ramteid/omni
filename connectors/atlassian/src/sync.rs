@@ -3,7 +3,6 @@ use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::ServiceCredentialsRepo;
 use shared::models::{ServiceCredentials, ServiceProvider, Source, SourceType};
-use shared::queue::EventQueue;
 use shared::{Repository, SourceRepository};
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -12,6 +11,7 @@ use tracing::{debug, error, info};
 use crate::auth::{AtlassianCredentials, AuthManager};
 use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
+use crate::sdk_client::SdkClient;
 
 pub struct SyncManager {
     source_repo: SourceRepository,
@@ -230,9 +230,11 @@ impl SyncState {
 }
 
 impl SyncManager {
-    pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
-        let event_queue = EventQueue::new(pool.clone());
-        let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
+    pub async fn new(
+        pool: PgPool,
+        redis_client: RedisClient,
+        sdk_client: SdkClient,
+    ) -> Result<Self> {
         let source_repo = SourceRepository::new(&pool);
         let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
         let sync_run_repo = shared::db::repositories::SyncRunRepository::new(&pool);
@@ -242,16 +244,11 @@ impl SyncManager {
             service_credentials_repo,
             auth_manager: AuthManager::new(),
             confluence_processor: ConfluenceProcessor::new(
-                event_queue.clone(),
-                content_storage.clone(),
+                sdk_client.clone(),
                 sync_run_repo.clone(),
                 redis_client.clone(),
             ),
-            jira_processor: JiraProcessor::new(
-                event_queue.clone(),
-                content_storage.clone(),
-                sync_run_repo.clone(),
-            ),
+            jira_processor: JiraProcessor::new(sdk_client.clone(), sync_run_repo.clone()),
         })
     }
 
