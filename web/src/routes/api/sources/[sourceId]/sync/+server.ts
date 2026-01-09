@@ -44,7 +44,7 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
             result: syncResult,
         })
     } catch (err) {
-        console.error('Error triggering sync:', err)
+        logger.error('Error triggering sync:', err)
 
         if (err && typeof err === 'object' && 'status' in err) {
             throw err // Re-throw SvelteKit errors

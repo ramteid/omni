@@ -1,16 +1,15 @@
+mod common;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use omni_web_connector::config::WebSourceConfig;
 use omni_web_connector::models::WebPage;
-use omni_web_connector::sync::{CrawlResult, PageSource, SyncManager};
-use shared::db::repositories::{SourceRepository, SyncRunRepository};
-use shared::models::{SourceType, SyncStatus};
-use shared::queue::EventQueue;
-use shared::storage::postgres::PostgresStorage;
-use shared::test_environment::TestEnvironment;
-use sqlx::Row;
+use omni_web_connector::sync::{CrawlResult, PageSource};
+use shared::models::SyncStatus;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+
+use common::WebConnectorTestFixture;
 
 /// Mock page source that returns predefined pages
 struct MockPageSource {
@@ -49,114 +48,6 @@ impl PageSource for MockPageSource {
     }
 }
 
-/// Test fixture for web connector integration tests
-struct WebConnectorTestFixture {
-    test_env: TestEnvironment,
-}
-
-impl WebConnectorTestFixture {
-    async fn new() -> Result<Self> {
-        let test_env = TestEnvironment::new().await?;
-        Ok(Self { test_env })
-    }
-
-    fn pool(&self) -> &sqlx::PgPool {
-        self.test_env.db_pool.pool()
-    }
-
-    fn redis_client(&self) -> redis::Client {
-        self.test_env.redis_client.clone()
-    }
-
-    async fn create_test_user(&self, email: &str) -> Result<String> {
-        let user_id = shared::utils::generate_ulid();
-
-        sqlx::query(
-            "INSERT INTO users (id, email, full_name, role, password_hash) VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(&user_id)
-        .bind(email)
-        .bind("Test User")
-        .bind("admin")
-        .bind("hashed_password")
-        .execute(self.pool())
-        .await?;
-
-        Ok(user_id)
-    }
-
-    async fn create_test_source(&self, name: &str, user_id: &str, root_url: &str) -> Result<String> {
-        let source_id = shared::utils::generate_ulid();
-        let config = serde_json::json!({
-            "root_url": root_url,
-            "max_depth": 2,
-            "max_pages": 100
-        });
-
-        sqlx::query(
-            "INSERT INTO sources (id, name, source_type, is_active, created_by, config) VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(&source_id)
-        .bind(name)
-        .bind(SourceType::Web)
-        .bind(true)
-        .bind(user_id)
-        .bind(&config)
-        .execute(self.pool())
-        .await?;
-
-        Ok(source_id)
-    }
-
-    async fn get_queued_events(&self, source_id: &str) -> Result<Vec<serde_json::Value>> {
-        let rows = sqlx::query(
-            "SELECT payload FROM connector_events_queue WHERE source_id = $1 ORDER BY created_at",
-        )
-        .bind(source_id)
-        .fetch_all(self.pool())
-        .await?;
-
-        let events: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|row| row.get::<serde_json::Value, _>("payload"))
-            .collect();
-
-        Ok(events)
-    }
-
-    async fn get_sync_run(&self, source_id: &str) -> Result<Option<shared::models::SyncRun>> {
-        let sync_run_repo = SyncRunRepository::new(self.pool());
-        let running = sync_run_repo
-            .get_running_for_source(source_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        if running.is_some() {
-            return Ok(running);
-        }
-        // Get latest completed
-        sync_run_repo
-            .get_last_completed_for_source(source_id, shared::models::SyncType::Full)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    fn create_sync_manager(&self, page_source: Arc<dyn PageSource>) -> SyncManager {
-        let event_queue = EventQueue::new(self.pool().clone());
-        let content_storage = Arc::new(PostgresStorage::new(self.pool().clone()));
-        let sync_run_repo = SyncRunRepository::new(self.pool());
-        let source_repo = SourceRepository::new(self.pool());
-
-        SyncManager::new_for_testing(
-            self.redis_client(),
-            event_queue,
-            content_storage,
-            sync_run_repo,
-            source_repo,
-            page_source,
-        )
-    }
-}
-
 fn create_test_html(title: &str, content: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
@@ -176,10 +67,13 @@ async fn test_sync_creates_events_for_crawled_pages() -> Result<()> {
     let fixture = WebConnectorTestFixture::new().await?;
 
     // Create test data
-    let user_id = fixture.create_test_user("test@example.com").await?;
+    let user_id = fixture.create_test_user("crawl_test@example.com").await?;
     let source_id = fixture
         .create_test_source("Test Website", &user_id, "https://example.com")
         .await?;
+
+    // Create sync run (simulates connector-manager creating it)
+    let sync_run_id = fixture.create_sync_run(&source_id).await?;
 
     // Create mock pages
     let mock_pages = MockPageSource::from_html_pages(vec![
@@ -197,29 +91,37 @@ async fn test_sync_creates_events_for_crawled_pages() -> Result<()> {
         ),
     ]);
 
-    // Create sync manager with mock page source
+    // Create sync manager with SDK client (tests the full SDK flow)
     let sync_manager = fixture.create_sync_manager(Arc::new(mock_pages));
 
-    // Trigger sync
-    sync_manager.sync_source_by_id(&source_id).await?;
+    // Create sync request
+    let sync_request = fixture.create_sync_request(&sync_run_id, &source_id);
 
-    // Verify events were created
+    // Trigger sync - this will:
+    // 1. Call sdk_client.get_source() -> connector-manager -> database
+    // 2. Process pages and emit events via SDK
+    sync_manager.sync_source(sync_request).await?;
+
+    // Verify events were created via SDK -> connector-manager -> database
     let events = fixture.get_queued_events(&source_id).await?;
     assert_eq!(events.len(), 3, "Expected 3 events for 3 pages");
 
-    // Verify event structure
+    // Verify event structure (flat structure with "type" field)
     for event in &events {
-        assert!(event.get("DocumentCreated").is_some(), "Event should be DocumentCreated");
-        let doc_created = &event["DocumentCreated"];
-        assert_eq!(doc_created["source_id"], source_id);
-        assert!(doc_created["document_id"].as_str().is_some());
-        assert!(doc_created["content_id"].as_str().is_some());
-        assert!(doc_created["metadata"]["title"].as_str().is_some());
-        assert_eq!(doc_created["metadata"]["mime_type"], "text/html");
+        assert_eq!(
+            event["type"].as_str(),
+            Some("document_created"),
+            "Event should be document_created"
+        );
+        assert_eq!(event["source_id"], source_id);
+        assert!(event["document_id"].as_str().is_some());
+        assert!(event["content_id"].as_str().is_some());
+        assert!(event["metadata"]["title"].as_str().is_some());
+        assert_eq!(event["metadata"]["mime_type"], "text/html");
     }
 
     // Verify sync run completed
-    let sync_run = fixture.get_sync_run(&source_id).await?;
+    let sync_run = fixture.get_sync_run(&sync_run_id).await?;
     assert!(sync_run.is_some());
     let sync_run = sync_run.unwrap();
     assert_eq!(sync_run.status, SyncStatus::Completed);
@@ -250,11 +152,17 @@ async fn test_sync_skips_unchanged_pages_on_resync() -> Result<()> {
         ),
     ]);
 
+    let sync_run_id_1 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(initial_pages));
-    sync_manager.sync_source_by_id(&source_id).await?;
+    let sync_request = fixture.create_sync_request(&sync_run_id_1, &source_id);
+    sync_manager.sync_source(sync_request).await?;
 
     let events_after_first_sync = fixture.get_queued_events(&source_id).await?;
-    assert_eq!(events_after_first_sync.len(), 2, "First sync should create 2 events");
+    assert_eq!(
+        events_after_first_sync.len(),
+        2,
+        "First sync should create 2 events"
+    );
 
     // Second sync with same pages (unchanged)
     let same_pages = MockPageSource::from_html_pages(vec![
@@ -268,8 +176,10 @@ async fn test_sync_skips_unchanged_pages_on_resync() -> Result<()> {
         ),
     ]);
 
+    let sync_run_id_2 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(same_pages));
-    sync_manager.sync_source_by_id(&source_id).await?;
+    let sync_request = fixture.create_sync_request(&sync_run_id_2, &source_id);
+    sync_manager.sync_source(sync_request).await?;
 
     // Should still have only 2 events (no new events for unchanged pages)
     let events_after_second_sync = fixture.get_queued_events(&source_id).await?;
@@ -297,8 +207,10 @@ async fn test_sync_creates_events_for_updated_pages() -> Result<()> {
         &create_test_html("Page", "Initial content"),
     )]);
 
+    let sync_run_id_1 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(initial_pages));
-    sync_manager.sync_source_by_id(&source_id).await?;
+    let sync_request = fixture.create_sync_request(&sync_run_id_1, &source_id);
+    sync_manager.sync_source(sync_request).await?;
 
     let events_after_first_sync = fixture.get_queued_events(&source_id).await?;
     assert_eq!(events_after_first_sync.len(), 1);
@@ -309,8 +221,10 @@ async fn test_sync_creates_events_for_updated_pages() -> Result<()> {
         &create_test_html("Page", "Updated content - this is new!"),
     )]);
 
+    let sync_run_id_2 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(updated_pages));
-    sync_manager.sync_source_by_id(&source_id).await?;
+    let sync_request = fixture.create_sync_request(&sync_run_id_2, &source_id);
+    sync_manager.sync_source(sync_request).await?;
 
     // Should now have 2 events (original + update)
     let events_after_second_sync = fixture.get_queued_events(&source_id).await?;
@@ -344,8 +258,10 @@ async fn test_sync_creates_deletion_events_for_removed_pages() -> Result<()> {
         ),
     ]);
 
+    let sync_run_id_1 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(initial_pages));
-    sync_manager.sync_source_by_id(&source_id).await?;
+    let sync_request = fixture.create_sync_request(&sync_run_id_1, &source_id);
+    sync_manager.sync_source(sync_request).await?;
 
     let events_after_first_sync = fixture.get_queued_events(&source_id).await?;
     assert_eq!(events_after_first_sync.len(), 2);
@@ -356,8 +272,10 @@ async fn test_sync_creates_deletion_events_for_removed_pages() -> Result<()> {
         &create_test_html("Keep", "This stays"),
     )]);
 
+    let sync_run_id_2 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(remaining_pages));
-    sync_manager.sync_source_by_id(&source_id).await?;
+    let sync_request = fixture.create_sync_request(&sync_run_id_2, &source_id);
+    sync_manager.sync_source(sync_request).await?;
 
     // Should have 3 events: 2 creates + 1 delete
     let events_after_second_sync = fixture.get_queued_events(&source_id).await?;
@@ -367,11 +285,12 @@ async fn test_sync_creates_deletion_events_for_removed_pages() -> Result<()> {
         "Should create deletion event for removed page"
     );
 
-    // Verify the last event is a deletion
+    // Verify the last event is a deletion (flat structure with "type" field)
     let last_event = events_after_second_sync.last().unwrap();
-    assert!(
-        last_event.get("DocumentDeleted").is_some(),
-        "Last event should be DocumentDeleted"
+    assert_eq!(
+        last_event["type"].as_str(),
+        Some("document_deleted"),
+        "Last event should be document_deleted"
     );
 
     Ok(())
@@ -381,7 +300,9 @@ async fn test_sync_creates_deletion_events_for_removed_pages() -> Result<()> {
 async fn test_event_contains_correct_metadata() -> Result<()> {
     let fixture = WebConnectorTestFixture::new().await?;
 
-    let user_id = fixture.create_test_user("test5@example.com").await?;
+    let user_id = fixture
+        .create_test_user("metadata_test@example.com")
+        .await?;
     let source_id = fixture
         .create_test_source("Test Website 5", &user_id, "https://example5.com")
         .await?;
@@ -399,15 +320,20 @@ async fn test_event_contains_correct_metadata() -> Result<()> {
 </body>
 </html>"#;
 
-    let mock_pages = MockPageSource::from_html_pages(vec![("https://example5.com/test-page", html)]);
+    let mock_pages =
+        MockPageSource::from_html_pages(vec![("https://example5.com/test-page", html)]);
 
+    let sync_run_id = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(mock_pages));
-    sync_manager.sync_source_by_id(&source_id).await?;
+    let sync_request = fixture.create_sync_request(&sync_run_id, &source_id);
+    sync_manager.sync_source(sync_request).await?;
 
     let events = fixture.get_queued_events(&source_id).await?;
     assert_eq!(events.len(), 1);
 
-    let event = &events[0]["DocumentCreated"];
+    // Events have flat structure with "type" field
+    let event = &events[0];
+    assert_eq!(event["type"].as_str(), Some("document_created"));
     let metadata = &event["metadata"];
 
     // Verify metadata fields
@@ -421,6 +347,25 @@ async fn test_event_contains_correct_metadata() -> Result<()> {
     assert_eq!(extra["domain"], "example5.com");
     assert!(extra["word_count"].as_i64().unwrap() > 0);
     assert!(extra["content_hash"].as_str().is_some());
+
+    Ok(())
+}
+
+/// Test that SDK endpoints are being called correctly
+#[tokio::test]
+async fn test_sdk_integration_source_fetch() -> Result<()> {
+    let fixture = WebConnectorTestFixture::new().await?;
+
+    let user_id = fixture.create_test_user("sdk_test@example.com").await?;
+    let source_id = fixture
+        .create_test_source("SDK Test Website", &user_id, "https://sdk-test.com")
+        .await?;
+
+    // Test that SDK client can fetch the source via connector-manager
+    let source = fixture.sdk_client.get_source(&source_id).await?;
+    assert_eq!(source.id, source_id);
+    assert_eq!(source.name, "SDK Test Website");
+    assert!(source.is_active);
 
     Ok(())
 }

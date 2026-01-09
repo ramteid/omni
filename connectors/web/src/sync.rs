@@ -2,9 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use redis::Client as RedisClient;
-use shared::{Repository, SourceRepository};
+use shared::SdkClient;
 use spider::client::StatusCode;
-use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -14,7 +13,6 @@ use tracing::{debug, error, info};
 
 use crate::config::WebSourceConfig;
 use crate::models::{PageSyncState, SyncRequest, WebPage};
-use shared::SdkClient;
 
 /// Result of a crawl operation
 pub struct CrawlResult {
@@ -166,6 +164,15 @@ impl SyncState {
         let _: () = conn.srem(&key, url_hash).await?;
         Ok(())
     }
+
+    pub async fn delete_page_sync_state(&self, source_id: &str, url: &str) -> Result<()> {
+        use redis::AsyncCommands;
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = self.get_url_sync_key(source_id, url);
+
+        let _: () = conn.del(&key).await?;
+        Ok(())
+    }
 }
 
 /// Tracks active syncs and their cancellation status
@@ -174,7 +181,6 @@ struct ActiveSync {
 }
 
 pub struct SyncManager {
-    db_pool: PgPool,
     redis_client: RedisClient,
     sdk_client: SdkClient,
     page_source: Arc<dyn PageSource>,
@@ -182,23 +188,16 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
-    pub fn new(db_pool: PgPool, redis_client: RedisClient, sdk_client: SdkClient) -> Self {
-        Self::with_page_source(
-            db_pool,
-            redis_client,
-            sdk_client,
-            Arc::new(SpiderPageSource),
-        )
+    pub fn new(redis_client: RedisClient, sdk_client: SdkClient) -> Self {
+        Self::with_page_source(redis_client, sdk_client, Arc::new(SpiderPageSource))
     }
 
     pub fn with_page_source(
-        db_pool: PgPool,
         redis_client: RedisClient,
         sdk_client: SdkClient,
         page_source: Arc<dyn PageSource>,
     ) -> Self {
         Self {
-            db_pool,
             redis_client,
             sdk_client,
             page_source,
@@ -216,13 +215,12 @@ impl SyncManager {
             source_id, sync_run_id
         );
 
-        // Fetch source from database
-        let source_repo = SourceRepository::new(&self.db_pool);
-        let source = source_repo
-            .find_by_id(source_id.to_string())
+        // Fetch source via SDK
+        let source = self
+            .sdk_client
+            .get_source(source_id)
             .await
-            .context("Failed to query source")?
-            .ok_or_else(|| anyhow!("Source not found: {}", source_id))?;
+            .context("Failed to fetch source via SDK")?;
 
         // Register this sync for cancellation support
         let active_sync = Arc::new(ActiveSync {

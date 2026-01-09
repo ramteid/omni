@@ -373,6 +373,7 @@ use crate::models::{
 };
 use shared::db::repositories::SyncRunRepository;
 use shared::queue::EventQueue;
+use shared::Repository;
 
 pub async fn sdk_emit_event(
     State(state): State<AppState>,
@@ -549,4 +550,41 @@ pub async fn sdk_increment_scanned(
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
     }))
+}
+
+pub async fn sdk_get_source(
+    State(state): State<AppState>,
+    Path(source_id): Path<String>,
+) -> Result<Json<shared::models::Source>, ApiError> {
+    debug!("SDK: Getting source config for source_id={}", source_id);
+
+    let source_repo = shared::SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+
+    Ok(Json(source))
+}
+
+pub async fn sdk_get_credentials(
+    State(state): State<AppState>,
+    Path(source_id): Path<String>,
+) -> Result<Json<shared::models::ServiceCredentials>, ApiError> {
+    debug!("SDK: Getting credentials for source_id={}", source_id);
+
+    let creds_repo =
+        shared::db::repositories::ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+            .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
+
+    let creds = creds_repo
+        .get_by_source_id(&source_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("Credentials not found for source: {}", source_id))
+        })?;
+
+    Ok(Json(creds))
 }

@@ -1,12 +1,16 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use dashmap::DashSet;
 use dotenvy::dotenv;
 use omni_web_connector::api::{create_router, ApiState};
 use omni_web_connector::sync::SyncManager;
 use shared::telemetry::{self, TelemetryConfig};
-use shared::{DatabasePool, SdkClient};
+use shared::SdkClient;
 use std::sync::Arc;
 use tracing::info;
+
+fn get_env(name: &str) -> Result<String> {
+    std::env::var(name).with_context(|| format!("{} environment variable not set", name))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,21 +21,13 @@ async fn main() -> Result<()> {
 
     info!("Starting Web Connector");
 
-    // Connect to database
-    let database_url = std::env::var("DATABASE_URL")?;
-    let db_pool = DatabasePool::new(&database_url).await?;
-
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
-    let redis_client = redis::Client::open(redis_url)?;
+    let redis_client = redis::Client::open(redis_url).context("Failed to create Redis client")?;
 
     let sdk_client = SdkClient::from_env()?;
 
-    let sync_manager = Arc::new(SyncManager::new(
-        db_pool.pool().clone(),
-        redis_client,
-        sdk_client,
-    ));
+    let sync_manager = Arc::new(SyncManager::new(redis_client, sdk_client));
 
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),
@@ -39,7 +35,9 @@ async fn main() -> Result<()> {
     };
 
     let app = create_router(api_state);
-    let port = std::env::var("PORT")?.parse::<u16>()?;
+    let port = get_env("PORT")?
+        .parse::<u16>()
+        .context("PORT must be a valid number")?;
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
 

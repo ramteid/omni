@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::ServiceCredentialsRepo;
 use shared::models::{ServiceCredentials, ServiceProvider, Source, SourceType};
-use shared::{Repository, SourceRepository};
+use shared::SourceRepository;
 use sqlx::PgPool;
 use std::collections::HashSet;
 use tracing::{debug, error, info};
@@ -16,6 +16,7 @@ use shared::SdkClient;
 pub struct SyncManager {
     source_repo: SourceRepository,
     service_credentials_repo: ServiceCredentialsRepo,
+    sdk_client: SdkClient,
     auth_manager: AuthManager,
     confluence_processor: ConfluenceProcessor,
     jira_processor: JiraProcessor,
@@ -242,13 +243,14 @@ impl SyncManager {
         Ok(Self {
             source_repo,
             service_credentials_repo,
+            sdk_client: sdk_client.clone(),
             auth_manager: AuthManager::new(),
             confluence_processor: ConfluenceProcessor::new(
                 sdk_client.clone(),
                 sync_run_repo.clone(),
                 redis_client.clone(),
             ),
-            jira_processor: JiraProcessor::new(sdk_client.clone(), sync_run_repo.clone()),
+            jira_processor: JiraProcessor::new(sdk_client, sync_run_repo.clone()),
         })
     }
 
@@ -270,10 +272,10 @@ impl SyncManager {
 
     pub async fn sync_source_by_id(&mut self, source_id: String) -> Result<()> {
         let source = self
-            .source_repo
-            .find_by_id(source_id.clone())
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Source not found: {}", source_id))?;
+            .sdk_client
+            .get_source(&source_id)
+            .await
+            .context("Failed to fetch source via SDK")?;
 
         if !source.is_active {
             return Err(anyhow::anyhow!("Source is not active: {}", source_id));
@@ -455,12 +457,10 @@ impl SyncManager {
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
         let creds = self
-            .service_credentials_repo
-            .get_by_source_id(source_id)
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!("Service credentials not found for source {}", source_id)
-            })?;
+            .sdk_client
+            .get_credentials(source_id)
+            .await
+            .context("Failed to fetch credentials via SDK")?;
 
         if creds.provider != ServiceProvider::Atlassian {
             return Err(anyhow::anyhow!(

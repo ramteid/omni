@@ -53,6 +53,11 @@ pub fn create_app(state: AppState) -> Router {
             "/sdk/sync/:id/scanned",
             post(handlers::sdk_increment_scanned),
         )
+        .route("/sdk/source/:source_id", get(handlers::sdk_get_source))
+        .route(
+            "/sdk/credentials/:source_id",
+            get(handlers::sdk_get_credentials),
+        )
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))

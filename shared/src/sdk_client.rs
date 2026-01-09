@@ -3,7 +3,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::models::ConnectorEvent;
+use crate::models::{ConnectorEvent, ServiceCredentials, Source};
 
 /// HTTP client for communicating with connector-manager SDK endpoints.
 /// This is the standard way for connectors to interact with the connector-manager
@@ -224,5 +224,53 @@ impl SdkClient {
         }
 
         Ok(())
+    }
+
+    /// Get source configuration
+    pub async fn get_source(&self, source_id: &str) -> Result<Source> {
+        debug!("SDK: Getting source config for source_id={}", source_id);
+
+        let response = self
+            .client
+            .get(format!("{}/sdk/source/{}", self.base_url, source_id))
+            .send()
+            .await
+            .context("Failed to send get source request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to get source: {} - {}", status, body);
+        }
+
+        let source: Source = response
+            .json()
+            .await
+            .context("Failed to parse source response")?;
+        Ok(source)
+    }
+
+    /// Get credentials for a source
+    pub async fn get_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
+        debug!("SDK: Getting credentials for source_id={}", source_id);
+
+        let response = self
+            .client
+            .get(format!("{}/sdk/credentials/{}", self.base_url, source_id))
+            .send()
+            .await
+            .context("Failed to send get credentials request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to get credentials: {} - {}", status, body);
+        }
+
+        let credentials: ServiceCredentials = response
+            .json()
+            .await
+            .context("Failed to parse credentials response")?;
+        Ok(credentials)
     }
 }

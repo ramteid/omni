@@ -315,18 +315,22 @@ impl PageSyncState {
     }
 
     pub fn has_changed(&self, page: &WebPage) -> bool {
-        if let Some(new_etag) = &page.etag {
-            if let Some(old_etag) = &self.etag {
-                return new_etag != old_etag;
+        // If etags are both present and different, definitely changed
+        if let (Some(new_etag), Some(old_etag)) = (&page.etag, &self.etag) {
+            if new_etag != old_etag {
+                return true;
             }
         }
 
-        if let Some(new_modified) = &page.last_modified {
-            if let Some(old_modified) = &self.last_modified {
-                return new_modified != old_modified;
+        // If last_modified is both present and different, changed
+        if let (Some(new_modified), Some(old_modified)) = (&page.last_modified, &self.last_modified)
+        {
+            if new_modified != old_modified {
+                return true;
             }
         }
 
+        // Fall back to content hash comparison
         self.content_hash != page.content_hash
     }
 }

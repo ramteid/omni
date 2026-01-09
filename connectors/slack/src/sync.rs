@@ -1,8 +1,8 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{Source, SourceType, SyncType};
-use shared::{Repository, SourceRepository};
+use shared::SourceRepository;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
 use tracing::{debug, error, info, warn};
@@ -483,19 +483,22 @@ impl SyncManager {
         info!("Manually triggered sync for source: {}", source_id);
 
         let source = self
-            .source_repo
-            .find_by_id(source_id.clone())
-            .await?
-            .filter(|s| s.source_type == SourceType::Slack);
+            .sdk_client
+            .get_source(&source_id)
+            .await
+            .context("Failed to fetch source via SDK")?;
 
-        match source {
-            Some(source) => {
-                if !source.is_active {
-                    return Err(anyhow::anyhow!("Source {} is not active", source_id));
-                }
-                self.sync_source(&source).await
-            }
-            None => Err(anyhow::anyhow!("Source {} not found", source_id)),
+        if source.source_type != SourceType::Slack {
+            return Err(anyhow::anyhow!(
+                "Source {} is not a Slack source",
+                source_id
+            ));
         }
+
+        if !source.is_active {
+            return Err(anyhow::anyhow!("Source {} is not active", source_id));
+        }
+
+        self.sync_source(&source).await
     }
 }

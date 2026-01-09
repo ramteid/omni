@@ -7,6 +7,8 @@ x-dev-db-config: &dev-db-config
   POSTGRES_PASSWORD: omni_dev_password
 
 x-dev-database-url: &dev-database-url
+  DATABASE_HOST: postgres
+  DATABASE_PORT: 5432
   DATABASE_USERNAME: omni_dev
   DATABASE_PASSWORD: omni_dev_password
   DATABASE_NAME: omni_dev
@@ -136,7 +138,6 @@ services:
       args:
         BUILD_MODE: debug
     environment:
-      <<: *dev-database-url
       RUST_BACKTRACE: full
 
   vllm:

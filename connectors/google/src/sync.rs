@@ -290,12 +290,12 @@ impl SyncManager {
         self.active_syncs
             .insert(sync_run_id.clone(), active_sync.clone());
 
-        // Get the source from the database
+        // Get the source via SDK
         let source = self
-            .source_repo
-            .find_by_id(source_id.clone())
-            .await?
-            .ok_or_else(|| anyhow!("Source {} not found", source_id))?;
+            .sdk_client
+            .get_source(&source_id)
+            .await
+            .context("Failed to fetch source via SDK")?;
 
         // Get or create sync run
         let sync_run = self
@@ -1049,12 +1049,10 @@ impl SyncManager {
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
         let creds = self
-            .service_credentials_repo
-            .get_by_source_id(source_id)
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!("Service credentials not found for source {}", source_id)
-            })?;
+            .sdk_client
+            .get_credentials(source_id)
+            .await
+            .context("Failed to fetch credentials via SDK")?;
 
         // Verify it's a Google credentials record
         if creds.provider != ServiceProvider::Google {

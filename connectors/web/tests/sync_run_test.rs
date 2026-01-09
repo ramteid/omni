@@ -14,7 +14,9 @@ async fn test_sync_run_creation() -> Result<()> {
     let user_id = fixture
         .create_test_user("test_creation@example.com")
         .await?;
-    let source_id = fixture.create_test_source("Test Web Source", &user_id).await?;
+    let source_id = fixture
+        .create_test_source("Test Web Source", &user_id, "https://example.com")
+        .await?;
 
     // Create a sync run
     let sync_run = sync_run_repo.create(&source_id, SyncType::Full).await?;
@@ -39,7 +41,7 @@ async fn test_sync_run_completion() -> Result<()> {
         .create_test_user("test_completion@example.com")
         .await?;
     let source_id = fixture
-        .create_test_source("Test Source Completion", &user_id)
+        .create_test_source("Test Source Completion", &user_id, "https://example.com")
         .await?;
 
     // Create and complete a sync run
@@ -67,13 +69,15 @@ async fn test_sync_run_failure() -> Result<()> {
     // Create test user and source
     let user_id = fixture.create_test_user("test_failure@example.com").await?;
     let source_id = fixture
-        .create_test_source("Test Source Failure", &user_id)
+        .create_test_source("Test Source Failure", &user_id, "https://example.com")
         .await?;
 
     // Create and fail a sync run
     let sync_run = sync_run_repo.create(&source_id, SyncType::Full).await?;
     let error_message = "Test error: crawl timeout";
-    sync_run_repo.mark_failed(&sync_run.id, error_message).await?;
+    sync_run_repo
+        .mark_failed(&sync_run.id, error_message)
+        .await?;
 
     // Verify the sync run was updated
     let updated = sync_run_repo.find_by_id(&sync_run.id).await?;
@@ -97,7 +101,11 @@ async fn test_get_last_completed_sync() -> Result<()> {
         .create_test_user("test_last_completed@example.com")
         .await?;
     let source_id = fixture
-        .create_test_source("Test Source Last Completed", &user_id)
+        .create_test_source(
+            "Test Source Last Completed",
+            &user_id,
+            "https://example.com",
+        )
         .await?;
 
     // Initially, no completed sync should exist
@@ -126,11 +134,9 @@ async fn test_get_running_sync_for_source() -> Result<()> {
     let sync_run_repo = fixture.sync_run_repo();
 
     // Create test user and source
-    let user_id = fixture
-        .create_test_user("test_running@example.com")
-        .await?;
+    let user_id = fixture.create_test_user("test_running@example.com").await?;
     let source_id = fixture
-        .create_test_source("Test Source Running", &user_id)
+        .create_test_source("Test Source Running", &user_id, "https://example.com")
         .await?;
 
     // Initially, no running sync should exist
@@ -165,7 +171,7 @@ async fn test_increment_scanned_count() -> Result<()> {
         .create_test_user("test_increment@example.com")
         .await?;
     let source_id = fixture
-        .create_test_source("Test Source Increment", &user_id)
+        .create_test_source("Test Source Increment", &user_id, "https://example.com")
         .await?;
 
     // Create a sync run
@@ -192,7 +198,7 @@ async fn test_increment_progress() -> Result<()> {
         .create_test_user("test_progress@example.com")
         .await?;
     let source_id = fixture
-        .create_test_source("Test Source Progress", &user_id)
+        .create_test_source("Test Source Progress", &user_id, "https://example.com")
         .await?;
 
     // Create a sync run

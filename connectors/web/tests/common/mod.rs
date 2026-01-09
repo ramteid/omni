@@ -1,19 +1,90 @@
 use anyhow::Result;
+use omni_connector_manager::{
+    config::ConnectorManagerConfig, create_app as create_cm_app,
+    sync_manager::SyncManager as CMSyncManager, AppState as CMAppState,
+};
+use omni_web_connector::models::SyncRequest;
+use omni_web_connector::sync::{PageSource, SyncManager};
 use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
+use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
+use shared::{DatabaseConfig, RedisConfig, SdkClient};
 use sqlx::PgPool;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::net::TcpListener;
 
 /// Test fixture for Web connector integration tests
 pub struct WebConnectorTestFixture {
     pub test_env: TestEnvironment,
+    pub sdk_client: SdkClient,
+    _server_handle: tokio::task::JoinHandle<()>,
 }
 
 impl WebConnectorTestFixture {
-    /// Create a new test fixture with all dependencies
+    /// Create a new test fixture with all dependencies including connector-manager
     pub async fn new() -> Result<Self> {
         let test_env = TestEnvironment::new().await?;
-        Ok(Self { test_env })
+
+        // Create connector-manager config for testing
+        // The database config here won't be used since we pass db_pool directly
+        let cm_config = ConnectorManagerConfig {
+            database: DatabaseConfig {
+                database_url: "postgresql://test:test@localhost/test".to_string(),
+                max_connections: 5,
+                acquire_timeout_seconds: 3,
+                require_ssl: false,
+            },
+            redis: RedisConfig {
+                redis_url: "redis://localhost".to_string(),
+            },
+            port: 0, // Not used since we bind to a random port
+            connector_urls: HashMap::new(),
+            max_concurrent_syncs: 10,
+            max_concurrent_syncs_per_type: 3,
+            scheduler_interval_seconds: 30,
+            stale_sync_timeout_minutes: 10,
+        };
+
+        // Create connector-manager sync manager
+        let cm_sync_manager = Arc::new(CMSyncManager::new(&test_env.db_pool, cm_config.clone()));
+
+        // Create content storage
+        let content_storage: Arc<dyn shared::ObjectStorage> =
+            Arc::new(PostgresStorage::new(test_env.db_pool.pool().clone()));
+
+        // Create connector-manager app state
+        let cm_state = CMAppState {
+            db_pool: test_env.db_pool.clone(),
+            config: cm_config,
+            sync_manager: cm_sync_manager,
+            content_storage,
+        };
+
+        // Create connector-manager app
+        let cm_app = create_cm_app(cm_state);
+
+        // Bind to a random available port
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+
+        // Spawn the server in a background task
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, cm_app).await.ok();
+        });
+
+        // Create SDK client pointing to the test server
+        let sdk_client = SdkClient::new(&format!("http://{}", addr));
+
+        // Wait a moment for the server to be ready
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        Ok(Self {
+            test_env,
+            sdk_client,
+            _server_handle: server_handle,
+        })
     }
 
     /// Get the database pool
@@ -29,6 +100,11 @@ impl WebConnectorTestFixture {
     /// Get the SyncRunRepository for testing sync operations
     pub fn sync_run_repo(&self) -> SyncRunRepository {
         SyncRunRepository::new(self.pool())
+    }
+
+    /// Create a SyncManager with the SDK client for integration testing
+    pub fn create_sync_manager(&self, page_source: Arc<dyn PageSource>) -> SyncManager {
+        SyncManager::with_page_source(self.redis_client(), self.sdk_client.clone(), page_source)
     }
 
     /// Create a test user and return the user ID
@@ -50,7 +126,12 @@ impl WebConnectorTestFixture {
     }
 
     /// Create a test web source and return the source ID
-    pub async fn create_test_source(&self, name: &str, user_id: &str) -> Result<String> {
+    pub async fn create_test_source(
+        &self,
+        name: &str,
+        user_id: &str,
+        root_url: &str,
+    ) -> Result<String> {
         let source_id = shared::utils::generate_ulid();
 
         sqlx::query(
@@ -61,62 +142,65 @@ impl WebConnectorTestFixture {
         .bind(shared::models::SourceType::Web)
         .bind(true)
         .bind(user_id)
-        .bind(serde_json::json!({"root_url": "https://example.com"}))
+        .bind(serde_json::json!({"root_url": root_url, "max_depth": 2, "max_pages": 100}))
         .execute(self.pool())
         .await?;
 
         Ok(source_id)
     }
 
-    /// Create a sync run with specific status and timing
-    pub async fn create_sync_run(
-        &self,
-        source_id: &str,
-        sync_type: shared::models::SyncType,
-        status: shared::models::SyncStatus,
-        started_at: sqlx::types::time::OffsetDateTime,
-    ) -> Result<String> {
+    /// Create a sync run for testing
+    pub async fn create_sync_run(&self, source_id: &str) -> Result<String> {
         let sync_run_id = shared::utils::generate_ulid();
 
         sqlx::query(
-            "INSERT INTO sync_runs (id, source_id, sync_type, status, started_at) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO sync_runs (id, source_id, sync_type, status, started_at) VALUES ($1, $2, $3, $4, NOW())",
         )
         .bind(&sync_run_id)
         .bind(source_id)
-        .bind(sync_type)
-        .bind(status)
-        .bind(started_at)
+        .bind(shared::models::SyncType::Full)
+        .bind(shared::models::SyncStatus::Running)
         .execute(self.pool())
         .await?;
 
         Ok(sync_run_id)
     }
 
-    /// Create a completed sync run
-    pub async fn create_completed_sync_run(
-        &self,
-        source_id: &str,
-        sync_type: shared::models::SyncType,
-        completed_at: sqlx::types::time::OffsetDateTime,
-        documents_processed: i32,
-        documents_updated: i32,
-    ) -> Result<String> {
-        let sync_run_id = shared::utils::generate_ulid();
+    /// Create a SyncRequest for testing
+    pub fn create_sync_request(&self, sync_run_id: &str, source_id: &str) -> SyncRequest {
+        SyncRequest {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
+            sync_mode: "full".to_string(),
+        }
+    }
 
-        sqlx::query(
-            "INSERT INTO sync_runs (id, source_id, sync_type, status, completed_at, documents_processed, documents_updated)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    /// Get queued events for a source
+    pub async fn get_queued_events(&self, source_id: &str) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            "SELECT payload FROM connector_events_queue WHERE source_id = $1 ORDER BY created_at",
         )
-        .bind(&sync_run_id)
         .bind(source_id)
-        .bind(sync_type)
-        .bind(shared::models::SyncStatus::Completed)
-        .bind(completed_at)
-        .bind(documents_processed)
-        .bind(documents_updated)
-        .execute(self.pool())
+        .fetch_all(self.pool())
         .await?;
 
-        Ok(sync_run_id)
+        let events: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                use sqlx::Row;
+                row.get::<serde_json::Value, _>("payload")
+            })
+            .collect();
+
+        Ok(events)
+    }
+
+    /// Get the sync run status
+    pub async fn get_sync_run(&self, sync_run_id: &str) -> Result<Option<shared::models::SyncRun>> {
+        let sync_run_repo = SyncRunRepository::new(self.pool());
+        sync_run_repo
+            .find_by_id(sync_run_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
