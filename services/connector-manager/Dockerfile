@@ -1,30 +1,46 @@
-FROM rust:1.82-slim-bookworm AS builder
+# Multi-stage build for connector-manager service
+FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
+WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+ARG BUILD_MODE=release
+COPY --from=planner /app/recipe.json recipe.json
+
+# Cook dependencies based on build mode
+RUN if [ "$BUILD_MODE" = "debug" ]; then \
+        cargo chef cook --recipe-path recipe.json; \
+    else \
+        cargo chef cook --release --recipe-path recipe.json; \
+    fi
+
+COPY . .
+
+# Build binary based on build mode
+RUN if [ "$BUILD_MODE" = "debug" ]; then \
+        cargo build --bin omni-connector-manager; \
+    else \
+        cargo build --release --bin omni-connector-manager; \
+    fi
+
+FROM debian:bookworm-slim AS runtime
+ARG BUILD_MODE=release
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Copy binary based on build mode
+RUN if [ "$BUILD_MODE" = "debug" ]; then \
+        echo "Debug mode - binary will be copied from target/debug/"; \
+    else \
+        echo "Release mode - binary will be copied from target/release/"; \
+    fi
 
-COPY Cargo.toml Cargo.lock ./
-COPY shared ./shared
-COPY services/connector-manager ./services/connector-manager
-
-RUN cargo build --release --package omni-connector-manager
-
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /app/target/release/omni-connector-manager /usr/local/bin/
-
-ENV RUST_LOG=info
-ENV PORT=8090
-
-EXPOSE 8090
+COPY --from=builder /app/target/${BUILD_MODE}/omni-connector-manager /usr/local/bin/omni-connector-manager
 
 CMD ["omni-connector-manager"]

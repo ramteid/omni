@@ -48,7 +48,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     }
 
     const body = await request.json()
-    const { name, sourceType, config } = body
+    const { name, sourceType, config, isActive } = body
 
     if (!name || !sourceType) {
         throw error(400, 'Name and sourceType are required')
@@ -62,7 +62,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             sourceType,
             config: config || {},
             createdBy: locals.user.id,
-            isActive: false,
+            isActive: isActive ?? false,
             syncStatus: 'pending',
         })
         .returning()

@@ -36,6 +36,7 @@ pub fn create_app(state: AppState) -> Router {
         // Health and management endpoints
         .route("/health", get(handlers::health_check))
         .route("/sync", post(handlers::trigger_sync))
+        .route("/sync/:source_id", post(handlers::trigger_sync_by_id))
         .route("/sync/:id/cancel", post(handlers::cancel_sync))
         .route("/sync/:id/progress", get(handlers::get_sync_progress))
         .route("/schedules", get(handlers::list_schedules))

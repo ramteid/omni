@@ -63,6 +63,7 @@
             }
 
             // Create source with config (no credentials needed for web connector)
+            // Web sources are created active since there's no additional configuration needed
             const sourceResponse = await fetch('/api/sources', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -70,6 +71,7 @@
                     name: `Web: ${new URL(rootUrl).hostname}`,
                     sourceType: 'web',
                     config: config,
+                    isActive: true,
                 }),
             })
 

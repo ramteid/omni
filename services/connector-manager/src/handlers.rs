@@ -41,6 +41,27 @@ pub async fn trigger_sync(
     }))
 }
 
+pub async fn trigger_sync_by_id(
+    State(state): State<AppState>,
+    Path(source_id): Path<String>,
+) -> Result<Json<TriggerSyncResponse>, ApiError> {
+    info!("Manual sync triggered for source {}", source_id);
+
+    let sync_run_id = state
+        .sync_manager
+        .trigger_sync(&source_id, None, TriggerType::Manual)
+        .await
+        .map_err(|e| {
+            error!("Failed to trigger sync for source {}: {:?}", source_id, e);
+            ApiError::from(e)
+        })?;
+
+    Ok(Json(TriggerSyncResponse {
+        sync_run_id,
+        status: "started".to_string(),
+    }))
+}
+
 pub async fn cancel_sync(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,

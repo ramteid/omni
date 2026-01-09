@@ -20,12 +20,19 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
         })
 
         if (!syncResponse.ok) {
-            const errorText = await syncResponse.text()
+            let errorMessage = 'Failed to trigger sync'
+            try {
+                const errorBody = await syncResponse.json()
+                errorMessage = errorBody.error || errorMessage
+            } catch {
+                // If response isn't JSON, use the text
+                errorMessage = (await syncResponse.text()) || errorMessage
+            }
             logger.error(`Sync failed for source ${sourceId}`, {
-                error: errorText,
+                error: errorMessage,
                 status: syncResponse.status,
             })
-            throw error(500, 'Failed to trigger sync')
+            throw error(syncResponse.status, errorMessage)
         }
 
         const syncResult = await syncResponse.json()
