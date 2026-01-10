@@ -3,7 +3,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::models::{ConnectorEvent, ServiceCredentials, Source};
+use crate::models::{ConnectorEvent, ServiceCredentials, Source, SyncType};
 
 /// HTTP client for communicating with connector-manager SDK endpoints.
 /// This is the standard way for connectors to interact with the connector-manager
@@ -43,6 +43,17 @@ struct CompleteRequest {
 #[derive(Debug, Serialize)]
 struct FailRequest {
     error: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateSyncRequest {
+    source_id: String,
+    sync_type: SyncType,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSyncResponse {
+    sync_run_id: String,
 }
 
 impl SdkClient {
@@ -272,5 +283,38 @@ impl SdkClient {
             .await
             .context("Failed to parse credentials response")?;
         Ok(credentials)
+    }
+
+    /// Create a new sync run for a source
+    pub async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> Result<String> {
+        debug!(
+            "SDK: Creating sync run for source_id={}, type={:?}",
+            source_id, sync_type
+        );
+
+        let request = CreateSyncRequest {
+            source_id: source_id.to_string(),
+            sync_type,
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/sdk/sync/create", self.base_url))
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to send create sync run request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to create sync run: {} - {}", status, body);
+        }
+
+        let result: CreateSyncResponse = response
+            .json()
+            .await
+            .context("Failed to parse create sync response")?;
+        Ok(result.sync_run_id)
     }
 }

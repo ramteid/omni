@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use shared::db::repositories::SyncRunRepository;
 use shared::models::{ConnectorEvent, SyncType};
 use tracing::{debug, error, info, warn};
 
@@ -12,15 +11,13 @@ use shared::SdkClient;
 pub struct JiraProcessor {
     client: AtlassianClient,
     sdk_client: SdkClient,
-    sync_run_repo: SyncRunRepository,
 }
 
 impl JiraProcessor {
-    pub fn new(sdk_client: SdkClient, sync_run_repo: SyncRunRepository) -> Self {
+    pub fn new(sdk_client: SdkClient) -> Self {
         Self {
             client: AtlassianClient::new(),
             sdk_client,
-            sync_run_repo,
         }
     }
 
@@ -28,21 +25,14 @@ impl JiraProcessor {
         &mut self,
         creds: &AtlassianCredentials,
         source_id: &str,
+        sync_run_id: &str,
     ) -> Result<u32> {
-        info!("Starting JIRA projects sync for source: {}", source_id);
+        info!(
+            "Starting JIRA projects sync for source: {} (sync_run_id: {})",
+            source_id, sync_run_id
+        );
 
-        let sync_run = self.sync_run_repo.create(source_id, SyncType::Full).await?;
-
-        let projects = match self.get_accessible_projects(creds).await {
-            Ok(p) => p,
-            Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?;
-                return Err(e);
-            }
-        };
-
+        let projects = self.get_accessible_projects(creds).await?;
         let mut total_issues_processed = 0;
 
         for project in projects {
@@ -59,7 +49,7 @@ impl JiraProcessor {
             info!("Syncing JIRA project: {} ({})", project_name, project_key);
 
             match self
-                .sync_project_issues(creds, source_id, project_key, &sync_run.id)
+                .sync_project_issues(creds, source_id, project_key, sync_run_id)
                 .await
             {
                 Ok(issues_count) => {
@@ -69,7 +59,7 @@ impl JiraProcessor {
                         issues_count, project_key
                     );
                     // Update scanned count via SDK
-                    if let Err(e) = self.sdk_client.increment_scanned(&sync_run.id).await {
+                    if let Err(e) = self.sdk_client.increment_scanned(sync_run_id).await {
                         error!("Failed to increment scanned count: {}", e);
                     }
                 }
@@ -78,14 +68,6 @@ impl JiraProcessor {
                 }
             }
         }
-
-        self.sync_run_repo
-            .mark_completed(
-                &sync_run.id,
-                total_issues_processed as i32,
-                total_issues_processed as i32,
-            )
-            .await?;
 
         info!(
             "Completed JIRA sync. Total issues processed: {}",
@@ -100,81 +82,54 @@ impl JiraProcessor {
         source_id: &str,
         since: DateTime<Utc>,
         project_key: Option<&str>,
+        sync_run_id: &str,
     ) -> Result<u32> {
         info!(
-            "Starting incremental JIRA sync for source: {} since {}{}",
+            "Starting incremental JIRA sync for source: {} since {}{} (sync_run_id: {})",
             source_id,
             since.format("%Y-%m-%d %H:%M:%S"),
-            project_key.map_or(String::new(), |p| format!(" (project: {})", p))
+            project_key.map_or(String::new(), |p| format!(" (project: {})", p)),
+            sync_run_id
         );
-
-        let sync_run = self
-            .sync_run_repo
-            .create(source_id, SyncType::Incremental)
-            .await?;
 
         let since_str = since.format("%Y-%m-%d %H:%M").to_string();
         let mut total_issues = 0;
         let mut start_at = 0;
         const PAGE_SIZE: u32 = 50;
 
-        let result: Result<u32> = async {
-            loop {
-                let response = self
-                    .client
-                    .get_jira_issues_updated_since(
-                        creds,
-                        &since_str,
-                        project_key,
-                        PAGE_SIZE,
-                        start_at,
-                    )
-                    .await?;
+        loop {
+            let response = self
+                .client
+                .get_jira_issues_updated_since(creds, &since_str, project_key, PAGE_SIZE, start_at)
+                .await?;
 
-                if response.issues.is_empty() {
-                    break;
-                }
-
-                let issues_count = response.issues.len();
-                let count = self
-                    .process_issues(response.issues, source_id, &creds.base_url, &sync_run.id)
-                    .await?;
-
-                total_issues += count;
-                start_at += PAGE_SIZE;
-
-                debug!(
-                    "Processed {} issues, total so far: {}",
-                    issues_count, total_issues
-                );
-
-                if issues_count < PAGE_SIZE as usize {
-                    break;
-                }
+            if response.issues.is_empty() {
+                break;
             }
 
-            info!(
-                "Completed incremental JIRA sync. Issues processed: {}",
-                total_issues
+            let issues_count = response.issues.len();
+            let count = self
+                .process_issues(response.issues, source_id, &creds.base_url, sync_run_id)
+                .await?;
+
+            total_issues += count;
+            start_at += PAGE_SIZE;
+
+            debug!(
+                "Processed {} issues, total so far: {}",
+                issues_count, total_issues
             );
-            Ok(total_issues)
-        }
-        .await;
 
-        match &result {
-            Ok(count) => {
-                self.sync_run_repo
-                    .mark_completed(&sync_run.id, *count as i32, *count as i32)
-                    .await?
-            }
-            Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?
+            if issues_count < PAGE_SIZE as usize {
+                break;
             }
         }
 
-        result
+        info!(
+            "Completed incremental JIRA sync. Issues processed: {}",
+            total_issues
+        );
+        Ok(total_issues)
     }
 
     async fn sync_project_issues(
@@ -314,10 +269,12 @@ impl JiraProcessor {
     ) -> Result<()> {
         info!("Syncing single JIRA issue: {}", issue_key);
 
-        let sync_run = self
-            .sync_run_repo
-            .create(source_id, SyncType::Incremental)
-            .await?;
+        // Create sync run via SDK
+        let sync_run_id = self
+            .sdk_client
+            .create_sync_run(source_id, SyncType::Incremental)
+            .await
+            .map_err(|e| anyhow!("Failed to create sync run via SDK: {}", e))?;
 
         let fields = vec![
             "summary",
@@ -350,7 +307,7 @@ impl JiraProcessor {
 
             let content_id = self
                 .sdk_client
-                .store_content(&sync_run.id, &content)
+                .store_content(&sync_run_id, &content)
                 .await
                 .map_err(|e| {
                     anyhow!(
@@ -361,13 +318,13 @@ impl JiraProcessor {
                 })?;
 
             let event = issue.to_connector_event(
-                sync_run.id.clone(),
+                sync_run_id.clone(),
                 source_id.to_string(),
                 &creds.base_url,
                 content_id,
             );
             self.sdk_client
-                .emit_event(&sync_run.id, source_id, event)
+                .emit_event(&sync_run_id, source_id, event)
                 .await?;
 
             info!("Successfully queued issue: {}", issue.fields.summary);
@@ -375,16 +332,13 @@ impl JiraProcessor {
         }
         .await;
 
+        // Mark sync as completed or failed via SDK
         match &result {
             Ok(_) => {
-                self.sync_run_repo
-                    .mark_completed(&sync_run.id, 1, 1)
-                    .await?
+                self.sdk_client.complete(&sync_run_id, 1, 1, None).await?;
             }
             Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?
+                self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;
             }
         }
 
@@ -423,10 +377,12 @@ impl JiraProcessor {
     ) -> Result<u32> {
         info!("Syncing JIRA issues by JQL: {}", jql);
 
-        let sync_run = self
-            .sync_run_repo
-            .create(source_id, SyncType::Incremental)
-            .await?;
+        // Create sync run via SDK
+        let sync_run_id = self
+            .sdk_client
+            .create_sync_run(source_id, SyncType::Incremental)
+            .await
+            .map_err(|e| anyhow!("Failed to create sync run via SDK: {}", e))?;
 
         let mut total_issues = 0;
         let mut start_at = 0;
@@ -468,7 +424,7 @@ impl JiraProcessor {
 
                 let issues_count = response.issues.len();
                 let count = self
-                    .process_issues(response.issues, source_id, &creds.base_url, &sync_run.id)
+                    .process_issues(response.issues, source_id, &creds.base_url, &sync_run_id)
                     .await?;
 
                 total_issues += count;
@@ -492,16 +448,15 @@ impl JiraProcessor {
         }
         .await;
 
+        // Mark sync as completed or failed via SDK
         match &result {
             Ok(count) => {
-                self.sync_run_repo
-                    .mark_completed(&sync_run.id, *count as i32, *count as i32)
-                    .await?
+                self.sdk_client
+                    .complete(&sync_run_id, *count as i32, *count as i32, None)
+                    .await?;
             }
             Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?
+                self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;
             }
         }
 

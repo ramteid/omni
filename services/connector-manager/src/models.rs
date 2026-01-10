@@ -155,3 +155,14 @@ pub struct SdkFailRequest {
 pub struct SdkStatusResponse {
     pub status: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkCreateSyncRequest {
+    pub source_id: String,
+    pub sync_type: shared::models::SyncType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkCreateSyncResponse {
+    pub sync_run_id: String,
+}

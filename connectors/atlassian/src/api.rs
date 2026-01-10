@@ -1,12 +1,14 @@
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
+use dashmap::DashSet;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use shared::models::SyncRequest;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower::ServiceBuilder;
@@ -21,6 +23,7 @@ use crate::sync::SyncManager;
 #[derive(Clone)]
 pub struct ApiState {
     pub sync_manager: Arc<Mutex<SyncManager>>,
+    pub active_syncs: Arc<DashSet<String>>,
 }
 
 #[derive(Serialize)]
@@ -55,8 +58,7 @@ pub fn create_router(state: ApiState) -> Router {
         // Protocol endpoints
         .route("/health", get(health))
         .route("/manifest", get(manifest))
-        .route("/sync/:source_id", post(trigger_sync))
-        .route("/sync", post(trigger_full_sync))
+        .route("/sync", post(trigger_sync))
         .route("/cancel", post(cancel_sync))
         .route("/action", post(execute_action))
         // Admin endpoints
@@ -89,52 +91,46 @@ async fn manifest() -> impl IntoResponse {
 
 async fn trigger_sync(
     State(state): State<ApiState>,
-    Path(source_id): Path<String>,
-) -> Json<SyncResponse> {
-    info!("Received sync request for source: {}", source_id);
+    Json(request): Json<SyncRequest>,
+) -> Result<Json<SyncResponse>, (StatusCode, Json<SyncResponse>)> {
+    let sync_run_id = request.sync_run_id.clone();
+    let source_id = request.source_id.clone();
 
+    info!(
+        "Sync triggered for source {} (sync_run_id: {})",
+        source_id, sync_run_id
+    );
+
+    // Check if already syncing this source
+    if state.active_syncs.contains(&source_id) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(SyncResponse::error(
+                "Sync already in progress for this source",
+            )),
+        ));
+    }
+
+    // Mark as active
+    state.active_syncs.insert(source_id.clone());
+
+    // Spawn sync task
     let sync_manager = state.sync_manager.clone();
-    let source_id_clone = source_id.clone();
+    let active_syncs = state.active_syncs.clone();
 
     tokio::spawn(async move {
         let mut manager = sync_manager.lock().await;
-        match manager.sync_source_by_id(source_id_clone.clone()).await {
-            Ok(_) => {
-                info!(
-                    "Successfully completed sync for source: {}",
-                    source_id_clone
-                );
-            }
-            Err(e) => {
-                error!(
-                    "Failed to complete sync for source {}: {}",
-                    source_id_clone, e
-                );
-            }
+        let result = manager.sync_source(request).await;
+
+        // Remove from active syncs when done
+        active_syncs.remove(&source_id);
+
+        if let Err(e) = result {
+            error!("Sync {} failed: {}", sync_run_id, e);
         }
     });
 
-    Json(SyncResponse::started())
-}
-
-async fn trigger_full_sync(State(state): State<ApiState>) -> Json<SyncResponse> {
-    info!("Manual sync triggered via API");
-
-    let sync_manager = state.sync_manager.clone();
-
-    tokio::spawn(async move {
-        let mut manager = sync_manager.lock().await;
-        match manager.sync_all_sources().await {
-            Ok(()) => {
-                info!("Manual sync completed successfully");
-            }
-            Err(e) => {
-                error!("Manual sync failed: {}", e);
-            }
-        }
-    });
-
-    Json(SyncResponse::started())
+    Ok(Json(SyncResponse::started()))
 }
 
 async fn cancel_sync(Json(request): Json<CancelRequest>) -> impl IntoResponse {

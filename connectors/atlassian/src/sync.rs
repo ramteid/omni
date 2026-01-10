@@ -1,10 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::db::repositories::ServiceCredentialsRepo;
-use shared::models::{ServiceCredentials, ServiceProvider, Source, SourceType};
-use shared::SourceRepository;
-use sqlx::PgPool;
+use shared::models::{ServiceCredentials, ServiceProvider, SourceType, SyncRequest};
 use std::collections::HashSet;
 use tracing::{debug, error, info};
 
@@ -14,8 +11,6 @@ use crate::jira::JiraProcessor;
 use shared::SdkClient;
 
 pub struct SyncManager {
-    source_repo: SourceRepository,
-    service_credentials_repo: ServiceCredentialsRepo,
     sdk_client: SdkClient,
     auth_manager: AuthManager,
     confluence_processor: ConfluenceProcessor,
@@ -231,228 +226,170 @@ impl SyncState {
 }
 
 impl SyncManager {
-    pub async fn new(
-        pool: PgPool,
-        redis_client: RedisClient,
-        sdk_client: SdkClient,
-    ) -> Result<Self> {
-        let source_repo = SourceRepository::new(&pool);
-        let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
-        let sync_run_repo = shared::db::repositories::SyncRunRepository::new(&pool);
-
-        Ok(Self {
-            source_repo,
-            service_credentials_repo,
+    pub fn new(redis_client: RedisClient, sdk_client: SdkClient) -> Self {
+        Self {
             sdk_client: sdk_client.clone(),
             auth_manager: AuthManager::new(),
             confluence_processor: ConfluenceProcessor::new(
                 sdk_client.clone(),
-                sync_run_repo.clone(),
                 redis_client.clone(),
             ),
-            jira_processor: JiraProcessor::new(sdk_client, sync_run_repo.clone()),
-        })
-    }
-
-    pub async fn sync_all_sources(&mut self) -> Result<()> {
-        let sources = self.get_active_sources().await?;
-
-        info!("Found {} active Atlassian sources", sources.len());
-
-        for source in sources {
-            if let Err(e) = self.sync_source(&source).await {
-                error!("Failed to sync source {}: {:?}", source.id, e);
-                self.update_source_status(&source.id, "failed", None, Some(e.to_string()))
-                    .await?;
-            }
+            jira_processor: JiraProcessor::new(sdk_client),
         }
-
-        Ok(())
     }
 
-    pub async fn sync_source_by_id(&mut self, source_id: String) -> Result<()> {
+    /// Execute a sync based on the request from connector-manager
+    pub async fn sync_source(&mut self, request: SyncRequest) -> Result<()> {
+        let sync_run_id = &request.sync_run_id;
+        let source_id = &request.source_id;
+
+        info!(
+            "Starting sync for source: {} (sync_run_id: {})",
+            source_id, sync_run_id
+        );
+
+        // Fetch source via SDK
         let source = self
             .sdk_client
-            .get_source(&source_id)
+            .get_source(source_id)
             .await
             .context("Failed to fetch source via SDK")?;
 
         if !source.is_active {
-            return Err(anyhow::anyhow!("Source is not active: {}", source_id));
+            let err_msg = format!("Source is not active: {}", source_id);
+            self.sdk_client.fail(sync_run_id, &err_msg).await?;
+            return Err(anyhow::anyhow!(err_msg));
         }
 
         let source_type = source.source_type.clone();
         if source_type != SourceType::Confluence && source_type != SourceType::Jira {
-            return Err(anyhow::anyhow!(
+            let err_msg = format!(
                 "Invalid source type for Atlassian connector: {:?}",
                 source_type
-            ));
+            );
+            self.sdk_client.fail(sync_run_id, &err_msg).await?;
+            return Err(anyhow::anyhow!(err_msg));
         }
 
-        self.sync_source(&source).await
-    }
-
-    async fn sync_source(&mut self, source: &Source) -> Result<()> {
-        info!("Starting sync for Atlassian source: {}", source.name);
-
-        let service_creds = self.get_service_credentials(&source.id).await?;
+        // Fetch and validate credentials
+        let service_creds = self.get_service_credentials(source_id).await?;
         let (base_url, user_email, api_token) =
             self.extract_atlassian_credentials(&service_creds)?;
 
         debug!("Validating Atlassian credentials...");
-        let mut credentials = self
+        let mut credentials = match self
             .get_or_validate_credentials(&base_url, &user_email, &api_token)
-            .await?;
+            .await
+        {
+            Ok(creds) => creds,
+            Err(e) => {
+                self.sdk_client.fail(sync_run_id, &e.to_string()).await?;
+                return Err(e);
+            }
+        };
         debug!("Successfully validated Atlassian credentials.");
 
-        self.auth_manager
+        if let Err(e) = self
+            .auth_manager
             .ensure_valid_credentials(&mut credentials)
-            .await?;
+            .await
+        {
+            self.sdk_client.fail(sync_run_id, &e.to_string()).await?;
+            return Err(e);
+        }
 
-        // Extract source-specific config based on source type
-        let (_confluence_config, _jira_config) = match source.source_type {
-            SourceType::Confluence => {
-                let config: shared::ConfluenceSourceConfig =
-                    serde_json::from_value(source.config.clone()).map_err(|e| {
-                        anyhow::anyhow!("Failed to parse Confluence source config: {}", e)
-                    })?;
-                (Some(config), None)
-            }
-            SourceType::Jira => {
-                let config: shared::JiraSourceConfig =
-                    serde_json::from_value(source.config.clone()).map_err(|e| {
-                        anyhow::anyhow!("Failed to parse JIRA source config: {}", e)
-                    })?;
-                (None, Some(config))
-            }
-            _ => (None, None),
-        };
-
+        // Determine sync strategy based on sync_mode or last sync time
         let sync_start = Utc::now();
-        self.update_source_status(&source.id, "syncing", None, None)
-            .await?;
+        let is_full_sync = request.sync_mode == "full" || source.last_sync_at.is_none();
 
-        // Determine sync strategy based on last sync time
-        let should_do_full_sync = source.last_sync_at.is_none()
-            || source
-                .last_sync_at
-                .map(|last| {
-                    let last_utc =
-                        DateTime::from_timestamp(last.unix_timestamp(), 0).unwrap_or_default();
-                    (sync_start - last_utc).num_hours() > 24
-                })
-                .unwrap_or(true);
-
-        let mut total_processed = 0;
-
-        if should_do_full_sync {
+        let result = if is_full_sync {
             info!("Performing full sync for source: {}", source.name);
-
-            if source.source_type == SourceType::Confluence {
-                match self
-                    .confluence_processor
-                    .sync_all_spaces(&credentials, &source.id)
-                    .await
-                {
-                    Ok(pages_count) => {
-                        total_processed += pages_count;
-                        info!("Full Confluence sync completed: {} pages", pages_count);
-                    }
-                    Err(e) => {
-                        error!("Full Confluence sync failed: {}", e);
-                    }
-                }
-            } else if source.source_type == SourceType::Jira {
-                match self
-                    .jira_processor
-                    .sync_all_projects(&credentials, &source.id)
-                    .await
-                {
-                    Ok(issues_count) => {
-                        total_processed += issues_count;
-                        info!("Full JIRA sync completed: {} issues", issues_count);
-                    }
-                    Err(e) => {
-                        error!("Full JIRA sync failed: {}", e);
-                    }
-                }
-            } else {
-                error!("Unsupported source type: {:?}", source.source_type);
-                return Err(anyhow!("Unsupported source type: {:?}", source.source_type));
-            }
+            self.execute_full_sync(&credentials, source_id, sync_run_id, &source.source_type)
+                .await
         } else {
             info!("Performing incremental sync for source: {}", source.name);
-
-            // Get last sync time for incremental sync
             let last_sync = source
                 .last_sync_at
                 .and_then(|last| DateTime::from_timestamp(last.unix_timestamp(), 0))
                 .unwrap_or_else(|| sync_start - chrono::Duration::hours(24));
 
-            if source.source_type == SourceType::Confluence {
-                // Confluence incremental sync uses same flow as full sync
-                // but version checking in process_pages() skips unchanged pages
-                match self
-                    .confluence_processor
-                    .sync_all_spaces_incremental(&credentials, &source.id)
-                    .await
-                {
-                    Ok(pages_count) => {
-                        total_processed += pages_count;
-                        info!(
-                            "Incremental Confluence sync completed: {} pages",
-                            pages_count
-                        );
-                    }
-                    Err(e) => {
-                        error!("Incremental Confluence sync failed: {}", e);
-                    }
-                }
-            } else if source.source_type == SourceType::Jira {
-                // Jira incremental sync uses JQL to fetch only updated issues
-                match self
-                    .jira_processor
-                    .sync_issues_updated_since(&credentials, &source.id, last_sync, None)
-                    .await
-                {
-                    Ok(issues_count) => {
-                        total_processed += issues_count;
-                        info!("Incremental JIRA sync completed: {} issues", issues_count);
-                    }
-                    Err(e) => {
-                        error!("Incremental JIRA sync failed: {}", e);
-                    }
-                }
+            self.execute_incremental_sync(
+                &credentials,
+                source_id,
+                sync_run_id,
+                &source.source_type,
+                last_sync,
+            )
+            .await
+        };
+
+        match result {
+            Ok(total_processed) => {
+                info!(
+                    "Sync completed for source {}: {} documents processed",
+                    source.name, total_processed
+                );
+                self.sdk_client
+                    .complete(
+                        sync_run_id,
+                        total_processed as i32,
+                        total_processed as i32,
+                        None,
+                    )
+                    .await?;
+                Ok(())
+            }
+            Err(e) => {
+                error!("Sync failed for source {}: {}", source.name, e);
+                self.sdk_client.fail(sync_run_id, &e.to_string()).await?;
+                Err(e)
             }
         }
-
-        // Update source status
-        if total_processed > 0 {
-            self.update_source_status(&source.id, "completed", Some(sync_start), None)
-                .await?;
-            info!(
-                "Successfully synced {} documents from source: {}",
-                total_processed, source.name
-            );
-        } else {
-            self.update_source_status(&source.id, "completed", Some(sync_start), None)
-                .await?;
-            info!(
-                "Sync completed with no new documents for source: {}",
-                source.name
-            );
-        }
-
-        Ok(())
     }
 
-    async fn get_active_sources(&self) -> Result<Vec<Source>> {
-        let sources = self
-            .source_repo
-            .find_active_by_types(vec![SourceType::Confluence, SourceType::Jira])
-            .await?;
+    async fn execute_full_sync(
+        &mut self,
+        credentials: &AtlassianCredentials,
+        source_id: &str,
+        sync_run_id: &str,
+        source_type: &SourceType,
+    ) -> Result<u32> {
+        match source_type {
+            SourceType::Confluence => {
+                self.confluence_processor
+                    .sync_all_spaces(credentials, source_id, sync_run_id)
+                    .await
+            }
+            SourceType::Jira => {
+                self.jira_processor
+                    .sync_all_projects(credentials, source_id, sync_run_id)
+                    .await
+            }
+            _ => Err(anyhow!("Unsupported source type: {:?}", source_type)),
+        }
+    }
 
-        Ok(sources)
+    async fn execute_incremental_sync(
+        &mut self,
+        credentials: &AtlassianCredentials,
+        source_id: &str,
+        sync_run_id: &str,
+        source_type: &SourceType,
+        last_sync: DateTime<Utc>,
+    ) -> Result<u32> {
+        match source_type {
+            SourceType::Confluence => {
+                self.confluence_processor
+                    .sync_all_spaces_incremental(credentials, source_id, sync_run_id)
+                    .await
+            }
+            SourceType::Jira => {
+                self.jira_processor
+                    .sync_issues_updated_since(credentials, source_id, last_sync, None, sync_run_id)
+                    .await
+            }
+            _ => Err(anyhow!("Unsupported source type: {:?}", source_type)),
+        }
     }
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
@@ -506,24 +443,9 @@ impl SyncManager {
         user_email: &str,
         api_token: &str,
     ) -> Result<AtlassianCredentials> {
-        // Always validate credentials to ensure they're working
         self.auth_manager
             .validate_credentials(base_url, user_email, api_token)
             .await
-    }
-
-    async fn update_source_status(
-        &self,
-        source_id: &str,
-        status: &str,
-        last_sync_at: Option<DateTime<Utc>>,
-        sync_error: Option<String>,
-    ) -> Result<()> {
-        self.source_repo
-            .update_sync_status(source_id, status, last_sync_at, sync_error)
-            .await?;
-
-        Ok(())
     }
 
     pub async fn test_connection(

@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use futures::stream::StreamExt;
 use redis::Client as RedisClient;
-use shared::db::repositories::SyncRunRepository;
 use shared::models::{ConnectorEvent, SyncType};
 use tracing::{debug, error, info, warn};
 
@@ -14,20 +13,14 @@ use shared::SdkClient;
 pub struct ConfluenceProcessor {
     client: AtlassianClient,
     sdk_client: SdkClient,
-    sync_run_repo: SyncRunRepository,
     sync_state: SyncState,
 }
 
 impl ConfluenceProcessor {
-    pub fn new(
-        sdk_client: SdkClient,
-        sync_run_repo: SyncRunRepository,
-        redis_client: RedisClient,
-    ) -> Self {
+    pub fn new(sdk_client: SdkClient, redis_client: RedisClient) -> Self {
         Self {
             client: AtlassianClient::new(),
             sdk_client,
-            sync_run_repo,
             sync_state: SyncState::new(redis_client),
         }
     }
@@ -36,8 +29,9 @@ impl ConfluenceProcessor {
         &mut self,
         creds: &AtlassianCredentials,
         source_id: &str,
+        sync_run_id: &str,
     ) -> Result<u32> {
-        self.sync_spaces_internal(creds, source_id, SyncType::Full)
+        self.sync_spaces_internal(creds, source_id, sync_run_id, SyncType::Full)
             .await
     }
 
@@ -45,8 +39,9 @@ impl ConfluenceProcessor {
         &mut self,
         creds: &AtlassianCredentials,
         source_id: &str,
+        sync_run_id: &str,
     ) -> Result<u32> {
-        self.sync_spaces_internal(creds, source_id, SyncType::Incremental)
+        self.sync_spaces_internal(creds, source_id, sync_run_id, SyncType::Incremental)
             .await
     }
 
@@ -54,6 +49,7 @@ impl ConfluenceProcessor {
         &mut self,
         creds: &AtlassianCredentials,
         source_id: &str,
+        sync_run_id: &str,
         sync_type: SyncType,
     ) -> Result<u32> {
         let sync_type_str = match sync_type {
@@ -61,66 +57,42 @@ impl ConfluenceProcessor {
             SyncType::Incremental => "incremental",
         };
         info!(
-            "Starting {} Confluence sync for source: {}",
-            sync_type_str, source_id
+            "Starting {} Confluence sync for source: {} (sync_run_id: {})",
+            sync_type_str, source_id, sync_run_id
         );
 
-        let sync_run = self.sync_run_repo.create(source_id, sync_type).await?;
+        let spaces = self.get_accessible_spaces(creds).await?;
+        let mut total_pages_processed = 0;
 
-        let result: Result<u32> = async {
-            let spaces = self.get_accessible_spaces(creds).await?;
-            let mut total_pages_processed = 0;
+        for space in spaces {
+            info!(
+                "Syncing Confluence space: {} [key={}, id={}]",
+                space.name, space.key, space.id
+            );
 
-            for space in spaces {
-                info!(
-                    "Syncing Confluence space: {} [key={}, id={}]",
-                    space.name, space.key, space.id
-                );
-
-                match self
-                    .sync_space_pages(creds, source_id, &sync_run.id, &space.id)
-                    .await
-                {
-                    Ok(pages_count) => {
-                        total_pages_processed += pages_count;
-                        info!("Synced {} pages from space: {}", pages_count, space.id);
-                        // Update scanned count via SDK
-                        if let Err(e) = self.sdk_client.increment_scanned(&sync_run.id).await {
-                            error!("Failed to increment scanned count: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to sync space {}: {}", space.id, e);
+            match self
+                .sync_space_pages(creds, source_id, sync_run_id, &space.id)
+                .await
+            {
+                Ok(pages_count) => {
+                    total_pages_processed += pages_count;
+                    info!("Synced {} pages from space: {}", pages_count, space.id);
+                    // Update scanned count via SDK
+                    if let Err(e) = self.sdk_client.increment_scanned(sync_run_id).await {
+                        error!("Failed to increment scanned count: {}", e);
                     }
                 }
-            }
-
-            info!(
-                "Completed Confluence sync. Total pages processed: {}",
-                total_pages_processed
-            );
-            Ok(total_pages_processed)
-        }
-        .await;
-
-        match &result {
-            Ok(pages_processed) => {
-                self.sync_run_repo
-                    .mark_completed(
-                        &sync_run.id,
-                        *pages_processed as i32,
-                        *pages_processed as i32,
-                    )
-                    .await?;
-            }
-            Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?;
+                Err(e) => {
+                    error!("Failed to sync space {}: {}", space.id, e);
+                }
             }
         }
 
-        result
+        info!(
+            "Completed Confluence sync. Total pages processed: {}",
+            total_pages_processed
+        );
+        Ok(total_pages_processed)
     }
 
     async fn sync_space_pages(
@@ -326,35 +298,52 @@ impl ConfluenceProcessor {
             return Ok(());
         }
 
-        let sync_run = self
-            .sync_run_repo
-            .create(source_id, SyncType::Incremental)
-            .await?;
-
-        let content_id = self
+        // Create sync run via SDK
+        let sync_run_id = self
             .sdk_client
-            .store_content(&sync_run.id, &content)
+            .create_sync_run(source_id, SyncType::Incremental)
             .await
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to store content via SDK for Confluence page {}: {}",
-                    page.title,
-                    e
-                )
-            })?;
+            .map_err(|e| anyhow!("Failed to create sync run via SDK: {}", e))?;
 
-        let event = page.to_connector_event(
-            sync_run.id.clone(),
-            source_id.to_string(),
-            &creds.base_url,
-            content_id,
-        );
-        self.sdk_client
-            .emit_event(&sync_run.id, source_id, event)
-            .await?;
+        let result: Result<()> = async {
+            let content_id = self
+                .sdk_client
+                .store_content(&sync_run_id, &content)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "Failed to store content via SDK for Confluence page {}: {}",
+                        page.title,
+                        e
+                    )
+                })?;
 
-        info!("Successfully queued page: {}", page.title);
-        Ok(())
+            let event = page.to_connector_event(
+                sync_run_id.clone(),
+                source_id.to_string(),
+                &creds.base_url,
+                content_id,
+            );
+            self.sdk_client
+                .emit_event(&sync_run_id, source_id, event)
+                .await?;
+
+            info!("Successfully queued page: {}", page.title);
+            Ok(())
+        }
+        .await;
+
+        // Mark sync as completed or failed
+        match &result {
+            Ok(_) => {
+                self.sdk_client.complete(&sync_run_id, 1, 1, None).await?;
+            }
+            Err(e) => {
+                self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;
+            }
+        }
+
+        result
     }
 
     pub async fn delete_page(

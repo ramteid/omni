@@ -368,8 +368,8 @@ impl IntoResponse for ApiError {
 // ============================================================================
 
 use crate::models::{
-    SdkCompleteRequest, SdkEmitEventRequest, SdkFailRequest, SdkStatusResponse,
-    SdkStoreContentRequest, SdkStoreContentResponse,
+    SdkCompleteRequest, SdkCreateSyncRequest, SdkCreateSyncResponse, SdkEmitEventRequest,
+    SdkFailRequest, SdkStatusResponse, SdkStoreContentRequest, SdkStoreContentResponse,
 };
 use shared::db::repositories::SyncRunRepository;
 use shared::queue::EventQueue;
@@ -587,4 +587,24 @@ pub async fn sdk_get_credentials(
         })?;
 
     Ok(Json(creds))
+}
+
+pub async fn sdk_create_sync(
+    State(state): State<AppState>,
+    Json(request): Json<SdkCreateSyncRequest>,
+) -> Result<Json<SdkCreateSyncResponse>, ApiError> {
+    info!(
+        "SDK: Creating sync run for source={}, type={:?}",
+        request.source_id, request.sync_type
+    );
+
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    let sync_run = sync_run_repo
+        .create(&request.source_id, request.sync_type)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create sync run: {}", e)))?;
+
+    Ok(Json(SdkCreateSyncResponse {
+        sync_run_id: sync_run.id,
+    }))
 }
