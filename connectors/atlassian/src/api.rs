@@ -133,12 +133,17 @@ async fn trigger_sync(
     Ok(Json(SyncResponse::started()))
 }
 
-async fn cancel_sync(Json(request): Json<CancelRequest>) -> impl IntoResponse {
+async fn cancel_sync(
+    State(state): State<ApiState>,
+    Json(request): Json<CancelRequest>,
+) -> impl IntoResponse {
     info!("Cancel requested for sync {}", request.sync_run_id);
 
-    // Atlassian connector doesn't support cancellation yet
+    let sync_manager = state.sync_manager.lock().await;
+    let cancelled = sync_manager.cancel_sync(&request.sync_run_id);
+
     Json(CancelResponse {
-        status: "not_supported".to_string(),
+        status: if cancelled { "cancelled" } else { "not_found" }.to_string(),
     })
 }
 

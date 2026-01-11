@@ -337,6 +337,14 @@ impl SyncManager {
         }
     }
 
+    /// Check if a sync has been cancelled
+    fn is_cancelled(&self, sync_run_id: &str) -> bool {
+        self.active_syncs
+            .get(sync_run_id)
+            .map(|s| s.cancelled.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
     fn get_cutoff_date(&self) -> Result<(String, String)> {
         let max_age_days = std::env::var("GOOGLE_MAX_AGE_DAYS")
             .unwrap_or_else(|_| "730".to_string())
@@ -478,6 +486,15 @@ impl SyncManager {
             self.sdk_client
                 .increment_scanned(sync_run_id, page_file_count as i32)
                 .await?;
+
+            // Check for cancellation
+            if self.is_cancelled(sync_run_id) {
+                info!(
+                    "Sync {} cancelled, stopping Drive sync for user {}",
+                    sync_run_id, user_email
+                );
+                break;
+            }
 
             // Check if there are more pages
             page_token = response.next_page_token;
@@ -678,6 +695,12 @@ impl SyncManager {
                 let drive_cutoff_date = drive_cutoff_date.clone();
 
                 async move {
+                    // Check for cancellation before processing each user
+                    if self.is_cancelled(sync_run_id) {
+                        info!("Sync {} cancelled, skipping user {}", sync_run_id, user.primary_email);
+                        return Ok((0, 0));
+                    }
+
                     info!("Processing user: {}", user.primary_email);
                     let _token = service_auth.get_access_token(&user.primary_email)
                         .await
@@ -819,6 +842,12 @@ impl SyncManager {
         let mut total_updated = 0;
 
         for user in filtered_users {
+            // Check for cancellation before processing each user
+            if self.is_cancelled(sync_run_id) {
+                info!("Sync {} cancelled, stopping Gmail sync early", sync_run_id);
+                break;
+            }
+
             let user_email = user.primary_email.clone();
 
             // Get access token for this user
@@ -1321,6 +1350,15 @@ impl SyncManager {
                     .await?;
             }
 
+            // Check for cancellation
+            if self.is_cancelled(sync_run_id) {
+                info!(
+                    "Sync {} cancelled, stopping Gmail thread listing for user {}",
+                    sync_run_id, user_email
+                );
+                break;
+            }
+
             // Check if there are more pages
             page_token = response.next_page_token;
             if page_token.is_none() {
@@ -1339,6 +1377,15 @@ impl SyncManager {
         const THREAD_BATCH_SIZE: usize = 50;
 
         for chunk in user_threads.chunks(THREAD_BATCH_SIZE) {
+            // Check for cancellation before processing each batch
+            if self.is_cancelled(sync_run_id) {
+                info!(
+                    "Sync {} cancelled, stopping Gmail thread processing for user {}",
+                    sync_run_id, user_email
+                );
+                break;
+            }
+
             // Filter out already processed threads
             let mut unprocessed_threads = Vec::new();
             for thread_id in chunk {

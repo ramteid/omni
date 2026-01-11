@@ -1,8 +1,11 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::models::{ServiceCredentials, ServiceProvider, SourceType, SyncRequest};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tracing::{debug, error, info};
 
 use crate::auth::{AtlassianCredentials, AuthManager};
@@ -10,11 +13,16 @@ use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
 use shared::SdkClient;
 
+struct ActiveSync {
+    cancelled: AtomicBool,
+}
+
 pub struct SyncManager {
     sdk_client: SdkClient,
     auth_manager: AuthManager,
     confluence_processor: ConfluenceProcessor,
     jira_processor: JiraProcessor,
+    active_syncs: DashMap<String, Arc<ActiveSync>>,
 }
 
 pub struct SyncState {
@@ -235,7 +243,26 @@ impl SyncManager {
                 redis_client.clone(),
             ),
             jira_processor: JiraProcessor::new(sdk_client),
+            active_syncs: DashMap::new(),
         }
+    }
+
+    /// Cancel a running sync
+    pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
+        if let Some(active_sync) = self.active_syncs.get(sync_run_id) {
+            active_sync.cancelled.store(true, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if a sync has been cancelled
+    fn is_cancelled(&self, sync_run_id: &str) -> bool {
+        self.active_syncs
+            .get(sync_run_id)
+            .map(|s| s.cancelled.load(Ordering::SeqCst))
+            .unwrap_or(false)
     }
 
     /// Execute a sync based on the request from connector-manager
@@ -247,6 +274,13 @@ impl SyncManager {
             "Starting sync for source: {} (sync_run_id: {})",
             source_id, sync_run_id
         );
+
+        // Register this sync for cancellation tracking
+        let active_sync = Arc::new(ActiveSync {
+            cancelled: AtomicBool::new(false),
+        });
+        self.active_syncs
+            .insert(sync_run_id.to_string(), active_sync.clone());
 
         // Fetch source via SDK
         let source = self
@@ -302,10 +336,19 @@ impl SyncManager {
         let sync_start = Utc::now();
         let is_full_sync = request.sync_mode == "full" || source.last_sync_at.is_none();
 
+        // Get reference to cancellation flag for processors
+        let cancelled = &active_sync.cancelled;
+
         let result = if is_full_sync {
             info!("Performing full sync for source: {}", source.name);
-            self.execute_full_sync(&credentials, source_id, sync_run_id, &source.source_type)
-                .await
+            self.execute_full_sync(
+                &credentials,
+                source_id,
+                sync_run_id,
+                &source.source_type,
+                cancelled,
+            )
+            .await
         } else {
             info!("Performing incremental sync for source: {}", source.name);
             let last_sync = source
@@ -319,9 +362,21 @@ impl SyncManager {
                 sync_run_id,
                 &source.source_type,
                 last_sync,
+                cancelled,
             )
             .await
         };
+
+        // Check if cancelled
+        if self.is_cancelled(sync_run_id) {
+            info!("Sync {} was cancelled", sync_run_id);
+            let _ = self.sdk_client.cancel(sync_run_id).await;
+            self.active_syncs.remove(sync_run_id);
+            return Ok(());
+        }
+
+        // Unregister sync and report result
+        self.active_syncs.remove(sync_run_id);
 
         match result {
             Ok(total_processed) => {
@@ -353,16 +408,17 @@ impl SyncManager {
         source_id: &str,
         sync_run_id: &str,
         source_type: &SourceType,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
         match source_type {
             SourceType::Confluence => {
                 self.confluence_processor
-                    .sync_all_spaces(credentials, source_id, sync_run_id)
+                    .sync_all_spaces(credentials, source_id, sync_run_id, cancelled)
                     .await
             }
             SourceType::Jira => {
                 self.jira_processor
-                    .sync_all_projects(credentials, source_id, sync_run_id)
+                    .sync_all_projects(credentials, source_id, sync_run_id, cancelled)
                     .await
             }
             _ => Err(anyhow!("Unsupported source type: {:?}", source_type)),
@@ -376,16 +432,24 @@ impl SyncManager {
         sync_run_id: &str,
         source_type: &SourceType,
         last_sync: DateTime<Utc>,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
         match source_type {
             SourceType::Confluence => {
                 self.confluence_processor
-                    .sync_all_spaces_incremental(credentials, source_id, sync_run_id)
+                    .sync_all_spaces_incremental(credentials, source_id, sync_run_id, cancelled)
                     .await
             }
             SourceType::Jira => {
                 self.jira_processor
-                    .sync_issues_updated_since(credentials, source_id, last_sync, None, sync_run_id)
+                    .sync_issues_updated_since(
+                        credentials,
+                        source_id,
+                        last_sync,
+                        None,
+                        sync_run_id,
+                        cancelled,
+                    )
                     .await
             }
             _ => Err(anyhow!("Unsupported source type: {:?}", source_type)),

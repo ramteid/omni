@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use futures::stream::StreamExt;
 use redis::Client as RedisClient;
 use shared::models::{ConnectorEvent, SyncType};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
@@ -30,8 +31,9 @@ impl ConfluenceProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
         sync_run_id: &str,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
-        self.sync_spaces_internal(creds, source_id, sync_run_id, SyncType::Full)
+        self.sync_spaces_internal(creds, source_id, sync_run_id, SyncType::Full, cancelled)
             .await
     }
 
@@ -40,9 +42,16 @@ impl ConfluenceProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
         sync_run_id: &str,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
-        self.sync_spaces_internal(creds, source_id, sync_run_id, SyncType::Incremental)
-            .await
+        self.sync_spaces_internal(
+            creds,
+            source_id,
+            sync_run_id,
+            SyncType::Incremental,
+            cancelled,
+        )
+        .await
     }
 
     async fn sync_spaces_internal(
@@ -51,6 +60,7 @@ impl ConfluenceProcessor {
         source_id: &str,
         sync_run_id: &str,
         sync_type: SyncType,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
         let sync_type_str = match sync_type {
             SyncType::Full => "full",
@@ -65,13 +75,22 @@ impl ConfluenceProcessor {
         let mut total_pages_processed = 0;
 
         for space in spaces {
+            // Check for cancellation before processing each space
+            if cancelled.load(Ordering::SeqCst) {
+                info!(
+                    "Confluence sync {} cancelled, stopping early after {} pages",
+                    sync_run_id, total_pages_processed
+                );
+                return Ok(total_pages_processed);
+            }
+
             info!(
                 "Syncing Confluence space: {} [key={}, id={}]",
                 space.name, space.key, space.id
             );
 
             match self
-                .sync_space_pages(creds, source_id, sync_run_id, &space.id)
+                .sync_space_pages(creds, source_id, sync_run_id, &space.id, cancelled)
                 .await
             {
                 Ok(pages_count) => {
@@ -105,6 +124,7 @@ impl ConfluenceProcessor {
         source_id: &str,
         sync_run_id: &str,
         space_id: &str,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
         let mut total_pages = 0;
         let mut pages_batch = Vec::with_capacity(100);
@@ -113,6 +133,15 @@ impl ConfluenceProcessor {
         let mut pages_stream = self.client.get_confluence_pages(creds, space_id);
 
         while let Some(page_result) = pages_stream.next().await {
+            // Check for cancellation during page streaming
+            if cancelled.load(Ordering::SeqCst) {
+                info!(
+                    "Confluence sync cancelled during space {} page streaming",
+                    space_id
+                );
+                return Ok(total_pages);
+            }
+
             let page = page_result?;
             pages_batch.push(page);
 

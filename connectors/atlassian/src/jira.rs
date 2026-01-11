@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use shared::models::{ConnectorEvent, SyncType};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
@@ -26,6 +27,7 @@ impl JiraProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
         sync_run_id: &str,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
         info!(
             "Starting JIRA projects sync for source: {} (sync_run_id: {})",
@@ -36,6 +38,15 @@ impl JiraProcessor {
         let mut total_issues_processed = 0;
 
         for project in projects {
+            // Check for cancellation before processing each project
+            if cancelled.load(Ordering::SeqCst) {
+                info!(
+                    "JIRA sync {} cancelled, stopping early after {} issues",
+                    sync_run_id, total_issues_processed
+                );
+                return Ok(total_issues_processed);
+            }
+
             let project_key = project
                 .get("key")
                 .and_then(|k| k.as_str())
@@ -49,7 +60,7 @@ impl JiraProcessor {
             info!("Syncing JIRA project: {} ({})", project_name, project_key);
 
             match self
-                .sync_project_issues(creds, source_id, project_key, sync_run_id)
+                .sync_project_issues(creds, source_id, project_key, sync_run_id, cancelled)
                 .await
             {
                 Ok(issues_count) => {
@@ -87,6 +98,7 @@ impl JiraProcessor {
         since: DateTime<Utc>,
         project_key: Option<&str>,
         sync_run_id: &str,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
         info!(
             "Starting incremental JIRA sync for source: {} since {}{} (sync_run_id: {})",
@@ -102,6 +114,15 @@ impl JiraProcessor {
         const PAGE_SIZE: u32 = 50;
 
         loop {
+            // Check for cancellation before fetching next page
+            if cancelled.load(Ordering::SeqCst) {
+                info!(
+                    "JIRA incremental sync {} cancelled, stopping after {} issues",
+                    sync_run_id, total_issues
+                );
+                return Ok(total_issues);
+            }
+
             let response = self
                 .client
                 .get_jira_issues_updated_since(creds, &since_str, project_key, PAGE_SIZE, start_at)
@@ -142,6 +163,7 @@ impl JiraProcessor {
         source_id: &str,
         project_key: &str,
         sync_run_id: &str,
+        cancelled: &AtomicBool,
     ) -> Result<u32> {
         let mut total_issues = 0;
         let mut start_at = 0;
@@ -166,6 +188,15 @@ impl JiraProcessor {
         ];
 
         loop {
+            // Check for cancellation before fetching next page
+            if cancelled.load(Ordering::SeqCst) {
+                info!(
+                    "JIRA project {} sync cancelled, stopping after {} issues",
+                    project_key, total_issues
+                );
+                return Ok(total_issues);
+            }
+
             let response = self
                 .client
                 .get_jira_issues(creds, &jql, PAGE_SIZE, start_at, &fields)
