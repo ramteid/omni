@@ -11,6 +11,7 @@ from db import ChatsRepository, MessagesRepository
 from tools import SearcherTool, SearchRequest, SearchResponse, SearchResult
 from models.chat import SearchToolParams, ReadDocumentParams
 from config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TOP_P, LLM_PROVIDER
+from services.compaction import ConversationCompactor
 
 from anthropic import MessageStreamEvent, AsyncStream
 from anthropic.types import (
@@ -202,6 +203,15 @@ async def stream_chat(
     messages: list[MessageParam] = [
         MessageParam(**msg.message) for msg in chat_messages
     ]
+
+    # Check if conversation needs compaction
+    compactor = ConversationCompactor(
+        llm_provider=request.app.state.llm_provider,
+        redis_client=getattr(request.app.state, "redis_client", None),
+    )
+    if compactor.needs_compaction(messages, SEARCH_TOOLS):
+        logger.info(f"Compacting conversation for chat {chat_id}")
+        messages = await compactor.compact_conversation(chat_id, messages)
 
     # Stream AI response with tool calling
     async def stream_generator():

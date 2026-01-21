@@ -3,6 +3,8 @@
 import asyncio
 import logging
 
+import redis.asyncio as aioredis
+
 from config import (
     AWS_REGION,
     EMBEDDING_MAX_MODEL_LEN,
@@ -10,6 +12,7 @@ from config import (
     OPENAI_EMBEDDING_DIMENSIONS,
     LOCAL_EMBEDDINGS_URL,
     LOCAL_EMBEDDINGS_MODEL,
+    REDIS_URL,
 )
 from db_config import (
     get_llm_config,
@@ -163,6 +166,10 @@ async def initialize_providers(app_state: AppState) -> None:
         case _:
             raise ValueError(f"Unknown LLM provider: {llm_config.provider}")
 
+    # Initialize Redis client for caching
+    app_state.redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+    logger.info(f"Initialized Redis client: {REDIS_URL}")
+
     # Initialize searcher client
     app_state.searcher_tool = SearcherTool()
     logger.info("Initialized searcher client")
@@ -191,4 +198,7 @@ async def shutdown_providers(app_state: "AppState"):
     Args:
         app_state: The FastAPI application state
     """
+    if app_state.redis_client:
+        await app_state.redis_client.close()
+        logger.info("Closed Redis client")
     logger.info("AI service shutdown complete")

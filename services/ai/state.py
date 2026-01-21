@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+import redis.asyncio as aioredis
+
 from embeddings import EmbeddingProvider
 from providers import LLMProvider
 from tools import SearcherTool
@@ -20,3 +22,4 @@ class AppState:
     llm_provider: LLMProvider | None = None
     searcher_tool: SearcherTool | None = None
     content_storage: ContentStorage | None = None
+    redis_client: aioredis.Redis | None = None
