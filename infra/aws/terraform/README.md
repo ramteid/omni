@@ -59,7 +59,7 @@ Before deployment, gather:
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/your-org/omni.git
+git clone https://github.com/getomnico/omni.git
 cd omni/infra/aws/terraform
 ```
 
@@ -619,7 +619,7 @@ jobs:
 
 ### Issues
 
-Report issues at: https://github.com/your-org/omni/issues
+Report issues at: https://github.com/getomnico/omni/issues
 
 ### Community
 
