@@ -19,6 +19,7 @@ class EmbeddingQueueItem:
     document_id: str
     status: str
     batch_job_id: Optional[str]
+    error_message: Optional[str]
     created_at: datetime
 
 
@@ -33,6 +34,22 @@ class EmbeddingQueueRepository:
         if self.pool:
             return self.pool
         return await get_db_pool()
+
+    async def get_by_id(self, item_id: str) -> Optional[EmbeddingQueueItem]:
+        """Get a queue item by ID."""
+        pool = await self._get_pool()
+
+        row = await pool.fetchrow(
+            """
+            SELECT id, document_id, status, batch_job_id, error_message, created_at
+            FROM embedding_queue
+            WHERE id = $1
+            """,
+            item_id,
+        )
+        if row:
+            return EmbeddingQueueItem(**dict(row))
+        return None
 
     async def get_pending_count(self) -> int:
         """Get number of pending queue items."""
@@ -67,7 +84,7 @@ class EmbeddingQueueRepository:
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, document_id, status, batch_job_id, created_at
+            RETURNING id, document_id, status, batch_job_id, error_message, created_at
             """,
             limit,
         )
@@ -79,7 +96,7 @@ class EmbeddingQueueRepository:
 
         rows = await pool.fetch(
             """
-            SELECT id, document_id, status, batch_job_id, created_at
+            SELECT id, document_id, status, batch_job_id, error_message, created_at
             FROM embedding_queue
             WHERE batch_job_id = $1
             ORDER BY created_at ASC

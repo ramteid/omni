@@ -383,63 +383,36 @@ class EmbeddingBatchProcessor:
                 )
                 return
 
-            # Check document size and handle large documents with character-based chunking
-            content_size = len(content_text.encode("utf-8"))
-
-            # Generate embeddings using the configured provider
+            # Generate embeddings using sliding window over the document
             try:
-                if content_size > EMBEDDING_MAX_DOCUMENT_SIZE:
-                    # Large document: split by characters to avoid slow tokenization
-                    # Use a chunk size that keeps pieces under the limit
-                    logger.info(
-                        f"Document {item.document_id} exceeds size limit "
-                        f"({content_size} > {EMBEDDING_MAX_DOCUMENT_SIZE} bytes), "
-                        "using character-based chunking"
-                    )
-                    char_chunk_size = EMBEDDING_MAX_DOCUMENT_SIZE // 2  # ~5MB chunks
-                    char_spans = Chunker.chunk_by_chars(content_text, char_chunk_size)
+                window_size = EMBEDDING_MAX_DOCUMENT_SIZE
+                overlap = window_size // 4
+                stride = window_size - overlap
 
-                    all_chunks = []
-                    for char_start, char_end in char_spans:
-                        piece = content_text[char_start:char_end]
-                        chunk_results = (
-                            await self.embedding_provider.generate_embeddings(
-                                text=piece,
-                                task="retrieval.passage",
-                                chunk_size=512,
-                                chunking_mode="sentence",
-                            )
-                        )
-
-                        if chunk_results:
-                            # Adjust spans to be relative to original document
-                            for chunk in chunk_results:
-                                adjusted_span = (
-                                    char_start + chunk.span[0],
-                                    char_start + chunk.span[1],
-                                )
-                                all_chunks.append(Chunk(adjusted_span, chunk.embedding))
-
-                    chunks = all_chunks
-                else:
-                    # Normal path: use standard chunking
-                    chunks = await self.embedding_provider.generate_embeddings(
-                        text=content_text,
+                all_chunks = []
+                offset = 0
+                while offset < len(content_text):
+                    piece = content_text[offset : offset + window_size]
+                    chunk_results = await self.embedding_provider.generate_embeddings(
+                        text=piece,
                         task="retrieval.passage",
                         chunk_size=512,
                         chunking_mode="sentence",
                     )
 
-                    if not chunks:
-                        logger.warning(
-                            f"No embeddings generated for document {item.document_id}"
-                        )
-                        await self.queue_repo.mark_failed(
-                            [item.id], "No embeddings generated"
-                        )
-                        return
+                    if chunk_results:
+                        for chunk in chunk_results:
+                            adjusted_span = (
+                                offset + chunk.span[0],
+                                offset + chunk.span[1],
+                            )
+                            all_chunks.append(Chunk(adjusted_span, chunk.embedding))
 
-                # Handle empty chunks (can happen for both paths)
+                    offset += stride
+
+                chunks = all_chunks
+
+                # Handle empty chunks
                 if not chunks:
                     logger.warning(
                         f"No embeddings generated for document {item.document_id}"

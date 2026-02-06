@@ -2,12 +2,26 @@
 
 import logging
 from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
 from datetime import datetime
 from asyncpg import Pool
 
 from .connection import get_db_pool
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Embedding:
+    """Represents an embedding row."""
+
+    id: str
+    document_id: str
+    chunk_index: int
+    chunk_start_offset: int
+    chunk_end_offset: int
+    embedding: list
+    model_name: str
 
 
 class EmbeddingsRepository:
@@ -21,6 +35,22 @@ class EmbeddingsRepository:
         if self.pool:
             return self.pool
         return await get_db_pool()
+
+    async def get_for_document(self, document_id: str) -> List[Embedding]:
+        """Get all embeddings for a document, ordered by chunk_index."""
+        pool = await self._get_pool()
+
+        rows = await pool.fetch(
+            """
+            SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset,
+                   embedding, model_name
+            FROM embeddings
+            WHERE document_id = $1
+            ORDER BY chunk_index
+            """,
+            document_id,
+        )
+        return [Embedding(**dict(row)) for row in rows]
 
     async def delete_for_documents(self, document_ids: List[str]) -> None:
         """Delete existing embeddings for documents"""

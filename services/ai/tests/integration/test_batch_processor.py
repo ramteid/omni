@@ -155,9 +155,10 @@ async def bedrock_processor(
 
 
 @pytest.mark.integration
-async def test_online_processes_document_end_to_end(db_pool, online_processor):
+async def test_online_processes_document_end_to_end(
+    db_pool, online_processor, queue_repo, embeddings_repo, documents_repo
+):
     """Full flow: queue item -> fetch -> embed -> store in DB -> mark complete."""
-    # Setup: create test data in real DB
     user_id = await create_test_user(db_pool)
     source_id = await create_test_source(db_pool, user_id)
     doc_id = await create_test_document(
@@ -165,52 +166,37 @@ async def test_online_processes_document_end_to_end(db_pool, online_processor):
     )
     queue_id = await enqueue_document(db_pool, doc_id)
 
-    # Process the batch
     await online_processor._process_online_batch()
 
-    # Verify: embeddings stored in DB
-    async with db_pool.acquire() as conn:
-        embeddings = await conn.fetch(
-            "SELECT * FROM embeddings WHERE document_id = $1", doc_id
-        )
-        assert len(embeddings) >= 1
-        assert len(embeddings[0]["embedding"]) == 1024  # Vector dimension
+    embeddings = await embeddings_repo.get_for_document(doc_id)
+    assert len(embeddings) >= 1
+    assert len(embeddings[0].embedding) == 1024
 
-        # Verify: queue item marked completed
-        queue_item = await conn.fetchrow(
-            "SELECT status FROM embedding_queue WHERE id = $1", queue_id
-        )
-        assert queue_item["status"] == "completed"
+    queue_item = await queue_repo.get_by_id(queue_id)
+    assert queue_item.status == "completed"
 
-        # Verify: document embedding_status updated
-        doc = await conn.fetchrow(
-            "SELECT embedding_status FROM documents WHERE id = $1", doc_id
-        )
-        assert doc["embedding_status"] == "completed"
+    doc = await documents_repo.get_by_id(doc_id)
+    assert doc.embedding_status == "completed"
 
 
 @pytest.mark.integration
-async def test_online_handles_empty_content(db_pool, online_processor):
+async def test_online_handles_empty_content(
+    db_pool, online_processor, queue_repo, embeddings_repo
+):
     """Empty document content marks queue item as failed."""
     user_id = await create_test_user(db_pool)
     source_id = await create_test_source(db_pool, user_id)
-    doc_id = await create_test_document(db_pool, source_id, "")  # Empty content
+    doc_id = await create_test_document(db_pool, source_id, "")
     queue_id = await enqueue_document(db_pool, doc_id)
 
     await online_processor._process_online_batch()
 
-    async with db_pool.acquire() as conn:
-        queue_item = await conn.fetchrow(
-            "SELECT status, error_message FROM embedding_queue WHERE id = $1", queue_id
-        )
-        assert queue_item["status"] == "failed"
-        assert queue_item["error_message"] is not None
+    queue_item = await queue_repo.get_by_id(queue_id)
+    assert queue_item.status == "failed"
+    assert queue_item.error_message is not None
 
-        # No embeddings should be created
-        embeddings = await conn.fetch(
-            "SELECT * FROM embeddings WHERE document_id = $1", doc_id
-        )
-        assert len(embeddings) == 0
+    embeddings = await embeddings_repo.get_for_document(doc_id)
+    assert len(embeddings) == 0
 
 
 # =============================================================================
@@ -295,7 +281,7 @@ def test_parse_bedrock_output_skips_errors():
 
 
 @pytest.fixture
-async def online_processor_with_char_chunking(
+async def online_processor_with_sliding_window(
     db_pool,
     documents_repo,
     queue_repo,
@@ -303,9 +289,7 @@ async def online_processor_with_char_chunking(
     batch_jobs_repo,
 ):
     """Processor with a mock embedding provider that tracks calls for large doc testing."""
-    from unittest.mock import AsyncMock, MagicMock, call
 
-    # Mock content storage to fetch from DB
     content_storage = AsyncMock()
 
     async def get_text_from_db(content_id):
@@ -317,12 +301,10 @@ async def online_processor_with_char_chunking(
 
     content_storage.get_text = get_text_from_db
 
-    # Create mock provider that returns chunks with correct spans
     provider = AsyncMock()
     provider.get_model_name = MagicMock(return_value="test-embedding-model")
 
     async def generate_with_spans(text, **kwargs):
-        """Generate embeddings with spans matching the input text."""
         mock_chunk = MagicMock()
         mock_chunk.span = (0, len(text))
         mock_chunk.embedding = [0.1] * 1024
@@ -342,41 +324,53 @@ async def online_processor_with_char_chunking(
 
 
 @pytest.mark.integration
-async def test_online_processes_large_document_with_char_chunking(
-    db_pool, online_processor_with_char_chunking, monkeypatch
+async def test_online_processes_large_document_with_sliding_window(
+    db_pool,
+    online_processor_with_sliding_window,
+    queue_repo,
+    embeddings_repo,
+    documents_repo,
+    monkeypatch,
 ):
-    """Large documents exceeding size limit are split by characters and still processed."""
+    """Large documents are split via sliding window and each window is embedded."""
     import embeddings.batch_processor as bp
 
-    # Set a small limit for testing (100 bytes)
     monkeypatch.setattr(bp, "EMBEDDING_MAX_DOCUMENT_SIZE", 100)
 
     user_id = await create_test_user(db_pool)
     source_id = await create_test_source(db_pool, user_id)
 
-    # Create document with content larger than 100 bytes
-    large_content = "This is a test sentence. " * 20  # ~500 bytes
+    # 500 chars -> window_size=100, overlap=25, stride=75
+    # Windows at offsets: 0, 75, 150, 225, 300, 375, 450
+    large_content = "This is a test sentence. " * 20  # 500 chars
     doc_id = await create_test_document(db_pool, source_id, large_content)
     queue_id = await enqueue_document(db_pool, doc_id)
 
-    await online_processor_with_char_chunking._process_online_batch()
+    await online_processor_with_sliding_window._process_online_batch()
 
-    async with db_pool.acquire() as conn:
-        # Verify: queue item marked completed (not failed)
-        queue_item = await conn.fetchrow(
-            "SELECT status FROM embedding_queue WHERE id = $1", queue_id
-        )
-        assert queue_item["status"] == "completed"
+    queue_item = await queue_repo.get_by_id(queue_id)
+    assert queue_item.status == "completed"
 
-        # Verify: embeddings were created
-        embeddings = await conn.fetch(
-            "SELECT * FROM embeddings WHERE document_id = $1 ORDER BY chunk_index",
-            doc_id,
-        )
-        assert len(embeddings) >= 1
+    embeddings = await embeddings_repo.get_for_document(doc_id)
+    assert len(embeddings) == 7
 
-        # Verify: spans cover the full document
-        first_span_start = embeddings[0]["chunk_start_offset"]
-        last_span_end = embeddings[-1]["chunk_end_offset"]
-        assert first_span_start == 0
-        assert last_span_end == len(large_content)
+    expected_spans = [
+        (0, 100),
+        (75, 175),
+        (150, 250),
+        (225, 325),
+        (300, 400),
+        (375, 475),
+        (450, 500),
+    ]
+    actual_spans = [(e.chunk_start_offset, e.chunk_end_offset) for e in embeddings]
+    assert actual_spans == expected_spans
+
+    for emb in embeddings:
+        assert len(emb.embedding) == 1024
+
+    provider = online_processor_with_sliding_window.embedding_provider
+    assert provider.generate_embeddings.call_count == 7
+
+    doc = await documents_repo.get_by_id(doc_id)
+    assert doc.embedding_status == "completed"

@@ -16,6 +16,7 @@ class Document:
 
     id: str
     content_id: Optional[str]
+    embedding_status: Optional[str] = None
 
 
 @dataclass
@@ -45,11 +46,16 @@ class DocumentsRepository:
         pool = await self._get_pool()
 
         row = await pool.fetchrow(
-            "SELECT id, content_id FROM documents WHERE id = $1", document_id
+            "SELECT id, content_id, embedding_status FROM documents WHERE id = $1",
+            document_id,
         )
 
         if row:
-            return Document(id=row["id"], content_id=row["content_id"])
+            return Document(
+                id=row["id"],
+                content_id=row["content_id"],
+                embedding_status=row["embedding_status"],
+            )
         return None
 
     async def get_content_blob(self, content_id: str) -> Optional[ContentBlob]:
