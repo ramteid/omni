@@ -44,7 +44,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         self.tokenizer = AutoTokenizer.from_pretrained(
             hf_model_id, trust_remote_code=True
         )
-        self.chunker = Chunker("sentence")
+        self.chunker = Chunker()
 
         logger.info(
             f"Initialized JINA embedding provider - model: {model}, max_model_len: {max_model_len}"

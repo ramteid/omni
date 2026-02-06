@@ -1,7 +1,4 @@
-from .chunking import (
-    Chunker,
-    CHUNKING_STRATEGIES,
-)
+from .chunking import Chunker
 from .pdf import (
     PDFExtractionRequest,
     PDFExtractionResponse,
@@ -10,7 +7,6 @@ from .pdf import (
 
 __all__ = [
     "Chunker",
-    "CHUNKING_STRATEGIES",
     "PDFExtractionRequest",
     "PDFExtractionResponse",
     "extract_text_from_pdf",

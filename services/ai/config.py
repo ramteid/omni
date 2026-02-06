@@ -148,10 +148,10 @@ EMBEDDING_BATCH_MONITOR_POLL_INTERVAL = int(
     get_optional_env("EMBEDDING_BATCH_MONITOR_POLL_INTERVAL", "30")
 )  # 30 seconds
 
-# Document size limit for embedding (defense in depth against very large documents)
+# Document size limit for embedding
 EMBEDDING_MAX_DOCUMENT_SIZE = int(
     get_optional_env("EMBEDDING_MAX_DOCUMENT_SIZE", str(10 * 1024 * 1024))
-)  # 10MB default
+)
 
 # Conversation compaction
 MAX_CONVERSATION_INPUT_TOKENS = int(

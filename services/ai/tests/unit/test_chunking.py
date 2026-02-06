@@ -21,7 +21,7 @@ class TestChunkerSentenceMode:
     @pytest.fixture
     def chunker(self):
         """Create a sentence chunker."""
-        return Chunker("sentence")
+        return Chunker()
 
     def test_single_sentence(self, tokenizer, chunker):
         """Test chunking a single sentence."""
@@ -145,7 +145,7 @@ class TestChunkerFixedMode:
     @pytest.fixture
     def chunker(self):
         """Create a fixed chunker."""
-        return Chunker("fixed")
+        return Chunker()
 
     def test_fixed_chunking_basic(self, tokenizer, chunker):
         """Test basic fixed token chunking."""

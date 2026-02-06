@@ -50,7 +50,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             self.tokenizer = AutoTokenizer.from_pretrained(
                 model, trust_remote_code=True
             )
-            self.chunker = Chunker("sentence")
+            self.chunker = Chunker()
         else:
             self.tokenizer = None
             self.chunker = None

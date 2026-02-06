@@ -22,17 +22,9 @@ _chunking_executor = ThreadPoolExecutor(
 # Set the logging level to WARNING to suppress INFO and DEBUG messages
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
-CHUNKING_STRATEGIES = ["semantic", "fixed", "sentence"]
-
 
 class Chunker:
-    def __init__(
-        self,
-        chunking_strategy: str,
-    ):
-        if chunking_strategy not in CHUNKING_STRATEGIES:
-            raise ValueError("Unsupported chunking strategy: ", chunking_strategy)
-        self.chunking_strategy = chunking_strategy
+    def __init__(self):
         self.embed_model = None
         self.embedding_model_name = None
 
@@ -115,7 +107,7 @@ class Chunker:
     def chunk_semantically(
         self,
         text: str,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
         embedding_model_name: Optional[str] = None,
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         if self.embed_model is None:
@@ -279,30 +271,6 @@ class Chunker:
 
         return token_spans, char_spans
 
-    def chunk(
-        self,
-        text: str,
-        tokenizer: AutoTokenizer,
-        chunking_strategy: str = None,
-        chunk_size: Optional[int] = None,
-        embedding_model_name: Optional[str] = None,
-    ):
-        chunking_strategy = chunking_strategy or self.chunking_strategy
-        if chunking_strategy == "semantic":
-            return self.chunk_semantically(
-                text,
-                embedding_model_name=embedding_model_name,
-                tokenizer=tokenizer,
-            )
-        elif chunking_strategy == "fixed":
-            if chunk_size < 4:
-                raise ValueError("Chunk size must be >= 4.")
-            return self.chunk_by_tokens(text, chunk_size, tokenizer)
-        elif chunking_strategy == "sentence":
-            return self.chunk_by_sentences(text, chunk_size, tokenizer)
-        else:
-            raise ValueError("Unsupported chunking strategy")
-
     # -------------------------------------------------------------------------
     # Async wrappers for CPU-bound chunking operations
     # These offload tokenization to a thread pool to avoid blocking the event loop
@@ -347,28 +315,3 @@ class Chunker:
             tokenizer,
             embedding_model_name,
         )
-
-    async def chunk_async(
-        self,
-        text: str,
-        tokenizer: AutoTokenizer,
-        chunking_strategy: str = None,
-        chunk_size: Optional[int] = None,
-        embedding_model_name: Optional[str] = None,
-    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
-        """Async version of chunk - routes to appropriate async chunking method."""
-        chunking_strategy = chunking_strategy or self.chunking_strategy
-        if chunking_strategy == "semantic":
-            return await self.chunk_semantically_async(
-                text,
-                tokenizer=tokenizer,
-                embedding_model_name=embedding_model_name,
-            )
-        elif chunking_strategy == "fixed":
-            if chunk_size < 4:
-                raise ValueError("Chunk size must be >= 4.")
-            return await self.chunk_by_tokens_async(text, chunk_size, tokenizer)
-        elif chunking_strategy == "sentence":
-            return await self.chunk_by_sentences_async(text, chunk_size, tokenizer)
-        else:
-            raise ValueError("Unsupported chunking strategy")
