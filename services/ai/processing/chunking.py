@@ -86,6 +86,18 @@ class Chunker:
 
         return chunks if chunks else [(0, len(text))]
 
+    @staticmethod
+    def _check_text_length(text: str, tokenizer: AutoTokenizer):
+        max_len = getattr(tokenizer, "model_max_length", None)
+        if max_len:
+            # ~4 chars per token is a conservative estimate
+            max_chars = max_len * 4
+            if len(text) > max_chars:
+                raise ValueError(
+                    f"Text length ({len(text)} chars) exceeds estimated max for "
+                    f"model sequence length of {max_len} tokens (~{max_chars} chars)"
+                )
+
     def _setup_semantic_chunking(self, embedding_model_name):
         if embedding_model_name:
             self.embedding_model_name = embedding_model_name
@@ -159,19 +171,11 @@ class Chunker:
         text: str,
         chunk_size: int,
         tokenizer: AutoTokenizer,
-    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
         if not text or chunk_size < 1:
             return [], []
 
-        # Pre-split very large texts to avoid tokenizer warnings/errors
-        # Most tokenizers have max sequence length ~8192 tokens
-        # Estimate ~4 chars per token, use 32K chars as safe limit (~8K tokens)
-        MAX_CHARS_PER_TOKENIZATION = 32000
-
-        if len(text) > MAX_CHARS_PER_TOKENIZATION:
-            return self._chunk_large_text_by_tokens(
-                text, chunk_size, tokenizer, MAX_CHARS_PER_TOKENIZATION
-            )
+        self._check_text_length(text, tokenizer)
 
         tokens = tokenizer.encode_plus(
             text, return_offsets_mapping=True, add_special_tokens=False
@@ -198,63 +202,6 @@ class Chunker:
 
         return token_spans, char_spans
 
-    def _chunk_large_text_by_tokens(
-        self,
-        text: str,
-        chunk_size: int,
-        tokenizer: AutoTokenizer,
-        max_chars: int,
-    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
-        """Handle large texts by pre-splitting before tokenization.
-
-        This avoids tokenizer warnings/errors when processing texts with millions of tokens.
-        """
-        # Split text into manageable pieces by characters
-        char_pieces = self.chunk_by_chars(text, max_chars)
-
-        all_token_spans = []
-        all_char_spans = []
-        cumulative_tokens = 0
-        prev_char_end = 0
-
-        for piece_start, piece_end in char_pieces:
-            piece_text = text[piece_start:piece_end]
-
-            if not piece_text:
-                continue
-
-            # Tokenize this piece
-            tokens = tokenizer.encode_plus(
-                piece_text, return_offsets_mapping=True, add_special_tokens=False
-            )
-            token_offsets = tokens.offset_mapping
-
-            if not token_offsets:
-                continue
-
-            # Process this piece
-            for i in range(0, len(token_offsets), chunk_size):
-                chunk_end = min(i + chunk_size, len(token_offsets))
-                if chunk_end > i:
-                    # Get character indices from token offsets
-                    char_start = prev_char_end
-                    char_end = token_offsets[chunk_end - 1][1] + piece_start
-
-                    if (
-                        char_start < char_end
-                        and char_start >= 0
-                        and char_end <= len(text)
-                    ):
-                        all_token_spans.append(
-                            (i + cumulative_tokens, chunk_end + cumulative_tokens)
-                        )
-                        all_char_spans.append((char_start, char_end))
-                        prev_char_end = char_end
-
-            cumulative_tokens += len(token_offsets)
-
-        return all_token_spans, all_char_spans
-
     def chunk_by_sentences(
         self,
         text: str,
@@ -265,15 +212,7 @@ class Chunker:
         if not text or chunk_size < 1:
             return [], []
 
-        # Pre-split very large texts to avoid tokenizer warnings/errors
-        # Most tokenizers have max sequence length ~8192 tokens
-        # Estimate ~4 chars per token, use 32K chars as safe limit (~8K tokens)
-        MAX_CHARS_PER_TOKENIZATION = 32000
-
-        if len(text) > MAX_CHARS_PER_TOKENIZATION:
-            return self._chunk_large_text_by_sentences(
-                text, chunk_size, tokenizer, MAX_CHARS_PER_TOKENIZATION
-            )
+        self._check_text_length(text, tokenizer)
 
         tokens = tokenizer.encode_plus(
             text, return_offsets_mapping=True, add_special_tokens=False
@@ -339,113 +278,6 @@ class Chunker:
                 char_spans.append((char_start, char_end))
 
         return token_spans, char_spans
-
-    def _chunk_large_text_by_sentences(
-        self,
-        text: str,
-        chunk_size: int,
-        tokenizer: AutoTokenizer,
-        max_chars: int,
-    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
-        """Handle large texts by pre-splitting on sentence boundaries before tokenization.
-
-        This avoids tokenizer warnings/errors when processing texts with millions of tokens.
-        """
-        # Split text into manageable pieces on sentence boundaries
-        char_pieces = self.chunk_sentences_by_chars(text, max_chars)
-
-        all_token_spans = []
-        all_char_spans = []
-        cumulative_tokens = 0
-
-        for piece_start, piece_end in char_pieces:
-            piece_text = text[piece_start:piece_end]
-
-            if not piece_text.strip():
-                continue
-
-            # Tokenize this piece
-            tokens = tokenizer.encode_plus(
-                piece_text, return_offsets_mapping=True, add_special_tokens=False
-            )
-            token_offsets = tokens.offset_mapping
-
-            if not token_offsets:
-                continue
-
-            # Process this piece using the same sentence-chunking logic
-            piece_token_spans = []
-            piece_char_spans = []
-            piece_chunk_start = 0
-            last_sentence_end = 0
-
-            for i in range(len(token_offsets)):
-                if (
-                    i < len(tokens.tokens(0))
-                    and tokens.tokens(0)[i] in (".", "!", "?")
-                    and (
-                        (len(tokens.tokens(0)) == i + 1)
-                        or (
-                            i + 1 < len(token_offsets)
-                            and tokens.token_to_chars(i).end
-                            != tokens.token_to_chars(i + 1).start
-                        )
-                    )
-                ):
-                    sentence_end = i + 1
-                    current_chunk_tokens = sentence_end - piece_chunk_start
-
-                    if (
-                        current_chunk_tokens > chunk_size
-                        and last_sentence_end > piece_chunk_start
-                    ):
-                        char_start = token_offsets[piece_chunk_start][0]
-                        char_end = token_offsets[last_sentence_end - 1][1]
-
-                        if (
-                            char_start < char_end
-                            and char_start >= 0
-                            and char_end <= len(piece_text)
-                        ):
-                            piece_token_spans.append(
-                                (piece_chunk_start, last_sentence_end)
-                            )
-                            piece_char_spans.append((char_start, char_end))
-
-                        piece_chunk_start = last_sentence_end
-
-                    last_sentence_end = sentence_end
-
-            # Handle last chunk in piece
-            if piece_chunk_start < len(token_offsets):
-                char_start = token_offsets[piece_chunk_start][0]
-                char_end = token_offsets[-1][1]
-
-                if (
-                    char_start < char_end
-                    and char_start >= 0
-                    and char_end <= len(piece_text)
-                ):
-                    piece_token_spans.append((piece_chunk_start, len(token_offsets)))
-                    piece_char_spans.append((char_start, char_end))
-
-            # Adjust spans to be relative to original text
-            for token_span, char_span in zip(piece_token_spans, piece_char_spans):
-                # Token spans need cumulative offset
-                all_token_spans.append(
-                    (
-                        token_span[0] + cumulative_tokens,
-                        token_span[1] + cumulative_tokens,
-                    )
-                )
-                # Char spans need piece offset
-                all_char_spans.append(
-                    (char_span[0] + piece_start, char_span[1] + piece_start)
-                )
-
-            cumulative_tokens += len(token_offsets)
-
-        return all_token_spans, all_char_spans
 
     def chunk(
         self,
