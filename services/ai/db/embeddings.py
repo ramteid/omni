@@ -22,6 +22,7 @@ class Embedding:
     chunk_end_offset: int
     embedding: list
     model_name: str
+    dimensions: int
 
 
 class EmbeddingsRepository:
@@ -43,7 +44,7 @@ class EmbeddingsRepository:
         rows = await pool.fetch(
             """
             SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset,
-                   embedding, model_name
+                   embedding, model_name, dimensions
             FROM embeddings
             WHERE document_id = $1
             ORDER BY chunk_index
@@ -79,6 +80,7 @@ class EmbeddingsRepository:
         - chunk_end_offset: int
         - embedding: List[float]
         - model_name: str
+        - dimensions: int
         - created_at: datetime (optional, defaults to now)
         """
         if not embeddings:
@@ -96,6 +98,7 @@ class EmbeddingsRepository:
                 emb["chunk_end_offset"],
                 emb["embedding"],
                 emb["model_name"],
+                emb["dimensions"],
                 emb.get("created_at", datetime.utcnow()),
             )
             for emb in embeddings
@@ -113,6 +116,7 @@ class EmbeddingsRepository:
                 "chunk_end_offset",
                 "embedding",
                 "model_name",
+                "dimensions",
                 "created_at",
             ],
         )

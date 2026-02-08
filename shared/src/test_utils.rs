@@ -423,8 +423,8 @@ pub async fn create_test_documents_with_embeddings(pool: &PgPool) -> Result<Vec<
         // In real usage, documents would be split into chunks
         sqlx::query(
             r#"
-            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             "#,
         )
         .bind(embedding_id)
@@ -434,6 +434,7 @@ pub async fn create_test_documents_with_embeddings(pool: &PgPool) -> Result<Vec<
         .bind(100) // chunk_end_offset
         .bind(embedding)
         .bind("intfloat/e5-large-v2") // model_name
+        .bind(1024_i16) // dimensions
         .execute(pool)
         .await?;
     }

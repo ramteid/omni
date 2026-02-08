@@ -23,6 +23,7 @@ mod tests {
                 chunk_end_offset: 100,
                 embedding: Vector::from(vec![0.1, 0.2, 0.3]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             Embedding {
@@ -33,6 +34,7 @@ mod tests {
                 chunk_end_offset: 200,
                 embedding: Vector::from(vec![0.4, 0.5, 0.6]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
         ];
@@ -67,6 +69,7 @@ mod tests {
                 chunk_end_offset: 100,
                 embedding: Vector::from(vec![0.1, 0.2, 0.3]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             Embedding {
@@ -77,6 +80,7 @@ mod tests {
                 chunk_end_offset: 200,
                 embedding: Vector::from(vec![0.4, 0.5, 0.6]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             // Document 2 - 3 chunks
@@ -88,6 +92,7 @@ mod tests {
                 chunk_end_offset: 150,
                 embedding: Vector::from(vec![0.7, 0.8, 0.9]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             Embedding {
@@ -98,6 +103,7 @@ mod tests {
                 chunk_end_offset: 300,
                 embedding: Vector::from(vec![1.0, 1.1, 1.2]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             Embedding {
@@ -108,6 +114,7 @@ mod tests {
                 chunk_end_offset: 450,
                 embedding: Vector::from(vec![1.3, 1.4, 1.5]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             // Document 3 - 1 chunk
@@ -119,6 +126,7 @@ mod tests {
                 chunk_end_offset: 50,
                 embedding: Vector::from(vec![1.6, 1.7, 1.8]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
         ];
@@ -154,6 +162,7 @@ mod tests {
             chunk_end_offset: 100,
             embedding: Vector::from(vec![0.1, 0.2, 0.3]),
             model_name: "test-model".to_string(),
+            dimensions: 3,
             created_at: OffsetDateTime::now_utc(),
         };
 
@@ -168,6 +177,7 @@ mod tests {
             chunk_end_offset: 150,
             embedding: Vector::from(vec![0.9, 0.8, 0.7]), // Different embedding
             model_name: "test-model".to_string(),         // Same model_name
+            dimensions: 3,
             created_at: OffsetDateTime::now_utc(),
         };
 
@@ -220,6 +230,7 @@ mod tests {
                         (doc_idx + chunk_idx) as f32 * 0.1,
                     ]),
                     model_name: "test-model".to_string(),
+                    dimensions: 3,
                     created_at: OffsetDateTime::now_utc(),
                 });
             }
@@ -259,6 +270,7 @@ mod tests {
                 chunk_end_offset: 100,
                 embedding: Vector::from(vec![0.1, 0.2, 0.3]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             Embedding {
@@ -269,6 +281,7 @@ mod tests {
                 chunk_end_offset: 200,
                 embedding: Vector::from(vec![0.4, 0.5, 0.6]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             // Document 2 - 1 chunk
@@ -280,6 +293,7 @@ mod tests {
                 chunk_end_offset: 150,
                 embedding: Vector::from(vec![0.7, 0.8, 0.9]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
             // Document 3 - 1 chunk
@@ -291,6 +305,7 @@ mod tests {
                 chunk_end_offset: 50,
                 embedding: Vector::from(vec![1.0, 1.1, 1.2]),
                 model_name: "test-model".to_string(),
+                dimensions: 3,
                 created_at: OffsetDateTime::now_utc(),
             },
         ];

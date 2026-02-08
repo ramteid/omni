@@ -437,6 +437,7 @@ class EmbeddingBatchProcessor:
                             "chunk_end_offset": chunk.span[1],
                             "embedding": chunk.embedding,
                             "model_name": self.embedding_provider.get_model_name(),
+                            "dimensions": len(chunk.embedding),
                         }
                     )
 
@@ -831,6 +832,7 @@ class EmbeddingBatchProcessor:
                         "chunk_end_offset": chunk["end"],
                         "embedding": chunk["embedding"],
                         "model_name": EMBEDDING_MODEL,
+                        "dimensions": len(chunk["embedding"]),
                     }
                 )
 

@@ -37,7 +37,7 @@ impl EmbeddingRepository {
     ) -> Result<Vec<Embedding>, DatabaseError> {
         let embeddings = sqlx::query_as::<_, Embedding>(
             r#"
-            SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, created_at
+            SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions, created_at
             FROM embeddings
             WHERE document_id = $1
             ORDER BY chunk_index
@@ -53,9 +53,9 @@ impl EmbeddingRepository {
     pub async fn create(&self, embedding: Embedding) -> Result<Embedding, DatabaseError> {
         let created_embedding = sqlx::query_as::<_, Embedding>(
             r#"
-            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, created_at
+            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions, created_at
             "#,
         )
         .bind(&embedding.id)
@@ -65,6 +65,7 @@ impl EmbeddingRepository {
         .bind(&embedding.chunk_end_offset)
         .bind(&embedding.embedding)
         .bind(&embedding.model_name)
+        .bind(&embedding.dimensions)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| match e {
@@ -94,17 +95,19 @@ impl EmbeddingRepository {
         let embedding_vectors: Vec<Vector> =
             embeddings.iter().map(|e| e.embedding.clone()).collect();
         let model_names: Vec<String> = embeddings.iter().map(|e| e.model_name.clone()).collect();
+        let dimensions_values: Vec<i16> = embeddings.iter().map(|e| e.dimensions).collect();
 
         let mut tx = self.pool.begin().await?;
 
         sqlx::query(
             r#"
-            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name)
-            SELECT * FROM UNNEST($1::text[], $2::text[], $3::int4[], $4::int4[], $5::int4[], $6::vector[], $7::text[])
+            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions)
+            SELECT * FROM UNNEST($1::text[], $2::text[], $3::int4[], $4::int4[], $5::int4[], $6::vector[], $7::text[], $8::int2[])
             ON CONFLICT (document_id, chunk_index, model_name) DO UPDATE
             SET chunk_start_offset = EXCLUDED.chunk_start_offset,
                 chunk_end_offset = EXCLUDED.chunk_end_offset,
-                embedding = EXCLUDED.embedding
+                embedding = EXCLUDED.embedding,
+                dimensions = EXCLUDED.dimensions
             "#,
         )
         .bind(&ids)
@@ -114,6 +117,7 @@ impl EmbeddingRepository {
         .bind(&chunk_end_offsets)
         .bind(&embedding_vectors)
         .bind(&model_names)
+        .bind(&dimensions_values)
         .execute(&mut *tx)
         .await?;
 
@@ -131,11 +135,15 @@ impl EmbeddingRepository {
         user_email: Option<&str>,
         document_id: Option<&str>,
     ) -> Result<Vec<ChunkResult>, DatabaseError> {
+        let dims = embedding.len() as i16;
         let vector = Vector::from(embedding);
 
         let mut where_conditions = Vec::new();
 
-        let mut bind_index = 4; // Starting after $1 (vector) and $2 (limit) and $3 (offset)
+        // Filter to matching dimensions so the partial HNSW index is used
+        where_conditions.push(format!("e.dimensions = ${}", 4));
+
+        let mut bind_index = 5; // Starting after $1 (vector), $2 (limit), $3 (offset), $4 (dims)
 
         // Add document_id filter if provided
         if let Some(_) = document_id {
@@ -191,7 +199,8 @@ impl EmbeddingRepository {
         let mut query = sqlx::query(&query_str)
             .bind(&vector)
             .bind(limit)
-            .bind(offset);
+            .bind(offset)
+            .bind(dims);
 
         if let Some(doc_id) = document_id {
             query = query.bind(doc_id);
@@ -254,7 +263,7 @@ impl EmbeddingRepository {
 
         let embeddings = sqlx::query_as::<_, Embedding>(
             r#"
-            SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, created_at
+            SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions, created_at
             FROM embeddings
             WHERE document_id = $1 AND chunk_index = ANY($2)
             ORDER BY chunk_index
@@ -273,6 +282,7 @@ impl EmbeddingRepository {
         embedding: Vec<f32>,
         limit: i64,
     ) -> Result<Vec<(Document, f32, String)>, DatabaseError> {
+        let dims = embedding.len() as i16;
         let vector = Vector::from(embedding);
 
         let results = sqlx::query(
@@ -286,12 +296,14 @@ impl EmbeddingRepository {
                 e.chunk_end_offset
             FROM embeddings e
             JOIN documents d ON e.document_id = d.id
+            WHERE e.dimensions = $3
             ORDER BY e.embedding <=> $1
             LIMIT $2
             "#,
         )
         .bind(&vector)
         .bind(limit)
+        .bind(dims)
         .fetch_all(&self.pool)
         .await?;
 

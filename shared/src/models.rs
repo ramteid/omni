@@ -143,6 +143,7 @@ pub struct Embedding {
     pub chunk_end_offset: i32,   // Character end offset in original document
     pub embedding: Vector,
     pub model_name: String,
+    pub dimensions: i16,
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
 }
