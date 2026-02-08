@@ -100,8 +100,7 @@ resource "aws_ecs_task_definition" "web" {
       { name = "EMAIL_PROVIDER", value = "resend" },
       { name = "RESEND_API_KEY", value = var.resend_api_key },
       { name = "EMAIL_FROM", value = "Omni <noreply@getomni.co>" },
-      { name = "AI_ANSWER_ENABLED", value = "true" },
-      { name = "AI_FIRST_SEARCH_ENABLED", value = "true" }
+      { name = "AI_ANSWER_ENABLED", value = "true" }
     ])
 
     secrets = concat(local.common_secrets, [

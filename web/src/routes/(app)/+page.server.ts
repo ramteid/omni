@@ -72,7 +72,6 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         indexedDocuments: totalDocumentsIndexed,
         recentSearchesCount: recentSearches.length,
         suggestedQuestionsCount: suggestedQuestions.length,
-        aiFirstSearchEnabled: env.AI_FIRST_SEARCH_ENABLED === 'true',
     })
 
     return {
@@ -83,6 +82,5 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         },
         recentSearches,
         suggestedQuestions,
-        aiFirstSearchEnabled: env.AI_FIRST_SEARCH_ENABLED === 'true',
     }
 }

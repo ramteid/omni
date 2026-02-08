@@ -389,7 +389,6 @@ services:
       EMAIL_PASSWORD: ${EMAIL_PASSWORD}
       EMAIL_SECURE: ${EMAIL_SECURE}
       AI_ANSWER_ENABLED: ${AI_ANSWER_ENABLED}
-      AI_FIRST_SEARCH_ENABLED: ${AI_FIRST_SEARCH_ENABLED}
     networks:
       - omni-network
     depends_on:
