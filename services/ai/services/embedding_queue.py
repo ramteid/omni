@@ -11,7 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingQueueService:
-    """Service for managing prioritized embedding requests via an async queue."""
+    """Service for managing prioritized embedding requests via an async queue.
+
+    NOTE: This queue handles embedding requests received on the /embeddings endpoint. It is not
+    the same as the embedding_queue pg table that's used for embedding documents in the background by the indexer.
+    """
 
     def __init__(self, app_state: "AppState", maxsize: int = 100):
         self.app_state = app_state

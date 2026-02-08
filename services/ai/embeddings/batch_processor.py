@@ -39,6 +39,7 @@ from db import (
     EmbeddingBatchJobsRepository,
     EmbeddingQueueItem,
     BatchJob,
+    QueueStatus,
 )
 
 # Import boto3 and smart_open lazily for Bedrock provider
@@ -64,6 +65,7 @@ logger = logging.getLogger(__name__)
 ONLINE_BATCH_SIZE = 10
 ONLINE_POLL_INTERVAL = 5  # Seconds to wait when queue is empty
 ONLINE_BATCH_DELAY = 0.1  # Seconds to yield between batches when queue has items
+PROGRESS_LOG_INTERVAL = 30  # Seconds between progress log lines
 
 
 # ============================================================================
@@ -276,6 +278,16 @@ class EmbeddingBatchProcessor:
         # Limit concurrent embedding operations to yield more frequently to higher-priority tasks
         self._embedding_semaphore = asyncio.Semaphore(1)
 
+        # Progress tracking (populated at online loop start)
+        self._progress_start_time: Optional[float] = None
+        self._docs_completed = 0
+        self._docs_failed = 0
+        self._embeddings_written = 0
+        self._embedding_time_ms: float = 0
+        self._baseline_completed = 0
+        self._baseline_failed = 0
+        self._last_progress_log_time: Optional[float] = None
+
     def _create_storage_client(self) -> StorageClient:
         """Factory for storage client (Bedrock only)"""
         if EMBEDDING_BATCH_S3_BUCKET:
@@ -316,6 +328,20 @@ class EmbeddingBatchProcessor:
         """Process queue items using online API calls"""
         logger.info("Starting online embedding processing loop")
 
+        status_counts = await self.queue_repo.get_status_counts()
+        self._baseline_completed = status_counts.get(QueueStatus.COMPLETED, 0)
+        self._baseline_failed = status_counts.get(QueueStatus.FAILED, 0)
+        pending = status_counts.get(QueueStatus.PENDING, 0) + status_counts.get(
+            QueueStatus.PROCESSING, 0
+        )
+        logger.info(
+            f"Embedding queue: {pending} pending, "
+            f"{self._baseline_completed} completed, "
+            f"{self._baseline_failed} failed"
+        )
+        self._progress_start_time = time.time()
+        self._last_progress_log_time = self._progress_start_time
+
         while True:
             try:
                 processed_any = await self._process_online_batch()
@@ -350,9 +376,11 @@ class EmbeddingBatchProcessor:
                     f"Failed to process document {item.document_id}: {e}", exc_info=True
                 )
                 await self.queue_repo.mark_failed([item.id], str(e))
+                self._docs_failed += 1
             finally:
                 # Yield to allow higher-priority tasks (stream requests) to run
                 await asyncio.sleep(0)
+                await self._maybe_log_progress()
 
         return True
 
@@ -370,6 +398,7 @@ class EmbeddingBatchProcessor:
                 await self.queue_repo.mark_failed(
                     [item.id], "Document has no content_id"
                 )
+                self._docs_failed += 1
                 return
 
             content_text = await self.content_storage.get_text(doc.content_id)
@@ -381,6 +410,7 @@ class EmbeddingBatchProcessor:
                 await self.queue_repo.mark_failed(
                     [item.id], "Document has empty content"
                 )
+                self._docs_failed += 1
                 return
 
             # Generate embeddings using sliding window over the document
@@ -395,12 +425,20 @@ class EmbeddingBatchProcessor:
                 offset = 0
                 while offset < len(content_text):
                     piece = content_text[offset : offset + window_size]
+                    t0 = time.monotonic()
                     chunk_results = await self.embedding_provider.generate_embeddings(
                         text=piece,
                         task="passage",
                         chunk_size=512,
                         chunking_mode="sentence",
                     )
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    n_chunks = len(chunk_results) if chunk_results else 0
+                    logger.debug(
+                        f"generate_embeddings: {n_chunks} chunks in {elapsed_ms:.0f}ms "
+                        f"({len(piece)} chars)"
+                    )
+                    self._embedding_time_ms += elapsed_ms
 
                     if chunk_results:
                         for chunk in chunk_results:
@@ -422,6 +460,7 @@ class EmbeddingBatchProcessor:
                     await self.queue_repo.mark_failed(
                         [item.id], "No embeddings generated"
                     )
+                    self._docs_failed += 1
                     return
 
                 # Delete existing embeddings for this document
@@ -454,6 +493,8 @@ class EmbeddingBatchProcessor:
                     [item.document_id], "completed"
                 )
 
+                self._docs_completed += 1
+                self._embeddings_written += len(chunks)
                 logger.info(
                     f"Processed document {item.document_id}: {len(chunks)} chunks embedded"
                 )
@@ -464,6 +505,42 @@ class EmbeddingBatchProcessor:
                     exc_info=True,
                 )
                 await self.queue_repo.mark_failed([item.id], str(e))
+                self._docs_failed += 1
+
+    async def _maybe_log_progress(self):
+        """Log embedding progress periodically."""
+        if self._last_progress_log_time is None:
+            return
+
+        now = time.time()
+        if now - self._last_progress_log_time < PROGRESS_LOG_INTERVAL:
+            return
+
+        self._last_progress_log_time = now
+        pending = await self.queue_repo.get_pending_count()
+        total_completed = self._baseline_completed + self._docs_completed
+        total_failed = self._baseline_failed + self._docs_failed
+
+        elapsed_min = (now - self._progress_start_time) / 60
+        docs_per_min = self._docs_completed / elapsed_min if elapsed_min > 0 else 0
+        chunks_per_min = (
+            self._embeddings_written / elapsed_min if elapsed_min > 0 else 0
+        )
+
+        eta = f"~{pending / docs_per_min:.1f} min" if docs_per_min > 0 else "unknown"
+        avg_embed_ms = (
+            self._embedding_time_ms / self._docs_completed
+            if self._docs_completed > 0
+            else 0
+        )
+
+        logger.info(
+            f"Embedding progress: {pending} pending | "
+            f"{total_completed} completed, {total_failed} failed | "
+            f"Throughput: {docs_per_min:.1f} docs/min, {chunks_per_min:.0f} chunks/min | "
+            f"Avg embed time: {avg_embed_ms:.0f}ms/doc | "
+            f"ETA: {eta}"
+        )
 
     # ------------------------------------------------------------------------
     # Accumulation Loop (Bedrock only)

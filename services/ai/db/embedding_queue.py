@@ -1,12 +1,21 @@
 """Repository for embedding queue database operations."""
 
 import logging
+from enum import StrEnum
 from typing import Optional, List
 from dataclasses import dataclass
 from datetime import datetime
 from asyncpg import Pool
 
 from .connection import get_db_pool
+
+
+class QueueStatus(StrEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +59,15 @@ class EmbeddingQueueRepository:
         if row:
             return EmbeddingQueueItem(**dict(row))
         return None
+
+    async def get_status_counts(self) -> dict[str, int]:
+        """Get counts of queue items grouped by status."""
+        pool = await self._get_pool()
+
+        rows = await pool.fetch(
+            "SELECT status, COUNT(*) as count FROM embedding_queue GROUP BY status"
+        )
+        return {row["status"]: int(row["count"]) for row in rows}
 
     async def get_pending_count(self) -> int:
         """Get number of pending queue items."""

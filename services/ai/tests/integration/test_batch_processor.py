@@ -335,7 +335,7 @@ async def test_online_processes_large_document_with_sliding_window(
     """Large documents are split via sliding window and each window is embedded."""
     import embeddings.batch_processor as bp
 
-    monkeypatch.setattr(bp, "EMBEDDING_MAX_MODEL_LEN", 30)
+    monkeypatch.setattr(bp, "EMBEDDING_MAX_MODEL_LEN", 33)
 
     user_id = await create_test_user(db_pool)
     source_id = await create_test_source(db_pool, user_id)
@@ -355,12 +355,12 @@ async def test_online_processes_large_document_with_sliding_window(
     assert len(embeddings) == 7
 
     expected_spans = [
-        (0, 100),
-        (75, 175),
-        (150, 250),
-        (225, 325),
-        (300, 400),
-        (375, 475),
+        (0, 99),
+        (75, 174),
+        (150, 249),
+        (225, 324),
+        (300, 399),
+        (375, 474),
         (450, 500),
     ]
     actual_spans = [(e.chunk_start_offset, e.chunk_end_offset) for e in embeddings]

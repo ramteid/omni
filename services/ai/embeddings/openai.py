@@ -3,8 +3,6 @@ import time
 import httpx
 import asyncio
 
-from transformers import AutoTokenizer
-
 from . import EmbeddingProvider, Chunk
 from processing import Chunker
 
@@ -13,6 +11,7 @@ logger = logging.getLogger(__name__)
 OPENAI_MAX_BATCH_SIZE = 2048
 OPENAI_MAX_RETRIES = 3
 OPENAI_RETRY_DELAY = 1.0
+CHARS_PER_TOKEN = 3
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
@@ -45,16 +44,6 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             dimensions=self.dimensions,
         )
 
-        # Initialize tokenizer and chunker for local models with max_model_len
-        if max_model_len:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model, trust_remote_code=True
-            )
-            self.chunker = Chunker()
-        else:
-            self.tokenizer = None
-            self.chunker = None
-
         logger.info(
             f"Initialized OpenAI embedding provider - model: {model}, base_url: {base_url}, max_model_len: {max_model_len}"
         )
@@ -63,7 +52,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self,
         text: str,
         task: str,
-        chunk_size: int,
+        chunk_size: int | None,
         chunking_mode: str,
     ) -> list[Chunk]:
         """Generate embeddings using OpenAI-compatible API with chunking support."""
@@ -77,56 +66,51 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self,
         text: str,
         task: str,
-        chunk_size: int,
+        chunk_size: int | None,
         chunking_mode: str,
     ) -> list[Chunk]:
         """Generate embeddings with chunking support."""
 
         start_time = time.time()
 
-        # Cap chunk_size at max_model_len if set
-        effective_chunk_size = chunk_size
-        if self.max_model_len:
-            effective_chunk_size = min(chunk_size, self.max_model_len)
+        # Convert token-based sizes to chars for char-based chunking
+        if chunk_size:
+            max_chars = chunk_size * CHARS_PER_TOKEN
+            if self.max_model_len:
+                max_chars = min(max_chars, self.max_model_len * CHARS_PER_TOKEN)
 
         try:
             if chunking_mode == "none":
+                t0 = time.monotonic()
                 embeddings = await self.client.generate_embeddings([text])
+                logger.debug(
+                    f"Embedding API call: 1 text in {(time.monotonic() - t0) * 1000:.0f}ms"
+                )
                 chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "sentence":
-                if not self.chunker or not self.tokenizer:
-                    raise ValueError(
-                        "Sentence chunking requires max_model_len to be set for tokenizer initialization"
-                    )
-                _, char_spans = await self.chunker.chunk_by_sentences_async(
-                    text, effective_chunk_size, self.tokenizer
-                )
-
+                char_spans = Chunker.chunk_sentences_by_chars(text, max_chars)
                 chunk_texts = [text[start:end] for start, end in char_spans]
 
-                if chunk_texts:
-                    embeddings = await self.client.generate_embeddings(chunk_texts)
-                    chunks = [
-                        Chunk(span, embedding)
-                        for span, embedding in zip(char_spans, embeddings)
-                    ]
-                else:
-                    embeddings = await self.client.generate_embeddings([text])
-                    chunks = [Chunk((0, len(text)), embeddings[0])]
+                t0 = time.monotonic()
+                embeddings = await self.client.generate_embeddings(chunk_texts)
+                logger.debug(
+                    f"Embedding API call: {len(chunk_texts)} texts in {(time.monotonic() - t0) * 1000:.0f}ms"
+                )
+                chunks = [
+                    Chunk(span, embedding)
+                    for span, embedding in zip(char_spans, embeddings)
+                ]
 
             elif chunking_mode == "fixed":
-                if not self.chunker or not self.tokenizer:
-                    raise ValueError(
-                        "Fixed chunking requires max_model_len to be set for tokenizer initialization"
-                    )
-                _, char_spans = await self.chunker.chunk_by_tokens_async(
-                    text, effective_chunk_size, self.tokenizer
-                )
-
+                char_spans = Chunker.chunk_by_chars(text, max_chars)
                 chunk_texts = [text[start:end] for start, end in char_spans]
 
+                t0 = time.monotonic()
                 embeddings = await self.client.generate_embeddings(chunk_texts)
+                logger.debug(
+                    f"Embedding API call: {len(chunk_texts)} texts in {(time.monotonic() - t0) * 1000:.0f}ms"
+                )
                 chunks = [
                     Chunk(span, embedding)
                     for span, embedding in zip(char_spans, embeddings)
@@ -136,11 +120,14 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 logger.warning(
                     f"Unsupported chunking mode: {chunking_mode}, using no chunking"
                 )
+                t0 = time.monotonic()
                 embeddings = await self.client.generate_embeddings([text])
+                logger.debug(
+                    f"Embedding API call: 1 text in {(time.monotonic() - t0) * 1000:.0f}ms"
+                )
                 chunks = [Chunk((0, len(text)), embeddings[0])]
 
-            end_time = time.time()
-            total_time = end_time - start_time
+            total_time = time.time() - start_time
             logger.info(
                 f"OpenAI embedding generation complete - total_time: {total_time:.2f}s, "
                 f"total_chunks: {len(chunks)}"

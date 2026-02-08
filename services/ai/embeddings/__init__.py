@@ -22,7 +22,7 @@ class EmbeddingProvider(ABC):
         self,
         text: str,
         task: str,
-        chunk_size: int,
+        chunk_size: int | None,
         chunking_mode: str,
     ) -> list[Chunk]:
         """
