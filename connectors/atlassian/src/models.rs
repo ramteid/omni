@@ -693,9 +693,9 @@ impl JiraIssue {
         };
 
         let permissions = DocumentPermissions {
-            public: false,
             users: vec![],
-            groups: vec![format!("jira_project_{}", self.fields.project.key)],
+            groups: vec![],
+            public: true,
         };
 
         let attributes = self.to_attributes().into_attributes();

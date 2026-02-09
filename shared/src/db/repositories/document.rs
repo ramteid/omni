@@ -6,6 +6,7 @@ use crate::{
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
 use std::collections::HashMap;
+use tracing::debug;
 
 #[derive(FromRow)]
 pub struct DocumentWithScores {
@@ -270,6 +271,7 @@ impl DocumentRepository {
             param_idx,
             param_idx + 1
         );
+        debug!("Full search query: {}", full_query);
 
         let title_query = format!("{}::pdb.boost(2)", query);
         let mut query = sqlx::query_as::<_, DocumentWithScores>(&full_query)
