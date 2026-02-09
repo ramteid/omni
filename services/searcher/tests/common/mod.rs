@@ -123,6 +123,30 @@ impl SearcherTestFixture {
         Ok((status, json))
     }
 
+    /// Helper method to make search requests with a raw JSON body
+    pub async fn search_with_body(&self, body: Value) -> Result<(StatusCode, Value)> {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/search")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))?;
+
+        let response = self.app.clone().oneshot(request).await?;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        let body_str = String::from_utf8_lossy(&body);
+
+        let json: Value = serde_json::from_slice(&body).map_err(|e| {
+            eprintln!(
+                "Failed to parse JSON response. Status: {}, Body: '{}'",
+                status, body_str
+            );
+            e
+        })?;
+
+        Ok((status, json))
+    }
+
     /// Helper method to make suggestions requests
     pub async fn suggestions(&self, query: &str) -> Result<(StatusCode, Value)> {
         let request = Request::builder()
