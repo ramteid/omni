@@ -218,15 +218,17 @@ impl AtlassianClient {
         let auth_header = creds.get_basic_auth_header();
         let url = format!("{}/rest/api/3/search/jql", creds.base_url);
 
-        let mut request_body = serde_json::json!({
-            "jql": jql,
-            "maxResults": max_results,
-            "fields": fields,
-            "expand": ["renderedFields"]
-        });
+        let fields_str = fields.join(",");
+        let max_results_str = max_results.to_string();
+        let mut params = vec![
+            ("jql", jql.to_string()),
+            ("maxResults", max_results_str),
+            ("fields", fields_str),
+            ("expand", "renderedFields".to_string()),
+        ];
 
         if let Some(token) = next_page_token {
-            request_body["nextPageToken"] = serde_json::json!(token);
+            params.push(("nextPageToken", token.to_string()));
         }
 
         debug!("Searching JIRA issues with JQL: {}", jql);
@@ -234,11 +236,10 @@ impl AtlassianClient {
         let client = self.client.clone();
         self.make_request(move || {
             client
-                .post(&url)
+                .get(&url)
                 .header("Authorization", &auth_header)
                 .header("Accept", "application/json")
-                .header("Content-Type", "application/json")
-                .json(&request_body)
+                .query(&params)
         })
         .await
     }
