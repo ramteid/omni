@@ -926,6 +926,11 @@ impl SearchEngine {
 
         request.include_facets().hash(&mut hasher);
 
+        if let Some(attribute_filters) = &request.attribute_filters {
+            let json = serde_json::to_string(attribute_filters).unwrap_or_default();
+            json.hash(&mut hasher);
+        }
+
         if let Some(user_email) = &request.user_email {
             user_email.hash(&mut hasher);
         }

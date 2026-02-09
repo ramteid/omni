@@ -63,6 +63,17 @@ SEARCH_TOOLS = [
                     "items": {"type": "string"},
                     "description": "Optional: file types to include (e.g., pdf, docx, txt)",
                 },
+                "attributes": {
+                    "type": "object",
+                    "description": (
+                        "Optional: filter results by document attributes. "
+                        "Common Jira attributes: status, priority, issue_type, assignee, reporter, labels, components, project_key. "
+                        "Common Confluence attributes: space_id, status. "
+                        'Values can be: a string for exact match (e.g., {"status": "Done"}), '
+                        'an array for OR match (e.g., {"priority": ["High", "Critical"]}), '
+                        'or an object with gte/lte keys for range queries (e.g., {"updated": {"gte": "2024-01-01"}}).'
+                    ),
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum number of results to return (default: 10)",
@@ -579,6 +590,7 @@ async def execute_search_tool(
         original_user_query=original_user_query,
         include_facets=False,
         ignore_typos=True,  # LLMs will generaly not generate typos, so we avoid typo handling
+        attribute_filters=tool_input.attributes,
     )
     try:
         search_response: SearchResponse = await searcher_tool.handle(search_request)

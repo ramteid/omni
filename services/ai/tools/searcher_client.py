@@ -28,6 +28,7 @@ class SearchRequest(BaseModel):
     document_content_end_line: Optional[int] = None
     include_facets: Optional[bool] = None
     ignore_typos: Optional[bool] = None
+    attribute_filters: Optional[dict] = None
 
 
 class Document(BaseModel):
@@ -97,6 +98,7 @@ class SearcherClient:
                 "document_content_end_line": request.document_content_end_line,
                 "include_facets": request.include_facets,
                 "ignore_typos": request.ignore_typos,
+                "attribute_filters": request.attribute_filters,
             }
 
             logger.info(f"Calling searcher service with query: {request.query}...")
