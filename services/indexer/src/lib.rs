@@ -23,7 +23,8 @@ use axum::{
 use error::Result as IndexerResult;
 use serde_json::json;
 use shared::{
-    db::repositories::OrphanStats,
+    db::repositories::{DocumentRepository, OrphanStats},
+    models::Document,
     storage::gc::{ContentBlobGC, GCConfig, GCResult},
     telemetry::{self, TelemetryConfig},
     IndexerConfig,
@@ -145,39 +146,36 @@ async fn health_check(State(state): State<AppState>) -> IndexerResult<Json<Value
 async fn create_document(
     State(state): State<AppState>,
     Json(request): Json<CreateDocumentRequest>,
-) -> IndexerResult<Json<shared::models::Document>> {
+) -> IndexerResult<Json<Document>> {
     let document_id = Ulid::new().to_string();
     let now = OffsetDateTime::now_utc();
 
-    // Store content in storage
     let content_id = state
         .content_storage
         .store_content_with_type(request.content.as_bytes(), Some("text/plain"), None)
         .await
         .map_err(|e| error::IndexerError::Internal(format!("Failed to store content: {}", e)))?;
 
-    let document = sqlx::query_as::<_, shared::models::Document>(
-        r#"
-        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, metadata, permissions, created_at, updated_at, last_indexed_at, tsv_content)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                setweight(to_tsvector('english', $4), 'A') || setweight(to_tsvector('english', $12), 'B'))
-        RETURNING *
-        "#,
-    )
-    .bind(&document_id)
-    .bind(&request.source_id)
-    .bind(&request.external_id)
-    .bind(&request.title)
-    .bind(Some(&content_id))
-    .bind(Some("text/plain"))
-    .bind(&request.metadata)
-    .bind(&request.permissions)
-    .bind(now)
-    .bind(now)
-    .bind(now)
-    .bind(&request.content)
-    .fetch_one(state.db_pool.pool())
-    .await?;
+    let doc = Document {
+        id: document_id.clone(),
+        source_id: request.source_id,
+        external_id: request.external_id,
+        title: request.title,
+        content_id: Some(content_id),
+        content_type: Some("text/plain".to_string()),
+        file_size: None,
+        file_extension: None,
+        url: None,
+        metadata: request.metadata,
+        permissions: request.permissions,
+        attributes: serde_json::json!({}),
+        created_at: now,
+        updated_at: now,
+        last_indexed_at: now,
+    };
+
+    let repo = DocumentRepository::new(state.db_pool.pool());
+    let document = repo.create(doc).await?;
 
     info!("Created document: {}", document_id);
     Ok(Json(document))
@@ -186,14 +184,9 @@ async fn create_document(
 async fn get_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> IndexerResult<Json<shared::models::Document>> {
-    let document =
-        sqlx::query_as::<_, shared::models::Document>("SELECT * FROM documents WHERE id = $1")
-            .bind(&id)
-            .fetch_optional(state.db_pool.pool())
-            .await?;
-
-    match document {
+) -> IndexerResult<Json<Document>> {
+    let repo = DocumentRepository::new(state.db_pool.pool());
+    match repo.find_by_id(&id).await? {
         Some(doc) => Ok(Json(doc)),
         None => Err(error::IndexerError::NotFound(format!(
             "Document {} not found",
@@ -206,25 +199,8 @@ async fn update_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<UpdateDocumentRequest>,
-) -> IndexerResult<Json<shared::models::Document>> {
-    let existing_doc =
-        sqlx::query_as::<_, shared::models::Document>("SELECT * FROM documents WHERE id = $1")
-            .bind(&id)
-            .fetch_optional(state.db_pool.pool())
-            .await?;
-
-    let _existing_doc = match existing_doc {
-        Some(doc) => doc,
-        None => {
-            return Err(error::IndexerError::NotFound(format!(
-                "Document {} not found",
-                id
-            )))
-        }
-    };
-
-    // Store new content if provided
-    let (content_id, content_text) = if let Some(content) = &request.content {
+) -> IndexerResult<Json<Document>> {
+    let content_id = if let Some(content) = &request.content {
         let cid = state
             .content_storage
             .store_content_with_type(content.as_bytes(), Some("text/plain"), None)
@@ -232,73 +208,42 @@ async fn update_document(
             .map_err(|e| {
                 error::IndexerError::Internal(format!("Failed to store content: {}", e))
             })?;
-        (Some(cid), Some(content.clone()))
+        Some(cid)
     } else {
-        (None, None)
+        None
     };
 
-    let updated_doc = if let Some(content) = content_text {
-        // Update with new content and recompute tsv_content
-        sqlx::query_as::<_, shared::models::Document>(
-            r#"
-            UPDATE documents
-            SET title = COALESCE($2, title),
-                content_id = COALESCE($3, content_id),
-                metadata = COALESCE($4, metadata),
-                permissions = COALESCE($5, permissions),
-                updated_at = $6,
-                tsv_content = setweight(to_tsvector('english', COALESCE($2, title)), 'A') || setweight(to_tsvector('english', $7), 'B')
-            WHERE id = $1
-            RETURNING *
-            "#,
+    let repo = DocumentRepository::new(state.db_pool.pool());
+    let updated_doc = repo
+        .update_fields(
+            &id,
+            request.title.as_deref(),
+            content_id.as_deref(),
+            request.metadata.as_ref(),
+            request.permissions.as_ref(),
         )
-        .bind(&id)
-        .bind(&request.title)
-        .bind(&content_id)
-        .bind(&request.metadata)
-        .bind(&request.permissions)
-        .bind(OffsetDateTime::now_utc())
-        .bind(&content)
-        .fetch_one(state.db_pool.pool())
-        .await?
-    } else {
-        // Update without changing content or tsv_content
-        sqlx::query_as::<_, shared::models::Document>(
-            r#"
-            UPDATE documents
-            SET title = COALESCE($2, title),
-                content_id = COALESCE($3, content_id),
-                metadata = COALESCE($4, metadata),
-                permissions = COALESCE($5, permissions),
-                updated_at = $6
-            WHERE id = $1
-            RETURNING *
-            "#,
-        )
-        .bind(&id)
-        .bind(&request.title)
-        .bind(&content_id)
-        .bind(&request.metadata)
-        .bind(&request.permissions)
-        .bind(OffsetDateTime::now_utc())
-        .fetch_one(state.db_pool.pool())
-        .await?
-    };
+        .await?;
 
-    info!("Updated document: {}", id);
-    Ok(Json(updated_doc))
+    match updated_doc {
+        Some(doc) => {
+            info!("Updated document: {}", id);
+            Ok(Json(doc))
+        }
+        None => Err(error::IndexerError::NotFound(format!(
+            "Document {} not found",
+            id
+        ))),
+    }
 }
 
 async fn delete_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> IndexerResult<Json<Value>> {
-    let result = sqlx::query("DELETE FROM documents WHERE id = $1")
-        .bind(&id)
-        .execute(state.db_pool.pool())
-        .await?;
+    let repo = DocumentRepository::new(state.db_pool.pool());
+    let deleted = repo.delete(&id).await?;
 
-    if result.rows_affected() == 0 {
+    if !deleted {
         return Err(error::IndexerError::NotFound(format!(
             "Document {} not found",
             id
@@ -379,34 +324,32 @@ async fn process_create_operation(
     let document_id = Ulid::new().to_string();
     let now = OffsetDateTime::now_utc();
 
-    // Store content in storage
     let content_id = state
         .content_storage
         .store_content_with_type(request.content.as_bytes(), Some("text/plain"), None)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to store content: {}", e))?;
 
-    sqlx::query(
-        r#"
-        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, metadata, permissions, created_at, updated_at, last_indexed_at, tsv_content)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                setweight(to_tsvector('english', $4), 'A') || setweight(to_tsvector('english', $12), 'B'))
-        "#,
-    )
-    .bind(&document_id)
-    .bind(&request.source_id)
-    .bind(&request.external_id)
-    .bind(&request.title)
-    .bind(Some(&content_id))
-    .bind(Some("text/plain"))
-    .bind(&request.metadata)
-    .bind(&request.permissions)
-    .bind(now)
-    .bind(now)
-    .bind(now)
-    .bind(&request.content)
-    .execute(state.db_pool.pool())
-    .await?;
+    let doc = Document {
+        id: document_id,
+        source_id: request.source_id,
+        external_id: request.external_id,
+        title: request.title,
+        content_id: Some(content_id),
+        content_type: Some("text/plain".to_string()),
+        file_size: None,
+        file_extension: None,
+        url: None,
+        metadata: request.metadata,
+        permissions: request.permissions,
+        attributes: serde_json::json!({}),
+        created_at: now,
+        updated_at: now,
+        last_indexed_at: now,
+    };
+
+    let repo = DocumentRepository::new(state.db_pool.pool());
+    repo.create(doc).await?;
 
     Ok(())
 }
@@ -416,65 +359,29 @@ async fn process_update_operation(
     id: String,
     request: UpdateDocumentRequest,
 ) -> anyhow::Result<()> {
-    // Store new content if provided
-    let (content_id, content_text) = if let Some(content) = &request.content {
+    let content_id = if let Some(content) = &request.content {
         let cid = state
             .content_storage
             .store_content_with_type(content.as_bytes(), Some("text/plain"), None)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to store content: {}", e))?;
-        (Some(cid), Some(content.clone()))
+        Some(cid)
     } else {
-        (None, None)
+        None
     };
 
-    let result = if let Some(content) = content_text {
-        // Update with new content and recompute tsv_content
-        sqlx::query(
-            r#"
-            UPDATE documents
-            SET title = COALESCE($2, title),
-                content_id = COALESCE($3, content_id),
-                metadata = COALESCE($4, metadata),
-                permissions = COALESCE($5, permissions),
-                updated_at = $6,
-                tsv_content = setweight(to_tsvector('english', COALESCE($2, title)), 'A') || setweight(to_tsvector('english', $7), 'B')
-            WHERE id = $1
-            "#,
+    let repo = DocumentRepository::new(state.db_pool.pool());
+    let updated = repo
+        .update_fields(
+            &id,
+            request.title.as_deref(),
+            content_id.as_deref(),
+            request.metadata.as_ref(),
+            request.permissions.as_ref(),
         )
-        .bind(&id)
-        .bind(&request.title)
-        .bind(&content_id)
-        .bind(&request.metadata)
-        .bind(&request.permissions)
-        .bind(OffsetDateTime::now_utc())
-        .bind(&content)
-        .execute(state.db_pool.pool())
-        .await?
-    } else {
-        // Update without changing content or tsv_content
-        sqlx::query(
-            r#"
-            UPDATE documents
-            SET title = COALESCE($2, title),
-                content_id = COALESCE($3, content_id),
-                metadata = COALESCE($4, metadata),
-                permissions = COALESCE($5, permissions),
-                updated_at = $6
-            WHERE id = $1
-            "#,
-        )
-        .bind(&id)
-        .bind(&request.title)
-        .bind(&content_id)
-        .bind(&request.metadata)
-        .bind(&request.permissions)
-        .bind(OffsetDateTime::now_utc())
-        .execute(state.db_pool.pool())
-        .await?
-    };
+        .await?;
 
-    if result.rows_affected() == 0 {
+    if updated.is_none() {
         return Err(anyhow::anyhow!("Document {} not found", id));
     }
 
@@ -482,12 +389,10 @@ async fn process_update_operation(
 }
 
 async fn process_delete_operation(state: &AppState, id: String) -> anyhow::Result<()> {
-    let result = sqlx::query("DELETE FROM documents WHERE id = $1")
-        .bind(&id)
-        .execute(state.db_pool.pool())
-        .await?;
+    let repo = DocumentRepository::new(state.db_pool.pool());
+    let deleted = repo.delete(&id).await?;
 
-    if result.rows_affected() == 0 {
+    if !deleted {
         return Err(anyhow::anyhow!("Document {} not found", id));
     }
 

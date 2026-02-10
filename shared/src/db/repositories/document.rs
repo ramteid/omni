@@ -339,8 +339,8 @@ impl DocumentRepository {
     pub async fn create(&self, document: Document) -> Result<Document, DatabaseError> {
         let created_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, metadata, permissions, attributes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, metadata, permissions, attributes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
                       metadata, permissions, attributes, created_at, updated_at, last_indexed_at
@@ -351,6 +351,7 @@ impl DocumentRepository {
         .bind(&document.external_id)
         .bind(&document.title)
         .bind(&document.content_id)
+        .bind(&document.content_type)
         .bind(&document.metadata)
         .bind(&document.permissions)
         .bind(&document.attributes)
@@ -396,6 +397,41 @@ impl DocumentRepository {
         .bind(&document.permissions)
         .bind(&document.attributes)
         .bind(content)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(updated_document)
+    }
+
+    /// Partial update using COALESCE — only overwrites fields that are Some
+    pub async fn update_fields(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        content_id: Option<&str>,
+        metadata: Option<&JsonValue>,
+        permissions: Option<&JsonValue>,
+    ) -> Result<Option<Document>, DatabaseError> {
+        let updated_document = sqlx::query_as::<_, Document>(
+            r#"
+            UPDATE documents
+            SET title = COALESCE($2, title),
+                content_id = COALESCE($3, content_id),
+                metadata = COALESCE($4, metadata),
+                permissions = COALESCE($5, permissions),
+                updated_at = $6
+            WHERE id = $1
+            RETURNING id, source_id, external_id, title, content_id, content_type,
+                      file_size, file_extension, url,
+                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+            "#,
+        )
+        .bind(id)
+        .bind(title)
+        .bind(content_id)
+        .bind(metadata)
+        .bind(permissions)
+        .bind(sqlx::types::time::OffsetDateTime::now_utc())
         .fetch_optional(&self.pool)
         .await?;
 

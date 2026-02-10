@@ -4,6 +4,7 @@ use axum::{
     Json,
 };
 use serde_json::json;
+use shared::db::error::DatabaseError;
 use tracing::error;
 
 #[derive(Debug)]
@@ -46,6 +47,17 @@ impl From<redis::RedisError> for IndexerError {
 impl From<serde_json::Error> for IndexerError {
     fn from(err: serde_json::Error) -> Self {
         IndexerError::Serialization(err)
+    }
+}
+
+impl From<DatabaseError> for IndexerError {
+    fn from(err: DatabaseError) -> Self {
+        match err {
+            DatabaseError::NotFound => IndexerError::NotFound("Entity not found".to_string()),
+            DatabaseError::ConstraintViolation(msg) => IndexerError::BadRequest(msg),
+            DatabaseError::InvalidInput(msg) => IndexerError::BadRequest(msg),
+            other => IndexerError::Internal(other.to_string()),
+        }
     }
 }
 

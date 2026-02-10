@@ -1,13 +1,17 @@
 use anyhow::Result;
 use omni_indexer::{create_app, AppState};
 use shared::db::repositories::DocumentRepository;
-use shared::models::Document;
+use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
+use shared::queue::EventQueue;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
+use shared::ObjectStorage;
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::time::{sleep, timeout, Duration};
 
-/// Test fixture that automatically cleans up the test database on drop
+pub const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+
 pub struct TestFixture {
     pub state: AppState,
     #[allow(dead_code)]
@@ -17,16 +21,13 @@ pub struct TestFixture {
 }
 
 impl TestFixture {
-    /// Get a reference to the app router
     #[allow(dead_code)]
     pub fn app(&self) -> &axum::Router {
         &self.app
     }
 }
 
-/// Setup test app with automatic cleanup via TestFixture
 pub async fn setup_test_fixture() -> Result<TestFixture> {
-    // Set up encryption environment variables for tests
     std::env::set_var(
         "ENCRYPTION_KEY",
         "test_master_key_that_is_long_enough_32_chars",
@@ -105,7 +106,6 @@ pub mod fixtures {
     }
 }
 
-/// Wait for a document to exist in the database with polling and timeout
 #[allow(dead_code)]
 pub async fn wait_for_document_exists(
     repo: &DocumentRepository,
@@ -132,7 +132,6 @@ pub async fn wait_for_document_exists(
     }
 }
 
-/// Wait for a document to be deleted from the database with polling and timeout
 #[allow(dead_code)]
 pub async fn wait_for_document_deleted(
     repo: &DocumentRepository,
@@ -159,7 +158,6 @@ pub async fn wait_for_document_deleted(
     }
 }
 
-/// Wait for a document to exist with a specific title in the database with polling and timeout
 #[allow(dead_code)]
 pub async fn wait_for_document_with_title(
     repo: &DocumentRepository,
@@ -185,6 +183,111 @@ pub async fn wait_for_document_with_title(
         Err(_) => Err(format!(
             "Document {}:{} with title '{}' not found within timeout",
             source_id, doc_id, expected_title
+        )),
+    }
+}
+
+#[allow(dead_code)]
+pub async fn enqueue_dummy_events(
+    event_queue: &EventQueue,
+    source_id: &str,
+    content_storage: &Arc<dyn ObjectStorage>,
+    count: usize,
+    sync_run_id: &str,
+    doc_id_prefix: &str,
+) -> Vec<String> {
+    let mut event_ids = Vec::new();
+    for i in 0..count {
+        let content_id = content_storage
+            .store_content(format!("content for doc {}", i).as_bytes(), None)
+            .await
+            .unwrap();
+
+        let event = ConnectorEvent::DocumentCreated {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
+            document_id: format!("{}_{}", doc_id_prefix, i),
+            content_id,
+            metadata: DocumentMetadata {
+                title: Some(format!("Document {}", i)),
+                author: None,
+                created_at: None,
+                updated_at: None,
+                mime_type: Some("text/plain".to_string()),
+                size: Some("100".to_string()),
+                url: None,
+                path: None,
+                extra: None,
+            },
+            permissions: DocumentPermissions {
+                public: true,
+                users: vec![],
+                groups: vec![],
+            },
+            attributes: None,
+        };
+
+        let event_id = event_queue.enqueue(source_id, &event).await.unwrap();
+        event_ids.push(event_id);
+    }
+    event_ids
+}
+
+#[allow(dead_code)]
+pub async fn count_completed_events(pool: &PgPool) -> i64 {
+    let row: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM connector_events_queue WHERE status = 'completed'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    row.0
+}
+
+#[allow(dead_code)]
+pub async fn wait_for_completed(pool: &PgPool, expected: i64, timeout_duration: Duration) -> i64 {
+    let start = std::time::Instant::now();
+    loop {
+        let completed = count_completed_events(pool).await;
+        if completed >= expected {
+            return completed;
+        }
+        if start.elapsed() > timeout_duration {
+            return completed;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[allow(dead_code)]
+pub async fn wait_for_embedding_queue_entry(
+    pool: &PgPool,
+    document_id: &str,
+    timeout_duration: Duration,
+) -> Result<(), String> {
+    let result = timeout(timeout_duration, async {
+        loop {
+            let row: Option<(i64,)> =
+                sqlx::query_as("SELECT COUNT(*) FROM embedding_queue WHERE document_id = $1")
+                    .bind(document_id)
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap();
+
+            if let Some((count,)) = row {
+                if count > 0 {
+                    return;
+                }
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!(
+            "Embedding queue entry for document {} not found within timeout",
+            document_id
         )),
     }
 }
