@@ -172,6 +172,7 @@ impl WebConnectorTestFixture {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
             sync_mode: "full".to_string(),
+            last_sync_at: None,
         }
     }
 

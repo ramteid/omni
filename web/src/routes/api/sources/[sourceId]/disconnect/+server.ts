@@ -31,7 +31,6 @@ export const POST: RequestHandler = async ({ params, locals }) => {
     await db
         .update(sources)
         .set({
-            syncStatus: 'pending',
             isActive: false,
             isDeleted: true,
             updatedAt: new Date(),

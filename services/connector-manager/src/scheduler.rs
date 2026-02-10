@@ -1,6 +1,7 @@
 use crate::config::ConnectorManagerConfig;
 use crate::models::TriggerType;
 use crate::sync_manager::{SyncError, SyncManager};
+use shared::db::repositories::SourceRepository;
 use shared::models::SyncType;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -65,24 +66,12 @@ impl Scheduler {
 
     async fn process_due_sources(&self) -> Result<(), SchedulerError> {
         let now = OffsetDateTime::now_utc();
+        let source_repo = SourceRepository::new(&self.pool);
 
-        // Find sources where next_sync_at is due
-        let due_sources: Vec<DueSource> = sqlx::query_as(
-            r#"
-            SELECT id, name, source_type::text as source_type
-            FROM sources
-            WHERE is_active = true
-              AND is_deleted = false
-              AND next_sync_at IS NOT NULL
-              AND next_sync_at <= $1
-            ORDER BY next_sync_at ASC
-            LIMIT 10
-            "#,
-        )
-        .bind(now)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
+        let due_sources = source_repo
+            .find_due_for_sync(now)
+            .await
+            .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
 
         if due_sources.is_empty() {
             debug!("No sources due for sync");
@@ -109,17 +98,9 @@ impl Scheduler {
             {
                 Ok(sync_run_id) => {
                     info!(
-                        "Scheduled sync {} triggered for source {} ({})",
+                        "Scheduled sync {} triggered for source {} ({:?})",
                         sync_run_id, source.name, source.source_type
                     );
-
-                    // Update next_sync_at
-                    if let Err(e) = self.update_next_sync_at(&source.id).await {
-                        error!(
-                            "Failed to update next_sync_at for source {}: {}",
-                            source.id, e
-                        );
-                    }
                 }
                 Err(SyncError::ConcurrencyLimitReached) => {
                     debug!("Concurrency limit reached, will retry on next tick");
@@ -136,31 +117,6 @@ impl Scheduler {
 
         Ok(())
     }
-
-    async fn update_next_sync_at(&self, source_id: &str) -> Result<(), SchedulerError> {
-        // Calculate next sync time based on interval
-        sqlx::query(
-            r#"
-            UPDATE sources
-            SET next_sync_at = CURRENT_TIMESTAMP + (sync_interval_seconds || ' seconds')::interval,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1 AND sync_interval_seconds IS NOT NULL
-            "#,
-        )
-        .bind(source_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct DueSource {
-    id: String,
-    name: String,
-    source_type: String,
 }
 
 #[derive(Debug, thiserror::Error)]

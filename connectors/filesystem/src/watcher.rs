@@ -218,7 +218,7 @@ impl FileSystemEventProcessor {
 
         let sync_run_repo = SyncRunRepository::new(&self.pool);
         let sync_run = sync_run_repo
-            .create(&self.source_id, SyncType::Incremental)
+            .create(&self.source_id, SyncType::Incremental, "manual")
             .await?;
 
         info!(

@@ -16,8 +16,11 @@ use axum::{
 };
 use futures::stream::Stream;
 use serde_json::json;
-use shared::models::SourceType;
-use shared::models::SyncType;
+use shared::db::repositories::SyncRunRepository;
+use shared::models::{SourceType, SyncType};
+use shared::queue::EventQueue;
+use shared::{Repository, ServiceCredentialsRepo, SourceRepository};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 use tracing::{debug, error, info};
@@ -164,42 +167,58 @@ async fn get_progress_from_db(
 pub async fn list_schedules(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ScheduleInfo>>, ApiError> {
-    let schedules: Vec<ScheduleInfo> = sqlx::query_as::<_, ScheduleRow>(
-        r#"
-        SELECT id, name, source_type::text as source_type, sync_interval_seconds,
-               next_sync_at, last_sync_at, sync_status
-        FROM sources
-        WHERE is_active = true AND is_deleted = false
-        ORDER BY next_sync_at ASC NULLS LAST
-        "#,
-    )
-    .fetch_all(state.db_pool.pool())
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?
-    .into_iter()
-    .map(|row| ScheduleInfo {
-        source_id: row.id,
-        source_name: row.name,
-        source_type: row.source_type,
-        sync_interval_seconds: row.sync_interval_seconds,
-        next_sync_at: row.next_sync_at.map(|t| t.to_string()),
-        last_sync_at: row.last_sync_at.map(|t| t.to_string()),
-        sync_status: row.sync_status,
-    })
-    .collect();
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+
+    let sources = source_repo
+        .find_active_sources()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let source_ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
+    let latest_runs = sync_run_repo
+        .find_latest_for_sources(&source_ids)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let runs_by_source: HashMap<String, &shared::models::SyncRun> = latest_runs
+        .iter()
+        .map(|r| (r.source_id.clone(), r))
+        .collect();
+
+    let schedules: Vec<ScheduleInfo> = sources
+        .into_iter()
+        .map(|source| {
+            let latest_run = runs_by_source.get(&source.id);
+            let last_sync_at = latest_run.and_then(|r| r.completed_at);
+            let next_sync_at = match (last_sync_at, source.sync_interval_seconds) {
+                (Some(completed), Some(interval)) => {
+                    Some(completed + time::Duration::seconds(interval as i64))
+                }
+                _ => None,
+            };
+
+            ScheduleInfo {
+                source_id: source.id,
+                source_name: source.name,
+                source_type: serde_json::to_value(&source.source_type)
+                    .ok()
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default(),
+                sync_interval_seconds: source.sync_interval_seconds,
+                next_sync_at: next_sync_at.map(|t| t.to_string()),
+                last_sync_at: last_sync_at.map(|t| t.to_string()),
+                sync_status: latest_run.map(|r| {
+                    serde_json::to_value(&r.status)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
+                        .unwrap_or_default()
+                }),
+            }
+        })
+        .collect();
 
     Ok(Json(schedules))
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct ScheduleRow {
-    id: String,
-    name: String,
-    source_type: String,
-    sync_interval_seconds: Option<i32>,
-    next_sync_at: Option<time::OffsetDateTime>,
-    last_sync_at: Option<time::OffsetDateTime>,
-    sync_status: Option<String>,
 }
 
 pub async fn list_connectors(
@@ -256,9 +275,8 @@ pub async fn execute_action(
     })?;
 
     // Get credentials
-    let creds_repo =
-        shared::db::repositories::ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     let creds = creds_repo
         .get_by_source_id(&request.source_id)
         .await
@@ -381,9 +399,6 @@ use crate::models::{
     SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookChannel,
     SdkWebhookNotification, SdkWebhookResponse,
 };
-use shared::db::repositories::SyncRunRepository;
-use shared::queue::EventQueue;
-use shared::Repository;
 
 pub async fn sdk_emit_event(
     State(state): State<AppState>,
@@ -483,27 +498,13 @@ pub async fn sdk_complete(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark completed: {}", e)))?;
 
-    // Update source status
-    if let Ok(Some(sync_run)) = sync_run_repo.find_by_id(&sync_run_id).await {
-        let source_repo = shared::SourceRepository::new(state.db_pool.pool());
-        let _ = source_repo
-            .update_sync_status(
-                &sync_run.source_id,
-                "completed",
-                Some(chrono::Utc::now()),
-                None,
-            )
-            .await;
-
-        // Store connector state if provided
-        if let Some(new_state) = request.new_state {
-            let _ = sqlx::query(
-                "UPDATE sources SET connector_state = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-            )
-            .bind(&new_state)
-            .bind(&sync_run.source_id)
-            .execute(state.db_pool.pool())
-            .await;
+    // Store connector state if provided
+    if let Some(new_state) = request.new_state {
+        if let Ok(Some(sync_run)) = sync_run_repo.find_by_id(&sync_run_id).await {
+            let source_repo = SourceRepository::new(state.db_pool.pool());
+            let _ = source_repo
+                .update_connector_state(&sync_run.source_id, new_state)
+                .await;
         }
     }
 
@@ -526,19 +527,6 @@ pub async fn sdk_fail(
         .mark_failed(&sync_run_id, &request.error)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark failed: {}", e)))?;
-
-    // Update source status
-    if let Ok(Some(sync_run)) = sync_run_repo.find_by_id(&sync_run_id).await {
-        let source_repo = shared::SourceRepository::new(state.db_pool.pool());
-        let _ = source_repo
-            .update_sync_status(
-                &sync_run.source_id,
-                "failed",
-                None,
-                Some(request.error.clone()),
-            )
-            .await;
-    }
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -572,7 +560,7 @@ pub async fn sdk_get_source(
 ) -> Result<Json<shared::models::Source>, ApiError> {
     debug!("SDK: Getting source config for source_id={}", source_id);
 
-    let source_repo = shared::SourceRepository::new(state.db_pool.pool());
+    let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
         .find_by_id(source_id.clone())
         .await
@@ -588,9 +576,8 @@ pub async fn sdk_get_credentials(
 ) -> Result<Json<shared::models::ServiceCredentials>, ApiError> {
     debug!("SDK: Getting credentials for source_id={}", source_id);
 
-    let creds_repo =
-        shared::db::repositories::ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-            .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
 
     let creds = creds_repo
         .get_by_source_id(&source_id)

@@ -147,24 +147,45 @@ impl SyncRunRepository {
     pub async fn get_last_completed_for_source(
         &self,
         source_id: &str,
-        sync_type: SyncType,
+        sync_type: Option<SyncType>,
     ) -> Result<Option<SyncRun>, DatabaseError> {
-        let sync_run = sqlx::query_as::<_, SyncRun>(
-            r#"
-            SELECT id, source_id, sync_type, started_at, completed_at, status,
-                   documents_scanned, documents_processed, documents_updated, error_message,
-                   created_at, updated_at
-            FROM sync_runs
-            WHERE source_id = $1 AND sync_type = $2 AND status = $3
-            ORDER BY completed_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(source_id)
-        .bind(sync_type)
-        .bind(SyncStatus::Completed)
-        .fetch_optional(&self.pool)
-        .await?;
+        let sync_run = match sync_type {
+            Some(st) => {
+                sqlx::query_as::<_, SyncRun>(
+                    r#"
+                    SELECT id, source_id, sync_type, started_at, completed_at, status,
+                           documents_scanned, documents_processed, documents_updated, error_message,
+                           created_at, updated_at
+                    FROM sync_runs
+                    WHERE source_id = $1 AND sync_type = $2 AND status = $3
+                    ORDER BY completed_at DESC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(source_id)
+                .bind(st)
+                .bind(SyncStatus::Completed)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as::<_, SyncRun>(
+                    r#"
+                    SELECT id, source_id, sync_type, started_at, completed_at, status,
+                           documents_scanned, documents_processed, documents_updated, error_message,
+                           created_at, updated_at
+                    FROM sync_runs
+                    WHERE source_id = $1 AND status = $2
+                    ORDER BY completed_at DESC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(source_id)
+                .bind(SyncStatus::Completed)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+        };
 
         Ok(sync_run)
     }
@@ -236,6 +257,28 @@ impl SyncRunRepository {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn find_latest_for_sources(
+        &self,
+        source_ids: &[String],
+    ) -> Result<Vec<SyncRun>, DatabaseError> {
+        let sync_runs = sqlx::query_as::<_, SyncRun>(
+            r#"
+            SELECT DISTINCT ON (source_id)
+                   id, source_id, sync_type, started_at, completed_at, status,
+                   documents_scanned, documents_processed, documents_updated, error_message,
+                   created_at, updated_at
+            FROM sync_runs
+            WHERE source_id = ANY($1)
+            ORDER BY source_id, started_at DESC
+            "#,
+        )
+        .bind(source_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(sync_runs)
     }
 
     pub async fn increment_scanned_with_activity(&self, id: &str) -> Result<(), DatabaseError> {

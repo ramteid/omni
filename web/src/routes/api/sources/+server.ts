@@ -1,8 +1,8 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
-import { sources, serviceCredentials } from '$lib/server/db/schema'
-import { eq, inArray } from 'drizzle-orm'
+import { sources, serviceCredentials, syncRuns } from '$lib/server/db/schema'
+import { eq, inArray, desc, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -22,22 +22,43 @@ export const GET: RequestHandler = async ({ locals }) => {
               })
             : []
 
+    // Get latest sync run for each source
+    const latestSyncRuns =
+        sourceIds.length > 0
+            ? await db
+                  .select()
+                  .from(syncRuns)
+                  .where(
+                      sql`${syncRuns.id} IN (
+                          SELECT DISTINCT ON (source_id) id
+                          FROM sync_runs
+                          WHERE source_id = ANY(${sourceIds})
+                          ORDER BY source_id, started_at DESC
+                      )`,
+                  )
+            : []
+
+    const syncRunMap = new Map(latestSyncRuns.map((r) => [r.sourceId, r]))
+
     // Create a map of source ID to whether it has credentials
     const credentialsMap = new Map(credentials.map((c) => [c.sourceId, true]))
 
-    const sanitizedSources = allSources.map((source) => ({
-        id: source.id,
-        name: source.name,
-        sourceType: source.sourceType,
-        config: source.config,
-        syncStatus: source.syncStatus,
-        isActive: source.isActive,
-        lastSyncAt: source.lastSyncAt,
-        syncError: source.syncError,
-        createdAt: source.createdAt,
-        updatedAt: source.updatedAt,
-        isConnected: credentialsMap.has(source.id),
-    }))
+    const sanitizedSources = allSources.map((source) => {
+        const latestSync = syncRunMap.get(source.id)
+        return {
+            id: source.id,
+            name: source.name,
+            sourceType: source.sourceType,
+            config: source.config,
+            syncStatus: latestSync?.status ?? null,
+            isActive: source.isActive,
+            lastSyncAt: latestSync?.completedAt ?? null,
+            syncError: latestSync?.errorMessage ?? null,
+            createdAt: source.createdAt,
+            updatedAt: source.updatedAt,
+            isConnected: credentialsMap.has(source.id),
+        }
+    })
 
     return json(sanitizedSources)
 }
@@ -63,7 +84,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             config: config || {},
             createdBy: locals.user.id,
             isActive: isActive ?? false,
-            syncStatus: 'pending',
         })
         .returning()
 
@@ -72,10 +92,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         name: newSource.name,
         sourceType: newSource.sourceType,
         config: newSource.config,
-        syncStatus: newSource.syncStatus,
+        syncStatus: null,
         isActive: newSource.isActive,
-        lastSyncAt: newSource.lastSyncAt,
-        syncError: newSource.syncError,
+        lastSyncAt: null,
+        syncError: null,
         createdAt: newSource.createdAt,
         updatedAt: newSource.updatedAt,
         isConnected: false,

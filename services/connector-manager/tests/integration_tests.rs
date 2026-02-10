@@ -81,14 +81,6 @@ async fn test_sync_lifecycle() {
         .unwrap();
     assert_eq!(run.status, SyncStatus::Running);
 
-    let source_status: (Option<String>,) =
-        sqlx::query_as("SELECT sync_status FROM sources WHERE id = $1")
-            .bind(TEST_SOURCE_ID)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    assert_eq!(source_status.0.as_deref(), Some("syncing"));
-
     let requests = fixture.mock_connector.get_sync_requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].source_id, TEST_SOURCE_ID);
@@ -138,14 +130,13 @@ async fn test_sync_lifecycle() {
     assert_eq!(run.documents_scanned, 42);
     assert_eq!(run.documents_updated, 10);
 
-    let source_row: (Option<String>, Option<serde_json::Value>) =
-        sqlx::query_as("SELECT sync_status, connector_state FROM sources WHERE id = $1")
+    let source_row: (Option<serde_json::Value>,) =
+        sqlx::query_as("SELECT connector_state FROM sources WHERE id = $1")
             .bind(TEST_SOURCE_ID)
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(source_row.0.as_deref(), Some("completed"));
-    assert_eq!(source_row.1.unwrap()["cursor"].as_str(), Some("abc"));
+    assert_eq!(source_row.0.unwrap()["cursor"].as_str(), Some("abc"));
 }
 
 // ============================================================================
@@ -242,14 +233,6 @@ async fn test_sync_connector_failure() {
     let repo = SyncRunRepository::new(pool);
     let runs = repo.find_all_running().await.unwrap();
     assert!(runs.is_empty());
-
-    let source_row: (Option<String>,) =
-        sqlx::query_as("SELECT sync_status FROM sources WHERE id = $1")
-            .bind(TEST_SOURCE_ID)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    assert_eq!(source_row.0.as_deref(), Some("failed"));
 }
 
 // ============================================================================
@@ -275,14 +258,6 @@ async fn test_cancel_sync() {
         .unwrap()
         .unwrap();
     assert_eq!(run.status, SyncStatus::Cancelled);
-
-    let source_row: (Option<String>,) =
-        sqlx::query_as("SELECT sync_status FROM sources WHERE id = $1")
-            .bind(TEST_SOURCE_ID)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    assert_eq!(source_row.0.as_deref(), Some("pending"));
 
     let cancel_requests = fixture.mock_connector.get_cancel_requests();
     assert_eq!(cancel_requests.len(), 1);
@@ -325,15 +300,6 @@ async fn test_sync_failure_via_sdk() {
         .unwrap();
     assert_eq!(run.status, SyncStatus::Failed);
     assert_eq!(run.error_message.as_deref(), Some("Out of memory"));
-
-    let source_row: (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT sync_status, sync_error FROM sources WHERE id = $1")
-            .bind(TEST_SOURCE_ID)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    assert_eq!(source_row.0.as_deref(), Some("failed"));
-    assert_eq!(source_row.1.as_deref(), Some("Out of memory"));
 }
 
 // ============================================================================
@@ -422,12 +388,6 @@ async fn test_stale_sync_detection() {
 
     let sync_run_id = create_running_sync(pool, TEST_SOURCE_ID).await;
 
-    sqlx::query("UPDATE sources SET sync_status = 'syncing' WHERE id = $1")
-        .bind(TEST_SOURCE_ID)
-        .execute(pool)
-        .await
-        .unwrap();
-
     // Backdate last_activity_at beyond the 1-minute timeout
     sqlx::query(
         "UPDATE sync_runs SET last_activity_at = NOW() - INTERVAL '10 minutes', started_at = NOW() - INTERVAL '10 minutes' WHERE id = $1",
@@ -459,12 +419,4 @@ async fn test_stale_sync_detection() {
         "Expected 'timed out' in error, got: {:?}",
         run.error_message
     );
-
-    let source_row: (Option<String>,) =
-        sqlx::query_as("SELECT sync_status FROM sources WHERE id = $1")
-            .bind(TEST_SOURCE_ID)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    assert_eq!(source_row.0.as_deref(), Some("failed"));
 }

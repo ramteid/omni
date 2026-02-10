@@ -332,9 +332,13 @@ impl SyncManager {
             return Err(e);
         }
 
-        // Determine sync strategy based on sync_mode or last sync time
         let sync_start = Utc::now();
-        let is_full_sync = request.sync_mode == "full" || source.last_sync_at.is_none();
+        let is_full_sync = request.sync_mode == "full";
+        let last_sync_time = request
+            .last_sync_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
 
         // Get reference to cancellation flag for processors
         let cancelled = &active_sync.cancelled;
@@ -351,10 +355,8 @@ impl SyncManager {
             .await
         } else {
             info!("Performing incremental sync for source: {}", source.name);
-            let last_sync = source
-                .last_sync_at
-                .and_then(|last| DateTime::from_timestamp(last.unix_timestamp(), 0))
-                .unwrap_or_else(|| sync_start - chrono::Duration::hours(24));
+            let last_sync =
+                last_sync_time.unwrap_or_else(|| sync_start - chrono::Duration::hours(24));
 
             self.execute_incremental_sync(
                 &credentials,

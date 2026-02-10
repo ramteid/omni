@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db'
 import { sources, syncRuns } from '$lib/server/db/schema'
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, sql } from 'drizzle-orm'
 import type { Source, SyncRun } from '$lib/server/db/schema'
 
 export class SourcesRepository {
@@ -21,6 +21,22 @@ export class SourcesRepository {
         const running = await db.select().from(syncRuns).where(eq(syncRuns.status, 'running'))
 
         return new Map(running.map((sync) => [sync.sourceId, sync]))
+    }
+
+    async getLatestCompletedSyncs(): Promise<Map<string, SyncRun>> {
+        const rows = await db
+            .select()
+            .from(syncRuns)
+            .where(
+                sql`${syncRuns.id} IN (
+                    SELECT DISTINCT ON (source_id) id
+                    FROM sync_runs
+                    WHERE status = 'completed'
+                    ORDER BY source_id, completed_at DESC
+                )`,
+            )
+
+        return new Map(rows.map((sync) => [sync.sourceId, sync]))
     }
 }
 

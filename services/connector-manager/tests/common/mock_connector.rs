@@ -16,6 +16,8 @@ pub struct RecordedSyncRequest {
     pub sync_run_id: String,
     pub source_id: String,
     pub sync_mode: String,
+    #[serde(default)]
+    pub last_sync_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

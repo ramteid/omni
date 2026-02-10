@@ -7,10 +7,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     const connectedSources = await sourcesRepository.getAll()
     const runningSyncs = await sourcesRepository.getRunningSyncs()
+    const latestCompletedSyncs = await sourcesRepository.getLatestCompletedSyncs()
 
     return {
         connectedSources,
         runningSyncs,
+        latestCompletedSyncs,
         availableIntegrations: [
             {
                 id: 'google',

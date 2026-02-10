@@ -5,6 +5,7 @@ use shared::db::repositories::SyncRunRepository;
 use shared::models::{SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
+use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tracing::{error, info, warn};
 
@@ -59,23 +60,49 @@ impl SyncManager {
             .ok_or_else(|| SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type)))?
             .clone();
 
-        let sync_run = self
+        // Check last completed sync to determine effective sync type and last_sync_at
+        let last_completed = self
             .sync_run_repo
-            .create(source_id, sync_type, &trigger_type.to_string())
+            .get_last_completed_for_source(source_id, None)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
-        self.update_source_sync_status(source_id, "syncing").await?;
+        let effective_sync_type = match sync_type {
+            SyncType::Incremental if last_completed.is_none() => {
+                info!(
+                    "No prior completed sync for source {}; upgrading to full sync",
+                    source_id
+                );
+                SyncType::Full
+            }
+            other => other,
+        };
+
+        let last_sync_at = if effective_sync_type == SyncType::Incremental {
+            last_completed
+                .as_ref()
+                .and_then(|run| run.completed_at)
+                .and_then(|ts| ts.format(&Rfc3339).ok())
+        } else {
+            None
+        };
+
+        let sync_run = self
+            .sync_run_repo
+            .create(source_id, effective_sync_type, &trigger_type.to_string())
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
         let sync_request = SyncRequest {
             sync_run_id: sync_run.id.clone(),
             source_id: source_id.to_string(),
             // TODO: Change type of sync_mode to SyncType
-            sync_mode: match sync_type {
+            sync_mode: match effective_sync_type {
                 SyncType::Full => "full",
                 SyncType::Incremental => "incremental",
             }
             .to_string(),
+            last_sync_at,
         };
 
         // Trigger sync (non-blocking call to connector)
@@ -134,8 +161,6 @@ impl SyncManager {
             .mark_cancelled(sync_run_id)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
-        self.update_source_sync_status(&sync_run.source_id, "pending")
-            .await?;
 
         info!("Sync {} cancelled", sync_run_id);
         Ok(())
@@ -200,34 +225,6 @@ impl SyncManager {
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
-        let sync_run = self
-            .sync_run_repo
-            .find_by_id(sync_run_id)
-            .await
-            .map_err(|e| SyncError::DatabaseError(e.to_string()))?
-            .ok_or_else(|| SyncError::SyncRunNotFound(sync_run_id.to_string()))?;
-
-        sqlx::query("UPDATE sources SET sync_status = 'failed', sync_error = $1 WHERE id = $2")
-            .bind(error)
-            .bind(&sync_run.source_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
-
-        Ok(())
-    }
-
-    async fn update_source_sync_status(
-        &self,
-        source_id: &str,
-        status: &str,
-    ) -> Result<(), SyncError> {
-        sqlx::query("UPDATE sources SET sync_status = $1 WHERE id = $2")
-            .bind(status)
-            .bind(source_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
         Ok(())
     }
 }

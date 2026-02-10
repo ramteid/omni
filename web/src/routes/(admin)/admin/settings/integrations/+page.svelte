@@ -31,6 +31,7 @@
 
     type SourceId = string
     let runningSyncs = $derived<Map<SourceId, SyncRun>>(data.runningSyncs)
+    let latestCompletedSyncs = $derived<Map<SourceId, SyncRun>>(data.latestCompletedSyncs)
     let documentCounts = $state<Record<SourceId, number>>({})
     let eventSource = $state<EventSource | null>(null)
 
@@ -269,7 +270,11 @@
                                                 <span>Syncing...</span>
                                             {/if}
                                         {:else}
-                                            <span>Last sync: {formatDate(source.lastSyncAt)}</span>
+                                            <span
+                                                >Last sync: {formatDate(
+                                                    latestCompletedSyncs.get(source.id)
+                                                        ?.completedAt ?? null,
+                                                )}</span>
                                         {/if}
                                         {#if documentCounts[source.id]}
                                             <span class="text-muted-foreground">·</span>

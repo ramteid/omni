@@ -58,13 +58,11 @@ pub struct Source {
     pub config: JsonValue,
     pub is_active: bool,
     pub is_deleted: bool,
-    #[serde(with = "time::serde::iso8601::option")]
-    pub last_sync_at: Option<OffsetDateTime>,
-    pub sync_status: Option<String>,
-    pub sync_error: Option<String>,
     pub user_filter_mode: UserFilterMode,
     pub user_whitelist: Option<JsonValue>,
     pub user_blacklist: Option<JsonValue>,
+    pub connector_state: Option<JsonValue>,
+    pub sync_interval_seconds: Option<i32>,
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::iso8601")]
@@ -420,6 +418,8 @@ pub struct SyncRequest {
     pub sync_run_id: String,
     pub source_id: String,
     pub sync_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<String>,
 }
 
 /// Response from connector after receiving a sync request.

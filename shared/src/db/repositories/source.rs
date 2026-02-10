@@ -1,6 +1,7 @@
 use crate::{db::error::DatabaseError, models::Source, traits::Repository};
 use async_trait::async_trait;
 use sqlx::PgPool;
+use time::OffsetDateTime;
 
 #[derive(Clone)]
 pub struct SourceRepository {
@@ -16,8 +17,8 @@ impl SourceRepository {
         let sources = sqlx::query_as::<_, Source>(
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted,
-                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
-                   created_at, updated_at, created_by
+                   user_filter_mode, user_whitelist, user_blacklist,
+                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE source_type = $1 AND is_deleted = false
             ORDER BY created_at DESC
@@ -34,8 +35,8 @@ impl SourceRepository {
         let sources = sqlx::query_as::<_, Source>(
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted,
-                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
-                   created_at, updated_at, created_by
+                   user_filter_mode, user_whitelist, user_blacklist,
+                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE is_active = true AND is_deleted = false
             ORDER BY created_at DESC
@@ -45,15 +46,6 @@ impl SourceRepository {
         .await?;
 
         Ok(sources)
-    }
-
-    pub async fn update_last_sync(&self, id: &str) -> Result<(), DatabaseError> {
-        sqlx::query("UPDATE sources SET last_sync_at = CURRENT_TIMESTAMP WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
     }
 
     pub async fn update_user_filter_settings(
@@ -66,7 +58,7 @@ impl SourceRepository {
         sqlx::query(
             r#"
             UPDATE sources
-            SET user_filter_mode = $2, user_whitelist = $3, user_blacklist = $4, sync_status = 'pending', updated_at = CURRENT_TIMESTAMP
+            SET user_filter_mode = $2, user_whitelist = $3, user_blacklist = $4, updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
             "#
         )
@@ -87,8 +79,8 @@ impl SourceRepository {
         let mut query_builder = sqlx::QueryBuilder::new(
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted,
-                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
-                   created_at, updated_at, created_by
+                   user_filter_mode, user_whitelist, user_blacklist,
+                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE is_active = true AND is_deleted = false
             "#,
@@ -113,26 +105,15 @@ impl SourceRepository {
         Ok(sources)
     }
 
-    pub async fn update_sync_status(
+    pub async fn update_connector_state(
         &self,
         id: &str,
-        status: &str,
-        last_sync_at: Option<chrono::DateTime<chrono::Utc>>,
-        sync_error: Option<String>,
+        connector_state: serde_json::Value,
     ) -> Result<(), DatabaseError> {
         sqlx::query(
-            r#"
-            UPDATE sources SET
-                sync_status = $1,
-                last_sync_at = COALESCE($2, last_sync_at),
-                sync_error = $3,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $4
-            "#,
+            "UPDATE sources SET connector_state = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
         )
-        .bind(status)
-        .bind(last_sync_at)
-        .bind(sync_error)
+        .bind(&connector_state)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -155,6 +136,36 @@ impl SourceRepository {
                 .await?;
         Ok(results)
     }
+
+    pub async fn find_due_for_sync(
+        &self,
+        now: OffsetDateTime,
+    ) -> Result<Vec<Source>, DatabaseError> {
+        let sources = sqlx::query_as::<_, Source>(
+            r#"
+            SELECT s.id, s.name, s.source_type, s.config, s.is_active, s.is_deleted,
+                   s.user_filter_mode, s.user_whitelist, s.user_blacklist,
+                   s.connector_state, s.sync_interval_seconds, s.created_at, s.updated_at, s.created_by
+            FROM sources s
+            LEFT JOIN LATERAL (
+                SELECT completed_at FROM sync_runs
+                WHERE source_id = s.id AND status = 'completed'
+                ORDER BY completed_at DESC LIMIT 1
+            ) lr ON true
+            WHERE s.is_active = true AND s.is_deleted = false
+              AND s.sync_interval_seconds IS NOT NULL
+              AND (lr.completed_at IS NULL
+                   OR lr.completed_at + (s.sync_interval_seconds || ' seconds')::interval <= $1)
+            ORDER BY lr.completed_at ASC NULLS FIRST
+            LIMIT 10
+            "#,
+        )
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(sources)
+    }
 }
 
 #[async_trait]
@@ -163,8 +174,8 @@ impl Repository<Source, String> for SourceRepository {
         let source = sqlx::query_as::<_, Source>(
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted,
-                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
-                   created_at, updated_at, created_by
+                   user_filter_mode, user_whitelist, user_blacklist,
+                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE id = $1
             "#,
@@ -180,8 +191,8 @@ impl Repository<Source, String> for SourceRepository {
         let sources = sqlx::query_as::<_, Source>(
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted,
-                   last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
-                   created_at, updated_at, created_by
+                   user_filter_mode, user_whitelist, user_blacklist,
+                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE is_deleted = false
             ORDER BY created_at DESC
@@ -202,8 +213,8 @@ impl Repository<Source, String> for SourceRepository {
             INSERT INTO sources (id, name, source_type, config, is_active, created_by)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, name, source_type, config, is_active, is_deleted,
-                      last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
-                      created_at, updated_at, created_by
+                      user_filter_mode, user_whitelist, user_blacklist,
+                      connector_state, sync_interval_seconds, created_at, updated_at, created_by
             "#,
         )
         .bind(&source.id)
@@ -231,8 +242,8 @@ impl Repository<Source, String> for SourceRepository {
             SET name = $2, source_type = $3, config = $4, is_active = $5, updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
             RETURNING id, name, source_type, config, is_active, is_deleted,
-                      last_sync_at, sync_status, sync_error, user_filter_mode, user_whitelist, user_blacklist,
-                      created_at, updated_at, created_by
+                      user_filter_mode, user_whitelist, user_blacklist,
+                      connector_state, sync_interval_seconds, created_at, updated_at, created_by
             "#,
         )
         .bind(&id)
