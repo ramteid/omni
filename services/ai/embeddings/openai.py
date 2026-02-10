@@ -195,7 +195,7 @@ class OpenAIEmbeddingClient:
                         )
                     )
                     logger.warning(
-                        f"Rate limited, retrying after {retry_after} seconds"
+                        f"Rate limited, retrying after {retry_after} seconds. Response: {response.text}"
                     )
                     await asyncio.sleep(retry_after)
                 else:
