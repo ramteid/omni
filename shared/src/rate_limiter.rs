@@ -130,15 +130,30 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
-    async fn test_rate_limiting_basic() {
-        let limiter = RateLimiter::new(180, 3);
-        // Just test that it doesn't panic and returns Ok
-        limiter.check_rate_limit().await.unwrap();
-        limiter.check_rate_limit().await.unwrap();
+    async fn test_execute_success() {
+        let limiter = RateLimiter::new(100, 3);
+
+        let result = limiter
+            .execute(|| async { Ok::<_, anyhow::Error>(42) })
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
     }
 
     #[tokio::test]
-    async fn test_retry_logic() {
+    async fn test_execute_propagates_error() {
+        let limiter = RateLimiter::new(100, 3);
+
+        let result = limiter
+            .execute(|| async { Err::<i32, _>(anyhow!("operation failed")) })
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("operation failed"));
+    }
+
+    #[tokio::test]
+    async fn test_retry_succeeds_after_failures() {
         let limiter = RateLimiter::new(100, 3);
         let attempts = Arc::new(AtomicU32::new(0));
         let attempts_clone = Arc::clone(&attempts);
@@ -158,6 +173,31 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_retry_exhaustion_returns_last_error() {
+        let limiter = RateLimiter::new(100, 2);
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let result = limiter
+            .execute_with_retry(|| {
+                let attempts = Arc::clone(&attempts_clone);
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(anyhow!("persistent failure"))
+                }
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("persistent failure"));
+        // 1 initial attempt + 2 retries = 3 total attempts
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 }

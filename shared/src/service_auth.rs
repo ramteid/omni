@@ -275,3 +275,169 @@ pub fn create_service_auth(creds: &ServiceCredentials) -> Result<Box<dyn Service
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use sqlx::types::time::OffsetDateTime;
+
+    fn make_credentials(
+        provider: ServiceProvider,
+        auth_type: AuthType,
+        principal_email: Option<&str>,
+        credentials: serde_json::Value,
+        config: serde_json::Value,
+    ) -> ServiceCredentials {
+        ServiceCredentials {
+            id: "test-id".to_string(),
+            source_id: "test-source".to_string(),
+            provider,
+            auth_type,
+            principal_email: principal_email.map(String::from),
+            credentials,
+            config,
+            expires_at: None,
+            last_validated_at: None,
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_key_auth_header_format() {
+        let auth = ApiKeyAuth::new("user@example.com".to_string(), "my-api-key".to_string());
+        let header = auth.get_auth_header().await.unwrap();
+
+        let expected_b64 = general_purpose::STANDARD.encode("user@example.com:my-api-key");
+        assert_eq!(header, format!("Basic {}", expected_b64));
+    }
+
+    #[tokio::test]
+    async fn test_api_key_auth_validate_nonempty() {
+        let auth = ApiKeyAuth::new("user".to_string(), "key123".to_string());
+        assert!(auth.validate().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_api_key_auth_validate_empty_key() {
+        let auth = ApiKeyAuth::new("user".to_string(), "".to_string());
+        assert!(!auth.validate().await.unwrap());
+    }
+
+    #[test]
+    fn test_api_key_auth_from_credentials_valid() {
+        let creds = make_credentials(
+            ServiceProvider::Atlassian,
+            AuthType::ApiKey,
+            Some("admin@corp.com"),
+            json!({"api_key": "secret123"}),
+            json!({}),
+        );
+        let auth = ApiKeyAuth::from_credentials(&creds);
+        assert!(auth.is_ok());
+    }
+
+    #[test]
+    fn test_api_key_auth_from_credentials_missing_email() {
+        let creds = make_credentials(
+            ServiceProvider::Atlassian,
+            AuthType::ApiKey,
+            None,
+            json!({"api_key": "secret123"}),
+            json!({}),
+        );
+        assert!(ApiKeyAuth::from_credentials(&creds).is_err());
+    }
+
+    #[test]
+    fn test_api_key_auth_from_credentials_missing_key() {
+        let creds = make_credentials(
+            ServiceProvider::Atlassian,
+            AuthType::ApiKey,
+            Some("admin@corp.com"),
+            json!({}),
+            json!({}),
+        );
+        assert!(ApiKeyAuth::from_credentials(&creds).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_bot_token_auth_header_format() {
+        let auth = BotTokenAuth::new("xoxb-test-token".to_string());
+        let header = auth.get_auth_header().await.unwrap();
+        assert_eq!(header, "Bearer xoxb-test-token");
+    }
+
+    #[tokio::test]
+    async fn test_bot_token_validate_valid_prefix() {
+        let auth = BotTokenAuth::new("xoxb-123456".to_string());
+        assert!(auth.validate().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_bot_token_validate_invalid_prefix() {
+        let auth = BotTokenAuth::new("not-a-bot-token".to_string());
+        assert!(!auth.validate().await.unwrap());
+    }
+
+    #[test]
+    fn test_bot_token_from_credentials_valid() {
+        let creds = make_credentials(
+            ServiceProvider::Slack,
+            AuthType::BotToken,
+            None,
+            json!({"bot_token": "xoxb-slack-token"}),
+            json!({}),
+        );
+        assert!(BotTokenAuth::from_credentials(&creds).is_ok());
+    }
+
+    #[test]
+    fn test_bot_token_from_credentials_missing_token() {
+        let creds = make_credentials(
+            ServiceProvider::Slack,
+            AuthType::BotToken,
+            None,
+            json!({}),
+            json!({}),
+        );
+        assert!(BotTokenAuth::from_credentials(&creds).is_err());
+    }
+
+    #[test]
+    fn test_create_service_auth_atlassian_api_key() {
+        let creds = make_credentials(
+            ServiceProvider::Atlassian,
+            AuthType::ApiKey,
+            Some("admin@corp.com"),
+            json!({"api_key": "key123"}),
+            json!({}),
+        );
+        assert!(create_service_auth(&creds).is_ok());
+    }
+
+    #[test]
+    fn test_create_service_auth_slack_bot_token() {
+        let creds = make_credentials(
+            ServiceProvider::Slack,
+            AuthType::BotToken,
+            None,
+            json!({"bot_token": "xoxb-token"}),
+            json!({}),
+        );
+        assert!(create_service_auth(&creds).is_ok());
+    }
+
+    #[test]
+    fn test_create_service_auth_unsupported_combination() {
+        let creds = make_credentials(
+            ServiceProvider::Slack,
+            AuthType::ApiKey,
+            None,
+            json!({}),
+            json!({}),
+        );
+        assert!(create_service_auth(&creds).is_err());
+    }
+}

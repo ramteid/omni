@@ -469,3 +469,160 @@ pub struct MagicLink {
     pub created_at: OffsetDateTime,
     pub user_id: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_source(
+        filter_mode: UserFilterMode,
+        whitelist: Option<JsonValue>,
+        blacklist: Option<JsonValue>,
+    ) -> Source {
+        Source {
+            id: "src-1".to_string(),
+            name: "Test".to_string(),
+            source_type: SourceType::Web,
+            config: json!({}),
+            is_active: true,
+            is_deleted: false,
+            last_sync_at: None,
+            sync_status: None,
+            sync_error: None,
+            user_filter_mode: filter_mode,
+            user_whitelist: whitelist,
+            user_blacklist: blacklist,
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
+            created_by: "admin".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_should_index_user_all_mode() {
+        let source = make_source(UserFilterMode::All, None, None);
+        assert!(source.should_index_user("anyone@example.com"));
+        assert!(source.should_index_user(""));
+    }
+
+    #[test]
+    fn test_should_index_user_whitelist() {
+        let source = make_source(
+            UserFilterMode::Whitelist,
+            Some(json!(["alice@corp.com", "bob@corp.com"])),
+            None,
+        );
+        assert!(source.should_index_user("alice@corp.com"));
+        assert!(source.should_index_user("bob@corp.com"));
+        assert!(!source.should_index_user("eve@corp.com"));
+    }
+
+    #[test]
+    fn test_should_index_user_blacklist() {
+        let source = make_source(
+            UserFilterMode::Blacklist,
+            None,
+            Some(json!(["blocked@corp.com"])),
+        );
+        assert!(!source.should_index_user("blocked@corp.com"));
+        assert!(source.should_index_user("allowed@corp.com"));
+    }
+
+    #[test]
+    fn test_get_user_whitelist_none() {
+        let source = make_source(UserFilterMode::All, None, None);
+        assert!(source.get_user_whitelist().is_empty());
+    }
+
+    #[test]
+    fn test_get_user_whitelist_valid() {
+        let source = make_source(
+            UserFilterMode::Whitelist,
+            Some(json!(["a@b.com", "c@d.com"])),
+            None,
+        );
+        assert_eq!(
+            source.get_user_whitelist(),
+            vec!["a@b.com".to_string(), "c@d.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_get_user_blacklist_valid() {
+        let source = make_source(UserFilterMode::Blacklist, None, Some(json!(["x@y.com"])));
+        assert_eq!(source.get_user_blacklist(), vec!["x@y.com".to_string()]);
+    }
+
+    #[test]
+    fn test_attribute_filter_exact_string_deserialization() {
+        let filter: AttributeFilter = serde_json::from_value(json!("engineering")).unwrap();
+        assert!(matches!(filter, AttributeFilter::Exact(_)));
+    }
+
+    #[test]
+    fn test_attribute_filter_exact_number_deserialization() {
+        let filter: AttributeFilter = serde_json::from_value(json!(42)).unwrap();
+        assert!(matches!(filter, AttributeFilter::Exact(_)));
+    }
+
+    #[test]
+    fn test_attribute_filter_exact_round_trips() {
+        let original = AttributeFilter::Exact(json!("team-a"));
+        let serialized = serde_json::to_value(&original).unwrap();
+        let deserialized: AttributeFilter = serde_json::from_value(serialized).unwrap();
+        if let AttributeFilter::Exact(v) = deserialized {
+            assert_eq!(v, json!("team-a"));
+        } else {
+            panic!("Expected Exact variant");
+        }
+    }
+
+    #[test]
+    fn test_attribute_filter_any_of_serializes_as_array() {
+        let filter = AttributeFilter::AnyOf(vec![json!("a"), json!("b")]);
+        let serialized = serde_json::to_value(&filter).unwrap();
+        assert!(serialized.is_array());
+        assert_eq!(serialized.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_attribute_filter_range_serializes_with_gte_lte() {
+        let filter = AttributeFilter::Range {
+            gte: Some(json!(10)),
+            lte: Some(json!(100)),
+        };
+        let serialized = serde_json::to_value(&filter).unwrap();
+        assert_eq!(serialized["gte"], json!(10));
+        assert_eq!(serialized["lte"], json!(100));
+    }
+
+    #[test]
+    fn test_connector_event_accessors() {
+        let event = ConnectorEvent::DocumentCreated {
+            sync_run_id: "run-1".to_string(),
+            source_id: "src-1".to_string(),
+            document_id: "doc-1".to_string(),
+            content_id: "cnt-1".to_string(),
+            metadata: DocumentMetadata::default(),
+            permissions: DocumentPermissions {
+                public: false,
+                users: vec![],
+                groups: vec![],
+            },
+            attributes: None,
+        };
+        assert_eq!(event.sync_run_id(), "run-1");
+        assert_eq!(event.source_id(), "src-1");
+        assert_eq!(event.document_id(), "doc-1");
+
+        let deleted = ConnectorEvent::DocumentDeleted {
+            sync_run_id: "run-2".to_string(),
+            source_id: "src-2".to_string(),
+            document_id: "doc-2".to_string(),
+        };
+        assert_eq!(deleted.sync_run_id(), "run-2");
+        assert_eq!(deleted.source_id(), "src-2");
+        assert_eq!(deleted.document_id(), "doc-2");
+    }
+}
