@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use dashmap::DashSet;
 use dotenvy::dotenv;
 use omni_web_connector::api::{create_router, ApiState};
 use omni_web_connector::sync::SyncManager;
@@ -31,7 +30,6 @@ async fn main() -> Result<()> {
 
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),
-        active_syncs: Arc::new(DashSet::new()),
     };
 
     let app = create_router(api_state);

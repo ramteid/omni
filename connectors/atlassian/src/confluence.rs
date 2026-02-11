@@ -75,7 +75,6 @@ impl ConfluenceProcessor {
         let mut total_pages_processed = 0;
 
         for space in spaces {
-            // Check for cancellation before processing each space
             if cancelled.load(Ordering::SeqCst) {
                 info!(
                     "Confluence sync {} cancelled, stopping early after {} pages",
@@ -133,7 +132,6 @@ impl ConfluenceProcessor {
         let mut pages_stream = self.client.get_confluence_pages(creds, space_id);
 
         while let Some(page_result) = pages_stream.next().await {
-            // Check for cancellation during page streaming
             if cancelled.load(Ordering::SeqCst) {
                 info!(
                     "Confluence sync cancelled during space {} page streaming",
@@ -141,7 +139,6 @@ impl ConfluenceProcessor {
                 );
                 return Ok(total_pages);
             }
-
             let page = page_result?;
             pages_batch.push(page);
 

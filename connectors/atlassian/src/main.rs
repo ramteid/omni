@@ -1,5 +1,4 @@
 use anyhow::Result;
-use dashmap::DashSet;
 use dotenvy::dotenv;
 use shared::telemetry::{self, TelemetryConfig};
 use std::sync::Arc;
@@ -38,10 +37,8 @@ async fn main() -> Result<()> {
 
     let sync_manager = Arc::new(Mutex::new(SyncManager::new(redis_client, sdk_client)));
 
-    // Create API state
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),
-        active_syncs: Arc::new(DashSet::new()),
     };
 
     // Create HTTP server

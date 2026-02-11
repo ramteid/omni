@@ -5,7 +5,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use dashmap::DashSet;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shared::models::SyncRequest;
@@ -23,7 +22,6 @@ use crate::sync::SyncManager;
 #[derive(Clone)]
 pub struct ApiState {
     pub sync_manager: Arc<Mutex<SyncManager>>,
-    pub active_syncs: Arc<DashSet<String>>,
 }
 
 #[derive(Serialize)]
@@ -101,31 +99,11 @@ async fn trigger_sync(
         source_id, sync_run_id
     );
 
-    // Check if already syncing this source
-    if state.active_syncs.contains(&source_id) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(SyncResponse::error(
-                "Sync already in progress for this source",
-            )),
-        ));
-    }
-
-    // Mark as active
-    state.active_syncs.insert(source_id.clone());
-
-    // Spawn sync task
     let sync_manager = state.sync_manager.clone();
-    let active_syncs = state.active_syncs.clone();
 
     tokio::spawn(async move {
         let mut manager = sync_manager.lock().await;
-        let result = manager.sync_source(request).await;
-
-        // Remove from active syncs when done
-        active_syncs.remove(&source_id);
-
-        if let Err(e) = result {
+        if let Err(e) = manager.sync_source(request).await {
             error!("Sync {} failed: {}", sync_run_id, e);
         }
     });

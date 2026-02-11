@@ -175,16 +175,11 @@ impl SyncState {
     }
 }
 
-/// Tracks active syncs and their cancellation status
-struct ActiveSync {
-    cancelled: AtomicBool,
-}
-
 pub struct SyncManager {
     redis_client: RedisClient,
     sdk_client: SdkClient,
     page_source: Arc<dyn PageSource>,
-    active_syncs: DashMap<String, Arc<ActiveSync>>,
+    active_syncs: DashMap<String, Arc<AtomicBool>>,
 }
 
 impl SyncManager {
@@ -222,12 +217,9 @@ impl SyncManager {
             .await
             .context("Failed to fetch source via SDK")?;
 
-        // Register this sync for cancellation support
-        let active_sync = Arc::new(ActiveSync {
-            cancelled: AtomicBool::new(false),
-        });
+        let cancelled = Arc::new(AtomicBool::new(false));
         self.active_syncs
-            .insert(sync_run_id.clone(), active_sync.clone());
+            .insert(sync_run_id.clone(), cancelled.clone());
 
         // Parse config from source
         let config = WebSourceConfig::from_json(&source.config)
@@ -252,12 +244,11 @@ impl SyncManager {
             let pages_updated = pages_updated.clone();
             let sync_state = sync_state.clone();
             let sdk_client = self.sdk_client.clone();
-            let active_sync = active_sync.clone();
+            let cancelled = cancelled.clone();
 
             tokio::spawn(async move {
                 while let Some(web_page) = rx.recv().await {
-                    // Check for cancellation
-                    if active_sync.cancelled.load(Ordering::SeqCst) {
+                    if cancelled.load(Ordering::SeqCst) {
                         info!("Sync {} cancelled, stopping processor", sync_run_id);
                         break;
                     }
@@ -292,9 +283,7 @@ impl SyncManager {
             .await
             .with_context(|| "Failed while waiting for page processor to complete")?;
 
-        // Check if cancelled
-        if active_sync.cancelled.load(Ordering::SeqCst) {
-            // Manager will handle updating status when cancel was requested
+        if cancelled.load(Ordering::SeqCst) {
             self.active_syncs.remove(sync_run_id);
             return Ok(());
         }
@@ -365,10 +354,9 @@ impl SyncManager {
         Ok(())
     }
 
-    /// Cancel a running sync
     pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
-        if let Some(active_sync) = self.active_syncs.get(sync_run_id) {
-            active_sync.cancelled.store(true, Ordering::SeqCst);
+        if let Some(cancelled) = self.active_syncs.get(sync_run_id) {
+            cancelled.store(true, Ordering::SeqCst);
             true
         } else {
             false

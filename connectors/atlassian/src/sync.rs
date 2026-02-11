@@ -13,16 +13,12 @@ use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
 use shared::SdkClient;
 
-struct ActiveSync {
-    cancelled: AtomicBool,
-}
-
 pub struct SyncManager {
     sdk_client: SdkClient,
     auth_manager: AuthManager,
     confluence_processor: ConfluenceProcessor,
     jira_processor: JiraProcessor,
-    active_syncs: DashMap<String, Arc<ActiveSync>>,
+    active_syncs: DashMap<String, Arc<AtomicBool>>,
 }
 
 pub struct SyncState {
@@ -247,22 +243,13 @@ impl SyncManager {
         }
     }
 
-    /// Cancel a running sync
     pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
-        if let Some(active_sync) = self.active_syncs.get(sync_run_id) {
-            active_sync.cancelled.store(true, Ordering::SeqCst);
+        if let Some(cancelled) = self.active_syncs.get(sync_run_id) {
+            cancelled.store(true, Ordering::SeqCst);
             true
         } else {
             false
         }
-    }
-
-    /// Check if a sync has been cancelled
-    fn is_cancelled(&self, sync_run_id: &str) -> bool {
-        self.active_syncs
-            .get(sync_run_id)
-            .map(|s| s.cancelled.load(Ordering::SeqCst))
-            .unwrap_or(false)
     }
 
     /// Execute a sync based on the request from connector-manager
@@ -274,13 +261,6 @@ impl SyncManager {
             "Starting sync for source: {} (sync_run_id: {})",
             source_id, sync_run_id
         );
-
-        // Register this sync for cancellation tracking
-        let active_sync = Arc::new(ActiveSync {
-            cancelled: AtomicBool::new(false),
-        });
-        self.active_syncs
-            .insert(sync_run_id.to_string(), active_sync.clone());
 
         // Fetch source via SDK
         let source = self
@@ -332,6 +312,10 @@ impl SyncManager {
             return Err(e);
         }
 
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.active_syncs
+            .insert(sync_run_id.to_string(), cancelled.clone());
+
         let sync_start = Utc::now();
         let is_full_sync = request.sync_mode == "full";
         let last_sync_time = request
@@ -340,9 +324,6 @@ impl SyncManager {
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&Utc));
 
-        // Get reference to cancellation flag for processors
-        let cancelled = &active_sync.cancelled;
-
         let result = if is_full_sync {
             info!("Performing full sync for source: {}", source.name);
             self.execute_full_sync(
@@ -350,7 +331,7 @@ impl SyncManager {
                 source_id,
                 sync_run_id,
                 &source.source_type,
-                cancelled,
+                &cancelled,
             )
             .await
         } else {
@@ -364,20 +345,18 @@ impl SyncManager {
                 sync_run_id,
                 &source.source_type,
                 last_sync,
-                cancelled,
+                &cancelled,
             )
             .await
         };
 
-        // Check if cancelled
-        if self.is_cancelled(sync_run_id) {
+        if cancelled.load(Ordering::SeqCst) {
             info!("Sync {} was cancelled", sync_run_id);
             let _ = self.sdk_client.cancel(sync_run_id).await;
             self.active_syncs.remove(sync_run_id);
             return Ok(());
         }
 
-        // Unregister sync and report result
         self.active_syncs.remove(sync_run_id);
 
         match result {
