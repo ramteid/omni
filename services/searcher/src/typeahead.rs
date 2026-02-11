@@ -1,6 +1,7 @@
-use fst::automaton::Subsequence;
-use fst::{IntoStreamer, Map, MapBuilder, Streamer};
+use fst::automaton::Str;
+use fst::{Automaton, IntoStreamer, Map, MapBuilder, Streamer};
 use shared::{DatabasePool, DocumentRepository};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
@@ -17,6 +18,7 @@ pub struct TypeaheadEntry {
 struct TitleData {
     fst: Map<Vec<u8>>,
     entries: Vec<TypeaheadEntry>,
+    normalized_titles: Vec<String>,
 }
 
 impl TitleData {
@@ -26,6 +28,7 @@ impl TitleData {
         Self {
             fst,
             entries: Vec::new(),
+            normalized_titles: Vec::new(),
         }
     }
 }
@@ -49,33 +52,51 @@ impl TitleIndex {
         let rows = repo.fetch_all_title_entries().await?;
 
         let mut entries: Vec<TypeaheadEntry> = Vec::with_capacity(rows.len());
-        let mut keys: Vec<(String, u64)> = Vec::with_capacity(rows.len());
+        let mut normalized_titles: Vec<String> = Vec::with_capacity(rows.len());
+        let mut keys: Vec<(Vec<u8>, u64)> = Vec::new();
 
         for row in rows {
             let normalized = normalize(&row.title);
             if normalized.is_empty() {
                 continue;
             }
-            let idx = entries.len() as u64;
+            let idx = entries.len() as u32;
             entries.push(TypeaheadEntry {
                 document_id: row.id,
                 title: row.title,
                 url: row.url,
                 source_id: row.source_id,
             });
-            keys.push((normalized, idx));
+            normalized_titles.push(normalized.clone());
+
+            for word_start in std::iter::once(0).chain(
+                normalized
+                    .char_indices()
+                    .filter(|(_, c)| *c == ' ')
+                    .map(|(i, _)| i + 1),
+            ) {
+                let suffix = &normalized[word_start..];
+                let mut key = Vec::with_capacity(suffix.len() + 1 + 4);
+                key.extend_from_slice(suffix.as_bytes());
+                key.push(0x00);
+                key.extend_from_slice(&idx.to_be_bytes());
+                keys.push((key, idx as u64));
+            }
         }
 
         keys.sort_by(|a, b| a.0.cmp(&b.0));
-        keys.dedup_by(|a, b| a.0 == b.0);
 
         let mut builder = MapBuilder::memory();
         for (key, idx) in &keys {
-            builder.insert(key.as_bytes(), *idx)?;
+            builder.insert(key, *idx)?;
         }
         let fst = builder.into_map();
 
-        let new_data = TitleData { fst, entries };
+        let new_data = TitleData {
+            fst,
+            entries,
+            normalized_titles,
+        };
         let mut data = self.data.write().await;
         *data = new_data;
 
@@ -90,18 +111,19 @@ impl TitleIndex {
         }
 
         let data = self.data.read().await;
-        let automaton = Subsequence::new(&normalized);
+        let automaton = Str::new(&normalized).starts_with();
         let mut stream = data.fst.search(automaton).into_stream();
 
-        const OVER_FETCH: usize = 200;
-        let mut candidates: Vec<(i64, u64)> = Vec::with_capacity(OVER_FETCH);
-        while let Some((key_bytes, idx)) = stream.next() {
-            if let Ok(key_str) = std::str::from_utf8(key_bytes) {
-                let score = score_match(&normalized, key_str);
-                candidates.push((score, idx));
+        let mut seen = HashSet::new();
+        let mut candidates: Vec<(i64, usize)> = Vec::new();
+        while let Some((_key_bytes, idx)) = stream.next() {
+            let idx = idx as usize;
+            if !seen.insert(idx) {
+                continue;
             }
-            if candidates.len() >= OVER_FETCH {
-                break;
+            if let Some(full_title) = data.normalized_titles.get(idx) {
+                let score = score_match(&normalized, full_title);
+                candidates.push((score, idx));
             }
         }
 
@@ -111,14 +133,12 @@ impl TitleIndex {
             .iter()
             .take(limit)
             .filter_map(|(_, idx)| {
-                data.entries
-                    .get(*idx as usize)
-                    .map(|entry| TypeaheadResult {
-                        document_id: entry.document_id.clone(),
-                        title: entry.title.clone(),
-                        url: entry.url.clone(),
-                        source_id: entry.source_id.clone(),
-                    })
+                data.entries.get(*idx).map(|entry| TypeaheadResult {
+                    document_id: entry.document_id.clone(),
+                    title: entry.title.clone(),
+                    url: entry.url.clone(),
+                    source_id: entry.source_id.clone(),
+                })
             })
             .collect()
     }
