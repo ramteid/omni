@@ -1,6 +1,5 @@
 use crate::models::{
     RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
-    SuggestionsResponse,
 };
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
@@ -878,38 +877,6 @@ impl SearchEngine {
         }
 
         format!("search:{:x}", hasher.finish())
-    }
-
-    pub async fn suggest(&self, query: &str, limit: i64) -> Result<SuggestionsResponse> {
-        info!("Getting suggestions for query: '{}'", query);
-
-        if query.trim().is_empty() {
-            return Ok(SuggestionsResponse {
-                suggestions: vec![],
-                query: query.to_string(),
-            });
-        }
-
-        let suggestions = sqlx::query_scalar::<_, String>(
-            r#"
-            SELECT DISTINCT title
-            FROM documents
-            WHERE title ILIKE $1
-            ORDER BY title
-            LIMIT $2
-            "#,
-        )
-        .bind(format!("%{}%", query))
-        .bind(limit)
-        .fetch_all(self.db_pool.pool())
-        .await?;
-
-        info!("Found {} suggestions", suggestions.len());
-
-        Ok(SuggestionsResponse {
-            suggestions,
-            query: query.to_string(),
-        })
     }
 
     /// Store search history for a user in Redis

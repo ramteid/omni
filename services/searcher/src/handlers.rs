@@ -1,6 +1,6 @@
 use crate::models::{
     RecentSearchesRequest, SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse,
-    SuggestionsQuery, TypeaheadQuery, TypeaheadResponse,
+    TypeaheadQuery, TypeaheadResponse,
 };
 use crate::search::SearchEngine;
 use crate::suggested_questions::{self, SuggestedQuestionsGenerator};
@@ -157,24 +157,6 @@ pub async fn search(
             }
         }
     }
-
-    Ok(Json(serde_json::to_value(response)?))
-}
-
-pub async fn suggestions(
-    State(state): State<AppState>,
-    Query(query): Query<SuggestionsQuery>,
-) -> SearcherResult<Json<Value>> {
-    info!("Received suggestions request: {:?}", query);
-
-    let search_engine = SearchEngine::new(
-        state.db_pool,
-        state.redis_client,
-        state.ai_client,
-        state.config,
-    )
-    .await?;
-    let response = search_engine.suggest(&query.q, query.limit()).await?;
 
     Ok(Json(serde_json::to_value(response)?))
 }

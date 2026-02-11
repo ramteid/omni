@@ -159,29 +159,6 @@ impl SearcherTestFixture {
         Ok((status, json))
     }
 
-    /// Helper method to make suggestions requests
-    pub async fn suggestions(&self, query: &str) -> Result<(StatusCode, Value)> {
-        let request = Request::builder()
-            .method(Method::GET)
-            .uri(&format!("/suggestions?q={}", urlencoding::encode(query)))
-            .body(Body::empty())?;
-
-        let response = self.app.clone().oneshot(request).await?;
-        let status = response.status();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
-        let body_str = String::from_utf8_lossy(&body);
-
-        let json: Value = serde_json::from_slice(&body).map_err(|e| {
-            eprintln!(
-                "Failed to parse JSON response. Status: {}, Body: '{}'",
-                status, body_str
-            );
-            e
-        })?;
-
-        Ok((status, json))
-    }
-
     /// Helper method to make typeahead requests
     pub async fn typeahead(
         &self,

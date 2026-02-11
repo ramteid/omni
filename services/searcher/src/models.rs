@@ -86,24 +86,6 @@ pub struct SearchResult {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SuggestionsQuery {
-    pub q: String,
-    pub limit: Option<i64>,
-}
-
-impl SuggestionsQuery {
-    pub fn limit(&self) -> i64 {
-        self.limit.unwrap_or(5).min(20)
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct SuggestionsResponse {
-    pub suggestions: Vec<String>,
-    pub query: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct RecentSearchesRequest {
     pub user_id: String,
 }
@@ -206,26 +188,6 @@ mod tests {
                 _ => panic!("Search mode mismatch"),
             }
         }
-    }
-
-    #[test]
-    fn test_suggestions_query_defaults() {
-        let query = SuggestionsQuery {
-            q: "test".to_string(),
-            limit: None,
-        };
-
-        assert_eq!(query.limit(), 5);
-    }
-
-    #[test]
-    fn test_suggestions_query_limit_cap() {
-        let query = SuggestionsQuery {
-            q: "test".to_string(),
-            limit: Some(50),
-        };
-
-        assert_eq!(query.limit(), 20); // Should be capped at 20
     }
 
     #[test]

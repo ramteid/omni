@@ -495,47 +495,6 @@ async fn test_cache_behavior() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_suggestions_endpoint() -> Result<()> {
-    let fixture = SearcherTestFixture::new().await?;
-    let _doc_ids = fixture.seed_search_data().await?;
-
-    let (status, response) = fixture.suggestions("Rust").await?;
-
-    assert_eq!(status, StatusCode::OK);
-    assert!(response["suggestions"].is_array());
-
-    let suggestions = response["suggestions"].as_array().unwrap();
-    assert!(suggestions
-        .iter()
-        .any(|s| s.as_str().unwrap_or("").contains("Rust Programming Guide")));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_suggestions_with_limit() -> Result<()> {
-    let fixture = SearcherTestFixture::new().await?;
-    let _doc_ids = fixture.seed_search_data().await?;
-
-    let request = Request::builder()
-        .method(Method::GET)
-        .uri("/suggestions?q=guide&limit=2")
-        .body(Body::empty())?;
-
-    let response = fixture.app.clone().oneshot(request).await?;
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
-    let json: Value = serde_json::from_slice(&body)?;
-
-    assert!(json["suggestions"].is_array());
-    let suggestions = json["suggestions"].as_array().unwrap();
-    assert!(suggestions.len() <= 2);
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_typeahead_subsequence_match() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let _doc_ids = fixture.seed_search_data().await?;

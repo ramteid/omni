@@ -89,7 +89,6 @@ pub fn create_app(state: AppState) -> Router {
         .route("/health", get(handlers::health_check))
         .route("/search", post(handlers::search))
         .route("/search/ai-answer", post(handlers::ai_answer))
-        .route("/suggestions", get(handlers::suggestions))
         .route("/recent-searches", get(handlers::recent_searches))
         .route("/typeahead", get(handlers::typeahead))
         .route("/suggested-questions", post(handlers::suggested_questions))

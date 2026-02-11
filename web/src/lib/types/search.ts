@@ -45,11 +45,6 @@ export interface SearchRequest {
     user_id?: string
 }
 
-export interface SuggestionsResponse {
-    suggestions: string[]
-    query: string
-}
-
 export interface RecentSearchesResponse {
     searches: string[]
 }
