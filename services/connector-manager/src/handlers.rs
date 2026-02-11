@@ -19,6 +19,7 @@ use serde_json::json;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{SourceType, SyncType};
 use shared::queue::EventQueue;
+use shared::utils;
 use shared::{Repository, ServiceCredentialsRepo, SourceRepository};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -447,8 +448,9 @@ pub async fn sdk_store_content(
         request.sync_run_id
     );
 
+    let content = utils::normalize_whitespace(&request.content);
     let content_id = content_storage
-        .store_text(&request.content, Some(&prefix))
+        .store_text(&content, Some(&prefix))
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to store content: {}", e)))?;
 

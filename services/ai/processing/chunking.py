@@ -34,7 +34,7 @@ class Chunker:
             sentences.append((last_end, len(text)))
 
         if not sentences:
-            return [(0, len(text))]
+            return Chunker.chunk_by_chars(text, max_chars) or [(0, len(text))]
 
         chunks = []
         chunk_start = 0
@@ -52,7 +52,21 @@ class Chunker:
         if chunk_start < len(text):
             chunks.append((chunk_start, len(text)))
 
-        return chunks if chunks else [(0, len(text))]
+        if not chunks:
+            return [(0, len(text))]
+
+        final_chunks = []
+        for start, end in chunks:
+            if end - start > max_chars:
+                pos = start
+                while pos < end:
+                    chunk_end = min(pos + max_chars, end)
+                    final_chunks.append((pos, chunk_end))
+                    pos = chunk_end
+            else:
+                final_chunks.append((start, end))
+
+        return final_chunks if final_chunks else [(0, len(text))]
 
     @staticmethod
     def chunk_by_chars(text: str, max_chars: int) -> list[tuple[int, int]]:

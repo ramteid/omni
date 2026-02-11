@@ -210,6 +210,37 @@ class TestCharacterBasedChunking:
         spans = Chunker.chunk_by_chars("", 10)
         assert len(spans) == 0
 
+    def test_chunk_sentences_by_chars_oversized_no_boundaries(self):
+        """Text without sentence boundaries exceeding max_chars must be split."""
+        text = "word | " * 500  # ~3500 chars, no sentence boundaries
+        max_chars = 1000
+        spans = Chunker.chunk_sentences_by_chars(text, max_chars)
+
+        chunks = [text[start:end] for start, end in spans]
+
+        assert len(chunks) >= 2
+        for chunk in chunks:
+            assert len(chunk) <= max_chars
+
+        reconstructed = "".join(chunks)
+        assert reconstructed == text
+
+    def test_chunk_sentences_by_chars_mixed_prose_and_table(self):
+        """Sentences followed by a large block without boundaries."""
+        prose = "First sentence. Second sentence. "
+        table = "col1 | col2 | col3\n" * 200  # ~3800 chars, no sentence boundaries
+        text = prose + table
+        max_chars = 1000
+        spans = Chunker.chunk_sentences_by_chars(text, max_chars)
+
+        chunks = [text[start:end] for start, end in spans]
+
+        for chunk in chunks:
+            assert len(chunk) <= max_chars
+
+        reconstructed = "".join(chunks)
+        assert reconstructed == text
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
