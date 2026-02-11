@@ -57,3 +57,15 @@ export interface SuggestedQuestion {
 export interface SuggestedQuestionsResponse {
     questions: SuggestedQuestion[]
 }
+
+export interface TypeaheadResult {
+    document_id: string
+    title: string
+    url: string | null
+    source_id: string
+}
+
+export interface TypeaheadResponse {
+    results: TypeaheadResult[]
+    query: string
+}
