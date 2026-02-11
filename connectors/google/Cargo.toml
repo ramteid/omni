@@ -28,7 +28,7 @@ dotenvy = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 base64 = "0.21"
 uuid = { workspace = true }
 time = { workspace = true }
