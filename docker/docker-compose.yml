@@ -301,15 +301,13 @@ services:
     expose:
       - "${SLACK_CONNECTOR_PORT}"
     environment:
-      <<: [*redis-config, *otel-config]
+      <<: *otel-config
       RUST_LOG: ${RUST_LOG}
       PORT: ${SLACK_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
     networks:
       - omni-network
     depends_on:
-      redis:
-        condition: service_healthy
       connector-manager:
         condition: service_started
     restart: unless-stopped

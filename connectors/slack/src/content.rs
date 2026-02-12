@@ -151,6 +151,10 @@ impl ContentProcessor {
             groups.push(current_group);
         }
 
+        for (i, group) in groups.iter_mut().enumerate() {
+            group.part = Some(i);
+        }
+
         debug!(
             "Split large group into {} smaller groups for channel {}",
             groups.len(),

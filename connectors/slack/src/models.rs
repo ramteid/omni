@@ -190,6 +190,7 @@ pub struct MessageGroup {
     pub messages: Vec<(SlackMessage, String)>, // (message, author_name)
     pub is_thread: bool,
     pub thread_ts: Option<String>,
+    pub part: Option<usize>,
 }
 
 /// Structured attributes for Slack messages, used for filtering and faceting.
@@ -237,6 +238,7 @@ impl MessageGroup {
             messages: Vec::new(),
             is_thread,
             thread_ts,
+            part: None,
         }
     }
 
@@ -373,7 +375,10 @@ impl MessageGroup {
                 self.thread_ts.as_ref().unwrap()
             )
         } else {
-            format!("slack_channel_{}_{}", self.channel_id, self.date)
+            match self.part {
+                Some(n) => format!("slack_channel_{}_{}_p{}", self.channel_id, self.date, n),
+                None => format!("slack_channel_{}_{}", self.channel_id, self.date),
+            }
         };
 
         let metadata = DocumentMetadata {

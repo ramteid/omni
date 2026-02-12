@@ -26,12 +26,9 @@ async fn main() -> Result<()> {
 
     info!("Starting Slack Connector");
 
-    let redis_url = std::env::var("REDIS_URL")?;
-    let redis_client = redis::Client::open(redis_url)?;
-
     let sdk_client = SdkClient::from_env()?;
 
-    let sync_manager = Arc::new(Mutex::new(SyncManager::new(redis_client, sdk_client)));
+    let sync_manager = Arc::new(Mutex::new(SyncManager::new(sdk_client)));
 
     // Create API state
     let api_state = ApiState {

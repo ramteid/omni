@@ -40,6 +40,11 @@ struct CompleteRequest {
     new_state: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SyncConfigResponse {
+    connector_state: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Serialize)]
 struct FailRequest {
     error: String,
@@ -310,6 +315,33 @@ impl SdkClient {
             .await
             .context("Failed to parse source response")?;
         Ok(source)
+    }
+
+    /// Get connector state for a source
+    pub async fn get_connector_state(&self, source_id: &str) -> Result<Option<serde_json::Value>> {
+        debug!("SDK: Getting connector state for source_id={}", source_id);
+
+        let response = self
+            .client
+            .get(format!(
+                "{}/sdk/source/{}/sync-config",
+                self.base_url, source_id
+            ))
+            .send()
+            .await
+            .context("Failed to send get sync config request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to get sync config: {} - {}", status, body);
+        }
+
+        let config: SyncConfigResponse = response
+            .json()
+            .await
+            .context("Failed to parse sync config response")?;
+        Ok(config.connector_state)
     }
 
     /// Get credentials for a source

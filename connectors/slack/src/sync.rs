@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::DateTime;
 use dashmap::DashMap;
-use redis::{AsyncCommands, Client as RedisClient};
+use serde_json::json;
 use shared::models::{ServiceProvider, SourceType, SyncRequest};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -17,91 +18,15 @@ struct ActiveSync {
 }
 
 pub struct SyncManager {
-    redis_client: RedisClient,
     auth_manager: AuthManager,
     slack_client: SlackClient,
     sdk_client: SdkClient,
     active_syncs: DashMap<String, Arc<ActiveSync>>,
 }
 
-pub struct SyncState {
-    redis_client: RedisClient,
-}
-
-impl SyncState {
-    pub fn new(redis_client: RedisClient) -> Self {
-        Self { redis_client }
-    }
-
-    pub fn get_channel_sync_key(&self, source_id: &str, channel_id: &str) -> String {
-        format!("slack:sync:{}:{}", source_id, channel_id)
-    }
-
-    pub fn get_test_channel_sync_key(&self, source_id: &str, channel_id: &str) -> String {
-        format!("slack:sync:test:{}:{}", source_id, channel_id)
-    }
-
-    pub async fn get_channel_last_ts(
-        &self,
-        source_id: &str,
-        channel_id: &str,
-    ) -> Result<Option<String>> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = if cfg!(test) {
-            self.get_test_channel_sync_key(source_id, channel_id)
-        } else {
-            self.get_channel_sync_key(source_id, channel_id)
-        };
-
-        let result: Option<String> = conn.get(&key).await?;
-        Ok(result)
-    }
-
-    pub async fn set_channel_last_ts(
-        &self,
-        source_id: &str,
-        channel_id: &str,
-        last_ts: &str,
-    ) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = if cfg!(test) {
-            self.get_test_channel_sync_key(source_id, channel_id)
-        } else {
-            self.get_channel_sync_key(source_id, channel_id)
-        };
-
-        let _: () = conn.set_ex(&key, last_ts, 30 * 24 * 60 * 60).await?; // 30 days expiry
-        Ok(())
-    }
-
-    pub async fn get_all_synced_channels(&self, source_id: &str) -> Result<HashSet<String>> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let pattern = if cfg!(test) {
-            format!("slack:sync:test:{}:*", source_id)
-        } else {
-            format!("slack:sync:{}:*", source_id)
-        };
-
-        let keys: Vec<String> = conn.keys(&pattern).await?;
-        let prefix = if cfg!(test) {
-            format!("slack:sync:test:{}:", source_id)
-        } else {
-            format!("slack:sync:{}:", source_id)
-        };
-
-        let channel_ids: HashSet<String> = keys
-            .into_iter()
-            .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
-            .collect();
-
-        Ok(channel_ids)
-    }
-}
-
 impl SyncManager {
-    pub fn new(redis_client: RedisClient, sdk_client: SdkClient) -> Self {
+    pub fn new(sdk_client: SdkClient) -> Self {
         Self {
-            redis_client,
             auth_manager: AuthManager::new(),
             slack_client: SlackClient::new(),
             sdk_client,
@@ -168,7 +93,7 @@ impl SyncManager {
             return Err(anyhow!(err_msg));
         }
 
-        let result: Result<(usize, usize, usize)> = async {
+        let result: Result<(usize, usize, usize, HashMap<String, String>)> = async {
             let bot_token = self.get_bot_token(source_id).await?;
             let mut creds = self.auth_manager.validate_bot_token(&bot_token).await?;
 
@@ -176,7 +101,16 @@ impl SyncManager {
                 .ensure_valid_credentials(&mut creds)
                 .await?;
 
-            let sync_state = SyncState::new(self.redis_client.clone());
+            // Load channel timestamps from connector state via SDK
+            let mut channel_timestamps: HashMap<String, String> = self
+                .sdk_client
+                .get_connector_state(source_id)
+                .await?
+                .and_then(|state| {
+                    serde_json::from_value(state.get("channel_timestamps")?.clone()).ok()
+                })
+                .unwrap_or_default();
+
             let mut content_processor = ContentProcessor::new();
 
             // First, fetch all users for name resolution
@@ -220,26 +154,30 @@ impl SyncManager {
                     }
                 }
 
+                let last_ts = channel_timestamps.get(&channel.id).cloned();
+
                 match self
                     .sync_channel(
                         source_id,
                         sync_run_id,
                         &channel,
                         &creds.bot_token,
-                        &sync_state,
+                        last_ts.as_deref(),
                         &content_processor,
                     )
                     .await
                 {
-                    Ok((message_groups, files)) => {
+                    Ok((message_groups, files, new_latest_ts)) => {
                         processed_channels += 1;
                         total_message_groups += message_groups;
                         total_files += files;
+                        if let Some(ts) = new_latest_ts {
+                            channel_timestamps.insert(channel.id.clone(), ts);
+                        }
                         debug!(
                             "Synced channel {}: {} message groups, {} files",
                             channel.name, message_groups, files
                         );
-                        // Update scanned count via SDK
                         if let Err(e) = self.sdk_client.increment_scanned(sync_run_id, 1).await {
                             error!("Failed to increment scanned count: {}", e);
                         }
@@ -259,6 +197,7 @@ impl SyncManager {
                 processed_channels,
                 total_message_groups + total_files,
                 total_message_groups + total_files,
+                channel_timestamps,
             ))
         }
         .await;
@@ -275,13 +214,14 @@ impl SyncManager {
         self.active_syncs.remove(sync_run_id);
 
         match result {
-            Ok((scanned, _processed, updated)) => {
+            Ok((scanned, _processed, updated, channel_timestamps)) => {
                 info!(
                     "Sync completed for source {}: {} documents processed",
                     source.name, updated
                 );
+                let new_state = json!({ "channel_timestamps": channel_timestamps });
                 self.sdk_client
-                    .complete(sync_run_id, scanned as i32, updated as i32, None)
+                    .complete(sync_run_id, scanned as i32, updated as i32, Some(new_state))
                     .await?;
                 Ok(())
             }
@@ -352,18 +292,23 @@ impl SyncManager {
         sync_run_id: &str,
         channel: &crate::models::SlackChannel,
         token: &str,
-        sync_state: &SyncState,
+        last_ts: Option<&str>,
         content_processor: &ContentProcessor,
-    ) -> Result<(usize, usize)> {
+    ) -> Result<(usize, usize, Option<String>)> {
         debug!("Syncing channel: {} ({})", channel.name, channel.id);
 
-        let last_ts = sync_state
-            .get_channel_last_ts(source_id, &channel.id)
-            .await?;
+        // Round down to start-of-day so we always re-fetch complete days,
+        // ensuring the upserted document contains all messages for that day.
+        let oldest = last_ts.and_then(|ts| {
+            let secs = ts.split('.').next()?.parse::<i64>().ok()?;
+            let dt = DateTime::from_timestamp(secs, 0)?;
+            let start_of_day = dt.date_naive().and_hms_opt(0, 0, 0)?;
+            Some(format!("{}.000000", start_of_day.and_utc().timestamp() - 1))
+        });
 
         let mut all_messages = Vec::new();
         let mut cursor = None;
-        let mut latest_ts = last_ts.clone();
+        let mut latest_ts: Option<String> = last_ts.map(|s| s.to_string());
 
         // Fetch channel messages
         loop {
@@ -373,7 +318,7 @@ impl SyncManager {
                     token,
                     &channel.id,
                     cursor.as_deref(),
-                    last_ts.as_deref(),
+                    oldest.as_deref(),
                     None,
                 )
                 .await?;
@@ -411,7 +356,6 @@ impl SyncManager {
 
         // Publish message groups
         for group in message_groups {
-            // Store content via SDK
             let content_id = match self
                 .sdk_client
                 .store_content(sync_run_id, &group.to_document_content())
@@ -432,7 +376,6 @@ impl SyncManager {
                 source_id.to_string(),
                 content_id,
             );
-            // Emit event via SDK
             if let Err(e) = self
                 .sdk_client
                 .emit_event(sync_run_id, source_id, event)
@@ -449,7 +392,6 @@ impl SyncManager {
         for file in files {
             match self.slack_client.download_file(token, file).await {
                 Ok(content) if !content.is_empty() => {
-                    // Store content via SDK
                     let content_id =
                         match self.sdk_client.store_content(sync_run_id, &content).await {
                             Ok(id) => id,
@@ -469,7 +411,6 @@ impl SyncManager {
                         channel.name.clone(),
                         content_id,
                     );
-                    // Emit event via SDK
                     if let Err(e) = self
                         .sdk_client
                         .emit_event(sync_run_id, source_id, event)
@@ -485,14 +426,7 @@ impl SyncManager {
             }
         }
 
-        // Update sync state with latest timestamp
-        if let Some(ts) = latest_ts {
-            sync_state
-                .set_channel_last_ts(source_id, &channel.id, &ts)
-                .await?;
-        }
-
-        Ok((published_groups, published_files))
+        Ok((published_groups, published_files, latest_ts))
     }
 
     async fn get_bot_token(&self, source_id: &str) -> Result<String> {
