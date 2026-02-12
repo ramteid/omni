@@ -45,7 +45,7 @@ Just respond with the title text, nothing else."""
 SEARCH_TOOLS = [
     {
         "name": "search_documents",
-        "description": "Search enterprise documents using hybrid text and semantic search. Use this when you need to find information to answer user questions.",
+        "description": "Search enterprise documents using hybrid text and semantic search. Use this when you need to find information to answer user questions. Wherever possible, use the sources parameter to limit the search to specific apps.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -579,7 +579,7 @@ async def execute_search_tool(
 
     search_request = SearchRequest(
         query=tool_input.query,
-        sources=tool_input.sources,
+        source_types=tool_input.sources,
         content_types=tool_input.content_types,
         limit=tool_input.limit or 10,
         offset=0,

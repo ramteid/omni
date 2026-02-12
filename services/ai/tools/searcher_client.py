@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class SearchRequest(BaseModel):
     query: str
-    sources: Optional[List[str]] = None
+    source_types: Optional[List[str]] = None
     content_types: Optional[List[str]] = None
     limit: int = 20
     offset: int = 0
@@ -84,7 +84,7 @@ class SearcherClient:
         try:
             search_payload = {
                 "query": request.query,
-                "sources": request.sources,
+                "source_types": request.source_types,
                 "content_types": request.content_types,
                 "limit": request.limit,
                 "offset": request.offset,

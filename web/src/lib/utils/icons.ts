@@ -177,7 +177,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.GOOGLE_DRIVE]: 'Google Drive',
         [SourceType.GMAIL]: 'Gmail',
         [SourceType.CONFLUENCE]: 'Confluence',
-        [SourceType.JIRA]: 'JIRA',
+        [SourceType.JIRA]: 'Jira',
         [SourceType.SLACK]: 'Slack',
         [SourceType.GITHUB]: 'GitHub',
         [SourceType.LOCAL_FILES]: 'Files',
