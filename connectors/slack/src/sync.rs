@@ -201,10 +201,23 @@ impl SyncManager {
                     break;
                 }
 
-                // Only sync channels where the bot is a member
                 if !channel.is_member {
-                    debug!("Skipping channel {} - bot is not a member", channel.name);
-                    continue;
+                    if channel.is_private {
+                        debug!(
+                            "Skipping private channel {} - bot must be invited",
+                            channel.name
+                        );
+                        continue;
+                    }
+                    info!("Auto-joining public channel: {}", channel.name);
+                    if let Err(e) = self
+                        .slack_client
+                        .join_conversation(&creds.bot_token, &channel.id)
+                        .await
+                    {
+                        warn!("Failed to join channel {}: {}", channel.name, e);
+                        continue;
+                    }
                 }
 
                 match self

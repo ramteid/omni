@@ -153,6 +153,27 @@ impl SlackClient {
         Ok(response)
     }
 
+    pub async fn join_conversation(&self, token: &str, channel_id: &str) -> Result<()> {
+        sleep(Duration::from_millis(RATE_LIMIT_DELAY_MS)).await;
+
+        let response = self
+            .client
+            .post(format!("{}/conversations.join", SLACK_API_BASE))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "channel": channel_id }))
+            .send()
+            .await?;
+
+        let body: serde_json::Value = response.json().await?;
+        if body.get("ok") == Some(&serde_json::Value::Bool(true)) {
+            Ok(())
+        } else {
+            let err = body["error"].as_str().unwrap_or("Unknown error");
+            Err(anyhow!("conversations.join failed: {}", err))
+        }
+    }
+
     pub async fn list_users(&self, token: &str, cursor: Option<&str>) -> Result<UsersListResponse> {
         let mut url = format!("{}/users.list?limit=200", SLACK_API_BASE);
 
