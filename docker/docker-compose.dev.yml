@@ -141,6 +141,12 @@ services:
       context: ..
       dockerfile: connectors/github/Dockerfile
 
+  notion-connector:
+    image: omni-notion-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/notion/Dockerfile
+
   microsoft-connector:
     image: omni-microsoft-connector:dev
     build:

@@ -159,6 +159,7 @@ pub enum SourceType {
     LocalFiles,
     FileSystem,
     Web,
+    Notion,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -170,6 +171,7 @@ pub enum ServiceProvider {
     Atlassian,
     Github,
     Microsoft,
+    Notion,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
