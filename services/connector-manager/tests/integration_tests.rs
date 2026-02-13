@@ -379,16 +379,19 @@ async fn test_sdk_event_and_content() {
 }
 
 // ============================================================================
-// 7. test_stale_sync_detection — background safety net
+// 7. test_stale_sync_detection — verifies cancel is sent and next sync unblocked
 // ============================================================================
 #[tokio::test]
 async fn test_stale_sync_detection() {
     let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
     let pool = fixture.state.db_pool.pool();
+    let sync_run_repo = SyncRunRepository::new(pool);
 
-    let sync_run_id = create_running_sync(pool, TEST_SOURCE_ID).await;
+    // 1. Trigger sync via API — mock connector tracks source as active
+    let sync_run_id = trigger_sync(&server).await;
 
-    // Backdate last_activity_at beyond the 1-minute timeout
+    // 2. Backdate last_activity_at beyond the 1-minute timeout
     sqlx::query(
         "UPDATE sync_runs SET last_activity_at = NOW() - INTERVAL '10 minutes', started_at = NOW() - INTERVAL '10 minutes' WHERE id = $1",
     )
@@ -397,6 +400,7 @@ async fn test_stale_sync_detection() {
     .await
     .unwrap();
 
+    // 3. detect_stale_syncs should cancel on connector then mark failed
     let stale = fixture
         .state
         .sync_manager
@@ -408,8 +412,21 @@ async fn test_stale_sync_detection() {
         "Expected stale sync_run_id in result"
     );
 
-    let repo = SyncRunRepository::new(pool);
-    let run = repo.find_by_id(&sync_run_id).await.unwrap().unwrap();
+    // 4. Assert cancel request was received by mock connector
+    let cancel_requests = fixture.mock_connector.get_cancel_requests();
+    assert_eq!(
+        cancel_requests.len(),
+        1,
+        "Expected exactly 1 cancel request"
+    );
+    assert_eq!(cancel_requests[0].sync_run_id, sync_run_id);
+
+    // 5. Assert sync run is marked as failed
+    let run = sync_run_repo
+        .find_by_id(&sync_run_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(run.status, SyncStatus::Failed);
     assert!(
         run.error_message
@@ -419,4 +436,12 @@ async fn test_stale_sync_detection() {
         "Expected 'timed out' in error, got: {:?}",
         run.error_message
     );
+
+    // 6. Trigger another sync for the same source — must succeed, not 409
+    let server2 = test_server_no_expect(&fixture);
+    let resp = server2
+        .post("/sync")
+        .json(&json!({"source_id": TEST_SOURCE_ID}))
+        .await;
+    resp.assert_status(StatusCode::OK);
 }

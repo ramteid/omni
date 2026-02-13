@@ -75,7 +75,7 @@ impl ConnectorManagerConfig {
             .unwrap_or(30);
 
         let stale_sync_timeout_minutes = env::var("STALE_SYNC_TIMEOUT_MINUTES")
-            .unwrap_or_else(|_| "10".to_string())
+            .unwrap_or_else(|_| "60".to_string())
             .parse::<u64>()
             .unwrap_or(10);
 

@@ -2,7 +2,7 @@ use crate::config::ConnectorManagerConfig;
 use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{SyncRequest, TriggerType};
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{SyncStatus, SyncType};
+use shared::models::{SourceType, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
 use time::format_description::well_known::Rfc3339;
@@ -186,11 +186,13 @@ impl SyncManager {
         let timeout_minutes = self.config.stale_sync_timeout_minutes as i64;
         let cutoff = OffsetDateTime::now_utc() - time::Duration::minutes(timeout_minutes);
 
-        let stale_syncs: Vec<(String, String)> = sqlx::query_as(
+        let stale_syncs: Vec<(String, String, SourceType)> = sqlx::query_as(
             r#"
-            SELECT id, source_id FROM sync_runs
-            WHERE status = 'running'
-            AND (last_activity_at IS NULL OR last_activity_at < $1)
+            SELECT sr.id, sr.source_id, s.source_type
+            FROM sync_runs sr
+            JOIN sources s ON sr.source_id = s.id
+            WHERE sr.status = 'running'
+            AND (sr.last_activity_at IS NULL OR sr.last_activity_at < $1)
             "#,
         )
         .bind(cutoff)
@@ -199,11 +201,24 @@ impl SyncManager {
         .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
         let mut marked_stale = Vec::new();
-        for (sync_run_id, source_id) in stale_syncs {
+        for (sync_run_id, source_id, source_type) in stale_syncs {
             warn!(
                 "Marking stale sync {} for source {}",
                 sync_run_id, source_id
             );
+
+            if let Some(connector_url) = self.config.get_connector_url(source_type) {
+                if let Err(e) = self
+                    .connector_client
+                    .cancel_sync(connector_url, &sync_run_id)
+                    .await
+                {
+                    warn!(
+                        "Failed to cancel stale sync {} on connector: {}",
+                        sync_run_id, e
+                    );
+                }
+            }
 
             if let Err(e) = self
                 .mark_sync_failed(&sync_run_id, "Sync timed out (no activity detected)")

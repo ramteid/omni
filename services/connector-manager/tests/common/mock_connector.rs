@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
@@ -31,6 +32,7 @@ struct MockState {
     cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>>,
     sync_response_status: Arc<Mutex<StatusCode>>,
     sync_response_body: Arc<Mutex<JsonValue>>,
+    active_syncs: Arc<Mutex<HashSet<String>>>,
 }
 
 pub struct MockConnector {
@@ -49,12 +51,14 @@ impl MockConnector {
             Arc::new(Mutex::new(Vec::new()));
         let sync_response_status = Arc::new(Mutex::new(StatusCode::OK));
         let sync_response_body = Arc::new(Mutex::new(json!({"status": "accepted"})));
+        let active_syncs = Arc::new(Mutex::new(HashSet::new()));
 
         let state = MockState {
             sync_requests: sync_requests.clone(),
             cancel_requests: cancel_requests.clone(),
             sync_response_status: sync_response_status.clone(),
             sync_response_body: sync_response_body.clone(),
+            active_syncs: active_syncs.clone(),
         };
 
         let app = Router::new()
@@ -115,6 +119,17 @@ async fn handle_sync(
     State(state): State<MockState>,
     Json(request): Json<RecordedSyncRequest>,
 ) -> (StatusCode, Json<JsonValue>) {
+    let source_id = request.source_id.clone();
+    {
+        let mut active = state.active_syncs.lock().unwrap();
+        if active.contains(&source_id) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "sync already running for this source"})),
+            );
+        }
+        active.insert(source_id);
+    }
     state.sync_requests.lock().unwrap().push(request);
     let status = *state.sync_response_status.lock().unwrap();
     let body = state.sync_response_body.lock().unwrap().clone();
@@ -125,6 +140,16 @@ async fn handle_cancel(
     State(state): State<MockState>,
     Json(request): Json<RecordedCancelRequest>,
 ) -> StatusCode {
+    let source_id = state
+        .sync_requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r.sync_run_id == request.sync_run_id)
+        .map(|r| r.source_id.clone());
+    if let Some(source_id) = source_id {
+        state.active_syncs.lock().unwrap().remove(&source_id);
+    }
     state.cancel_requests.lock().unwrap().push(request);
     StatusCode::OK
 }
