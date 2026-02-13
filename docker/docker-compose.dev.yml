@@ -147,6 +147,12 @@ services:
       context: ..
       dockerfile: connectors/notion/Dockerfile
 
+  hubspot-connector:
+    image: omni-hubspot-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/hubspot/Dockerfile
+
   microsoft-connector:
     image: omni-microsoft-connector:dev
     build:

@@ -197,6 +197,7 @@ services:
       CONNECTOR_MICROSOFT_URL: http://microsoft-connector:${MICROSOFT_CONNECTOR_PORT}
       CONNECTOR_GITHUB_URL: http://github-connector:${GITHUB_CONNECTOR_PORT:-8010}
       CONNECTOR_NOTION_URL: http://notion-connector:${NOTION_CONNECTOR_PORT:-8011}
+      CONNECTOR_HUBSPOT_URL: http://hubspot-connector:${HUBSPOT_CONNECTOR_PORT}
       MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
       MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
       SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
@@ -385,6 +386,23 @@ services:
     environment:
       <<: *otel-config
       PORT: ${NOTION_CONNECTOR_PORT:-8011}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
+  hubspot-connector:
+    image: ghcr.io/getomnico/omni/omni-hubspot-connector:${OMNI_VERSION:-latest}
+    container_name: omni-hubspot-connector
+    expose:
+      - "${HUBSPOT_CONNECTOR_PORT}"
+    environment:
+      <<: *otel-config
+      PORT: ${HUBSPOT_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
     networks:
       - omni-network
