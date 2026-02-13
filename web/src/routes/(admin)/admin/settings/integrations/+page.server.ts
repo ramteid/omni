@@ -63,6 +63,14 @@ export const load: PageServerLoad = async ({ locals }) => {
                 authType: 'access_token',
                 comingSoon: true,
             },
+            {
+                id: 'microsoft',
+                name: 'Microsoft 365',
+                description: 'Connect to OneDrive, SharePoint, Outlook mail and calendar',
+                connected: false,
+                authType: 'access_token',
+                comingSoon: true,
+            },
         ],
     }
 }

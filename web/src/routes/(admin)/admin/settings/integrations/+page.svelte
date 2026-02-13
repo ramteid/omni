@@ -17,6 +17,7 @@
     import confluenceLogo from '$lib/images/icons/confluence.svg'
     import jiraLogo from '$lib/images/icons/jira.svg'
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
+    import microsoftLogo from '$lib/images/icons/microsoft.svg'
     import { Globe, HardDrive, Loader2 } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
@@ -165,6 +166,8 @@
                 return atlassianLogo
             case 'hubspot':
                 return hubspotLogo
+            case 'microsoft':
+                return microsoftLogo
             default:
                 return null
         }
@@ -362,8 +365,7 @@
                         <CardContent class="flex-1" />
                         <CardFooter>
                             {#if integration.comingSoon}
-                                <span class="text-muted-foreground text-sm font-medium"
-                                    >Coming Soon</span>
+                                <Button size="sm" disabled>Coming Soon</Button>
                             {:else}
                                 <Button
                                     size="sm"
