@@ -382,10 +382,10 @@ services:
     image: ghcr.io/getomnico/omni/omni-notion-connector:${OMNI_VERSION:-latest}
     container_name: omni-notion-connector
     expose:
-      - "${NOTION_CONNECTOR_PORT:-8011}"
+      - "${NOTION_CONNECTOR_PORT}"
     environment:
       <<: *otel-config
-      PORT: ${NOTION_CONNECTOR_PORT:-8011}
+      PORT: ${NOTION_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
     networks:
       - omni-network
