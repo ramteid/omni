@@ -50,8 +50,9 @@ class HubSpotConnector(Connector):
             return
 
         portal_id = source_config.get("portal_id") or credentials.get("portal_id")
+        api_url = source_config.get("api_url")
 
-        client = HubSpotClient(access_token=access_token)
+        client = HubSpotClient(access_token=access_token, base_url=api_url)
 
         # Test connection first
         try:

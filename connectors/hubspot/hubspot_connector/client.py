@@ -103,7 +103,7 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0):
 class HubSpotClient:
     """Wrapper around HubSpot API client with async support."""
 
-    def __init__(self, access_token: str):
+    def __init__(self, access_token: str, base_url: str | None = None):
         """
         Initialize with OAuth access token or private app token.
 
@@ -116,6 +116,7 @@ class HubSpotClient:
         """
         self._client = HubSpot(access_token=access_token)
         self._access_token = access_token
+        self._base_url = base_url
 
     @with_retry(max_retries=3)
     async def get_objects(
@@ -163,6 +164,9 @@ class HubSpotClient:
         api = api_map.get(object_type)
         if not api:
             raise HubSpotError(f"Unsupported object type: {object_type}")
+
+        if self._base_url:
+            api.api_client.configuration.host = self._base_url
 
         return api
 

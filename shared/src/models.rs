@@ -160,6 +160,7 @@ pub enum SourceType {
     FileSystem,
     Web,
     Notion,
+    Hubspot,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -172,6 +173,7 @@ pub enum ServiceProvider {
     Github,
     Microsoft,
     Notion,
+    Hubspot,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -222,9 +224,9 @@ pub struct JiraSourceConfig {
 pub struct DocumentMetadata {
     pub title: Option<String>,
     pub author: Option<String>,
-    #[serde(with = "time::serde::iso8601::option")]
+    #[serde(default, with = "time::serde::iso8601::option")]
     pub created_at: Option<OffsetDateTime>,
-    #[serde(with = "time::serde::iso8601::option")]
+    #[serde(default, with = "time::serde::iso8601::option")]
     pub updated_at: Option<OffsetDateTime>,
     pub mime_type: Option<String>,
     pub size: Option<String>,
