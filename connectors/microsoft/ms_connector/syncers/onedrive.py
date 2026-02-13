@@ -113,7 +113,7 @@ class OneDriveSyncer(BaseSyncer):
         doc = map_drive_item_to_document(
             item=item,
             content_id=content_id,
-            source_type="onedrive",
+            source_type="one_drive",
             owner_email=user.get("mail") or user.get("userPrincipalName"),
         )
         await ctx.emit(doc)

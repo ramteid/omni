@@ -36,7 +36,7 @@ class BaseSyncer(abc.ABC):
         state: dict[str, Any],
     ) -> dict[str, Any]:
         """Run sync across all users. Returns updated state dict."""
-        delta_tokens: dict[str, str] = state.get(f"{self.name}_delta_tokens", {})
+        delta_tokens: dict[str, str] = state.get("delta_tokens", {})
         new_tokens: dict[str, str] = {}
 
         users = await client.list_users()
@@ -54,4 +54,4 @@ class BaseSyncer(abc.ABC):
             if new_token:
                 new_tokens[user_id] = new_token
 
-        return {f"{self.name}_delta_tokens": new_tokens}
+        return {"delta_tokens": new_tokens}

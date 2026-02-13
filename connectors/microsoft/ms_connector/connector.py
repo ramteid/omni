@@ -14,7 +14,12 @@ from .syncers.sharepoint import SharePointSyncer
 
 logger = logging.getLogger(__name__)
 
-ALL_SERVICES = ["onedrive", "mail", "calendar", "sharepoint"]
+SOURCE_TYPE_TO_SYNCER = {
+    "one_drive": "onedrive",
+    "share_point": "sharepoint",
+    "outlook": "mail",
+    "outlook_calendar": "calendar",
+}
 
 
 class MicrosoftConnector(Connector):
@@ -22,6 +27,7 @@ class MicrosoftConnector(Connector):
 
     Syncs OneDrive files, Outlook mail, Outlook calendar events,
     and SharePoint document libraries via the Microsoft Graph API.
+    Each source type maps to exactly one syncer.
     """
 
     @property
@@ -65,29 +71,19 @@ class MicrosoftConnector(Connector):
             await ctx.fail(f"Connection test failed: {e}")
             return
 
-        enabled = source_config.get("services", ALL_SERVICES)
+        syncer_key = SOURCE_TYPE_TO_SYNCER.get(ctx.source_type or "")
+        if syncer_key is None:
+            await ctx.fail(f"Unknown source type: {ctx.source_type}")
+            return
+
+        syncer = self._create_syncer(syncer_key, source_config)
         state = state or {}
 
-        logger.info("Starting Microsoft sync (services=%s)", enabled)
+        logger.info("Starting Microsoft sync (syncer=%s)", syncer_key)
 
         try:
-            merged_state: dict[str, Any] = {}
-
-            syncers = self._build_syncers(enabled, source_config)
-            for syncer_name, syncer in syncers:
-                if ctx.is_cancelled():
-                    await ctx.fail("Cancelled by user")
-                    return
-
-                logger.info("Running %s syncer", syncer_name)
-                try:
-                    result_state = await syncer.sync(client, ctx, state)
-                    merged_state.update(result_state)
-                except GraphAPIError as e:
-                    logger.error("Error in %s syncer: %s", syncer_name, e)
-                    await ctx.emit_error(f"{syncer_name}:*", str(e))
-
-            await ctx.complete(new_state=merged_state)
+            result_state = await syncer.sync(client, ctx, state)
+            await ctx.complete(new_state=result_state)
             logger.info(
                 "Sync completed: %d scanned, %d emitted",
                 ctx.documents_scanned,
@@ -102,18 +98,13 @@ class MicrosoftConnector(Connector):
         finally:
             await client.close()
 
-    def _build_syncers(
-        self,
-        enabled: list[str],
-        source_config: dict[str, Any],
-    ) -> list[tuple[str, Any]]:
-        syncers: list[tuple[str, Any]] = []
-        if "onedrive" in enabled:
-            syncers.append(("onedrive", OneDriveSyncer()))
-        if "mail" in enabled:
-            syncers.append(("mail", MailSyncer()))
-        if "calendar" in enabled:
-            syncers.append(("calendar", CalendarSyncer(source_config)))
-        if "sharepoint" in enabled:
-            syncers.append(("sharepoint", SharePointSyncer()))
-        return syncers
+    def _create_syncer(self, syncer_key: str, source_config: dict[str, Any]) -> Any:
+        if syncer_key == "onedrive":
+            return OneDriveSyncer()
+        elif syncer_key == "mail":
+            return MailSyncer()
+        elif syncer_key == "calendar":
+            return CalendarSyncer(source_config)
+        elif syncer_key == "sharepoint":
+            return SharePointSyncer()
+        raise ValueError(f"Unknown syncer key: {syncer_key}")

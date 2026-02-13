@@ -118,6 +118,7 @@ pub struct SdkSourceSyncConfigResponse {
     pub config: JsonValue,
     pub credentials: JsonValue,
     pub connector_state: Option<JsonValue>,
+    pub source_type: SourceType,
 }
 
 // ============================================================================

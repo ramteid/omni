@@ -1,7 +1,7 @@
 """Integration test fixtures for the Microsoft connector.
 
 Session-scoped: harness, mock Graph API server, connector server, connector-manager.
-Function-scoped: seed helper, source_id, httpx client.
+Function-scoped: seed helper, per-type source_id fixtures, httpx client.
 """
 
 from __future__ import annotations
@@ -159,6 +159,21 @@ def _wait_for_port(port: int, host: str = "localhost", timeout: float = 10) -> N
     raise TimeoutError(f"Port {port} not open after {timeout}s")
 
 
+async def _create_ms_source(
+    seed: SeedHelper,
+    mock_graph_server: str,
+    mock_graph_api: MockGraphAPI,
+    source_type: str,
+) -> str:
+    mock_graph_api.reset()
+    sid = await seed.create_source(
+        source_type=source_type,
+        config={"graph_base_url": f"{mock_graph_server}/v1.0"},
+    )
+    await seed.create_credentials(sid, {"token": "test-token"}, provider="microsoft")
+    return sid
+
+
 # ---------------------------------------------------------------------------
 # Session-scoped fixtures
 # ---------------------------------------------------------------------------
@@ -246,22 +261,43 @@ async def seed(harness: OmniTestHarness) -> SeedHelper:
 
 
 @pytest_asyncio.fixture
-async def source_id(
+async def onedrive_source_id(
     seed: SeedHelper,
     mock_graph_server: str,
     mock_graph_api: MockGraphAPI,
 ) -> str:
-    """Create a Microsoft source with credentials pointing to the mock server."""
-    mock_graph_api.reset()
-    sid = await seed.create_source(
-        source_type="microsoft",
-        config={
-            "graph_base_url": f"{mock_graph_server}/v1.0",
-            "services": ["onedrive", "mail", "calendar", "sharepoint"],
-        },
+    return await _create_ms_source(seed, mock_graph_server, mock_graph_api, "one_drive")
+
+
+@pytest_asyncio.fixture
+async def sharepoint_source_id(
+    seed: SeedHelper,
+    mock_graph_server: str,
+    mock_graph_api: MockGraphAPI,
+) -> str:
+    return await _create_ms_source(
+        seed, mock_graph_server, mock_graph_api, "share_point"
     )
-    await seed.create_credentials(sid, {"token": "test-token"}, provider="microsoft")
-    return sid
+
+
+@pytest_asyncio.fixture
+async def outlook_source_id(
+    seed: SeedHelper,
+    mock_graph_server: str,
+    mock_graph_api: MockGraphAPI,
+) -> str:
+    return await _create_ms_source(seed, mock_graph_server, mock_graph_api, "outlook")
+
+
+@pytest_asyncio.fixture
+async def outlook_calendar_source_id(
+    seed: SeedHelper,
+    mock_graph_server: str,
+    mock_graph_api: MockGraphAPI,
+) -> str:
+    return await _create_ms_source(
+        seed, mock_graph_server, mock_graph_api, "outlook_calendar"
+    )
 
 
 @pytest_asyncio.fixture

@@ -53,7 +53,10 @@ impl ConnectorManagerConfig {
             connector_urls.insert(SourceType::Hubspot, url);
         }
         if let Ok(url) = env::var("CONNECTOR_MICROSOFT_URL") {
-            connector_urls.insert(SourceType::Microsoft, url);
+            connector_urls.insert(SourceType::OneDrive, url.clone());
+            connector_urls.insert(SourceType::SharePoint, url.clone());
+            connector_urls.insert(SourceType::Outlook, url.clone());
+            connector_urls.insert(SourceType::OutlookCalendar, url);
         }
 
         let max_concurrent_syncs = env::var("MAX_CONCURRENT_SYNCS")

@@ -7,6 +7,12 @@ export enum SourceType {
     GITHUB = 'github',
     LOCAL_FILES = 'local_files',
     WEB = 'web',
+    NOTION = 'notion',
+    HUBSPOT = 'hubspot',
+    ONE_DRIVE = 'one_drive',
+    SHARE_POINT = 'share_point',
+    OUTLOOK = 'outlook',
+    OUTLOOK_CALENDAR = 'outlook_calendar',
 }
 
 export enum ServiceProvider {

@@ -7,7 +7,7 @@ name = "microsoft-connector"
 version = "1.0.0"
 description = "Microsoft 365 connector for Omni (OneDrive, Outlook, Calendar, SharePoint)"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [
     { name = "Omni Team" }

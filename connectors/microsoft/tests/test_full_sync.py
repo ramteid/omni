@@ -1,4 +1,4 @@
-"""Integration tests: full sync indexes all Microsoft 365 services."""
+"""Integration tests: each Microsoft 365 source type syncs independently."""
 
 import pytest
 import httpx
@@ -17,18 +17,19 @@ SP_DRIVE_ID = "sp-drive-001"
 SP_ITEM_ID = "sp-item-001"
 
 
-async def test_full_sync_indexes_all_services(
-    harness, seed, source_id, mock_graph_api, cm_client: httpx.AsyncClient
-):
-    mock_graph_api.add_user(
-        {
-            "id": USER_ID,
-            "displayName": "Alice Smith",
-            "mail": "alice@contoso.com",
-            "userPrincipalName": "alice@contoso.com",
-        }
-    )
+def _make_user() -> dict:
+    return {
+        "id": USER_ID,
+        "displayName": "Alice Smith",
+        "mail": "alice@contoso.com",
+        "userPrincipalName": "alice@contoso.com",
+    }
 
+
+async def test_onedrive_sync(
+    harness, seed, onedrive_source_id, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    mock_graph_api.add_user(_make_user())
     mock_graph_api.add_drive_item(
         USER_ID,
         {
@@ -47,6 +48,41 @@ async def test_full_sync_indexes_all_services(
     )
     mock_graph_api.set_file_content(DRIVE_ID, ITEM_ID, b"Quarterly report content")
 
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": onedrive_source_id, "sync_type": "full"},
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert (
+        row["status"] == "completed"
+    ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
+
+    n_events = await count_events(
+        harness.db_pool, onedrive_source_id, "document_created"
+    )
+    assert n_events == 1, f"Expected 1 document_created event, got {n_events}"
+
+    events = await get_events(harness.db_pool, onedrive_source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    assert any(
+        did.startswith("onedrive:") for did in doc_ids
+    ), f"No onedrive doc in {doc_ids}"
+
+    state = await seed.get_connector_state(onedrive_source_id)
+    assert state is not None, "connector_state should be saved after sync"
+
+
+async def test_outlook_sync(
+    harness, seed, outlook_source_id, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    mock_graph_api.add_user(_make_user())
     mock_graph_api.add_mail_message(
         USER_ID,
         {
@@ -76,6 +112,43 @@ async def test_full_sync_indexes_all_services(
         },
     )
 
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": outlook_source_id, "sync_type": "full"},
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert (
+        row["status"] == "completed"
+    ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
+
+    n_events = await count_events(
+        harness.db_pool, outlook_source_id, "document_created"
+    )
+    assert n_events == 1, f"Expected 1 document_created event, got {n_events}"
+
+    events = await get_events(harness.db_pool, outlook_source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    assert any(did.startswith("mail:") for did in doc_ids), f"No mail doc in {doc_ids}"
+
+    state = await seed.get_connector_state(outlook_source_id)
+    assert state is not None, "connector_state should be saved after sync"
+
+
+async def test_outlook_calendar_sync(
+    harness,
+    seed,
+    outlook_calendar_source_id,
+    mock_graph_api,
+    cm_client: httpx.AsyncClient,
+):
+    mock_graph_api.add_user(_make_user())
     mock_graph_api.add_calendar_event(
         USER_ID,
         {
@@ -100,6 +173,40 @@ async def test_full_sync_indexes_all_services(
         },
     )
 
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": outlook_calendar_source_id, "sync_type": "full"},
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert (
+        row["status"] == "completed"
+    ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
+
+    n_events = await count_events(
+        harness.db_pool, outlook_calendar_source_id, "document_created"
+    )
+    assert n_events == 1, f"Expected 1 document_created event, got {n_events}"
+
+    events = await get_events(harness.db_pool, outlook_calendar_source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    assert any(
+        did.startswith("calendar:") for did in doc_ids
+    ), f"No calendar doc in {doc_ids}"
+
+    state = await seed.get_connector_state(outlook_calendar_source_id)
+    assert state is not None, "connector_state should be saved after sync"
+
+
+async def test_sharepoint_sync(
+    harness, seed, sharepoint_source_id, mock_graph_api, cm_client: httpx.AsyncClient
+):
     mock_graph_api.add_site(
         {
             "id": SITE_ID,
@@ -129,7 +236,7 @@ async def test_full_sync_indexes_all_services(
 
     resp = await cm_client.post(
         "/sync",
-        json={"source_id": source_id, "sync_type": "full"},
+        json={"source_id": sharepoint_source_id, "sync_type": "full"},
     )
     assert resp.status_code == 200, resp.text
     sync_run_id = resp.json()["sync_run_id"]
@@ -139,29 +246,20 @@ async def test_full_sync_indexes_all_services(
         row["status"] == "completed"
     ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
 
-    n_events = await count_events(harness.db_pool, source_id, "document_created")
-    assert n_events == 4, f"Expected 4 document_created events, got {n_events}"
+    n_events = await count_events(
+        harness.db_pool, sharepoint_source_id, "document_created"
+    )
+    assert n_events == 1, f"Expected 1 document_created event, got {n_events}"
 
-    events = await get_events(harness.db_pool, source_id)
+    events = await get_events(harness.db_pool, sharepoint_source_id)
     doc_ids = {
         e["payload"]["document_id"]
         for e in events
         if e["event_type"] == "document_created"
     }
     assert any(
-        did.startswith("onedrive:") for did in doc_ids
-    ), f"No onedrive doc in {doc_ids}"
-    assert any(did.startswith("mail:") for did in doc_ids), f"No mail doc in {doc_ids}"
-    assert any(
-        did.startswith("calendar:") for did in doc_ids
-    ), f"No calendar doc in {doc_ids}"
-    assert any(
         did.startswith("sharepoint:") for did in doc_ids
     ), f"No sharepoint doc in {doc_ids}"
 
-    state = await seed.get_connector_state(source_id)
+    state = await seed.get_connector_state(sharepoint_source_id)
     assert state is not None, "connector_state should be saved after sync"
-
-    assert (
-        row["documents_scanned"] >= 4
-    ), f"Expected >=4 documents_scanned, got {row['documents_scanned']}"

@@ -9,7 +9,7 @@ from omni_connector import Document, DocumentMetadata, DocumentPermissions
 def map_drive_item_to_document(
     item: dict[str, Any],
     content_id: str,
-    source_type: str = "onedrive",
+    source_type: str = "one_drive",
     owner_email: str | None = None,
     site_id: str | None = None,
 ) -> Document:
@@ -18,7 +18,7 @@ def map_drive_item_to_document(
     drive_id = parent_ref.get("driveId", "unknown")
     item_id = item["id"]
 
-    if source_type == "sharepoint" and site_id:
+    if source_type == "share_point" and site_id:
         external_id = f"sharepoint:{site_id}:{item_id}"
     else:
         external_id = f"onedrive:{drive_id}:{item_id}"
@@ -44,7 +44,7 @@ def map_drive_item_to_document(
             },
         ),
         permissions=DocumentPermissions(
-            public=(source_type == "sharepoint"),
+            public=(source_type == "share_point"),
             users=[owner_email] if owner_email else [],
         ),
         attributes={
@@ -86,7 +86,7 @@ def map_message_to_document(
             users=[user_email] if user_email else [],
         ),
         attributes={
-            "source_type": "microsoft_mail",
+            "source_type": "outlook",
         },
     )
 
@@ -136,7 +136,7 @@ def map_event_to_document(
             users=attendee_emails,
         ),
         attributes={
-            "source_type": "microsoft_calendar",
+            "source_type": "outlook_calendar",
         },
     )
 

@@ -17,11 +17,13 @@ class SyncContext:
         sdk_client: SdkClient,
         sync_run_id: str,
         source_id: str,
+        source_type: str | None = None,
         state: dict[str, Any] | None = None,
     ):
         self._client = sdk_client
         self._sync_run_id = sync_run_id
         self._source_id = source_id
+        self._source_type = source_type
         self._state = state or {}
         self._cancelled = asyncio.Event()
         self._documents_emitted = 0
@@ -35,6 +37,10 @@ class SyncContext:
     @property
     def source_id(self) -> str:
         return self._source_id
+
+    @property
+    def source_type(self) -> str | None:
+        return self._source_type
 
     @property
     def state(self) -> dict[str, Any]:

@@ -622,6 +622,7 @@ pub async fn sdk_get_source_sync_config(
         config: source.config,
         credentials,
         connector_state: source.connector_state,
+        source_type: source.source_type,
     }))
 }
 

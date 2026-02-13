@@ -29,7 +29,7 @@ class SharePointSyncer:
         ctx: SyncContext,
         state: dict[str, Any],
     ) -> dict[str, Any]:
-        delta_tokens: dict[str, str] = state.get("sharepoint_delta_tokens", {})
+        delta_tokens: dict[str, str] = state.get("delta_tokens", {})
         new_tokens: dict[str, str] = {}
 
         sites = await self._list_sites(client)
@@ -49,7 +49,7 @@ class SharePointSyncer:
 
             logger.info("[sharepoint] Finished site %s", site_name)
 
-        return {"sharepoint_delta_tokens": new_tokens}
+        return {"delta_tokens": new_tokens}
 
     async def _list_sites(self, client: GraphClient) -> list[dict[str, Any]]:
         sites: list[dict[str, Any]] = []
@@ -131,7 +131,7 @@ class SharePointSyncer:
         doc = map_drive_item_to_document(
             item=item,
             content_id=content_id,
-            source_type="sharepoint",
+            source_type="share_point",
             site_id=site["id"],
         )
         await ctx.emit(doc)
