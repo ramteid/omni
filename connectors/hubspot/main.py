@@ -12,5 +12,8 @@ logging.basicConfig(
 )
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8000"))
+    port = os.environ.get("PORT")
+    if not port:
+        raise SystemExit("PORT environment variable is required")
+    port = int(port)
     HubSpotConnector().serve(port=port)
