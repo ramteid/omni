@@ -31,7 +31,6 @@ variable "admin_email" {
 variable "billing_account_name" {
   description = "Name of the billing account to use"
   type        = string
-  default     = ""
 }
 
 variable "region" {
@@ -60,6 +59,12 @@ variable "tag_value_name" {
   description = "Name for the tag value"
   type        = string
   default     = "allowed"
+}
+
+variable "manage_org_policy" {
+  description = "Whether to create org-level tags and policy to allow SA key creation. Requires Organization Admin permissions. Set to true only if your org blocks service account key creation."
+  type        = bool
+  default     = false
 }
 
 variable "include_gmail_scope" {

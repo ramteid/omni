@@ -1,0 +1,25 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
+
+# Generated files
+SETUP_INSTRUCTIONS.md
+
+# Credentials
+omni-service-account-key.json
+*.json
+!*.tf.json
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# tfvars (may contain secrets)
+*.tfvars
+*.tfvars.json
+!example.tfvars

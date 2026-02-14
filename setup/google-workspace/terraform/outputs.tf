@@ -42,21 +42,21 @@ output "workspace_admin_console_url" {
 
 output "tag_key_id" {
   description = "The ID of the created tag key"
-  value       = google_tags_tag_key.omni_integration.id
+  value       = var.manage_org_policy ? google_tags_tag_key.omni_integration[0].id : null
 }
 
 output "tag_value_id" {
   description = "The ID of the created tag value"
-  value       = google_tags_tag_value.allowed.id
+  value       = var.manage_org_policy ? google_tags_tag_value.allowed[0].id : null
 }
 
 output "setup_complete" {
   description = "Confirmation that automated setup is complete"
-  value = <<-EOT
+  value       = <<-EOT
     ✅ Automated setup complete!
     
     📋 Manual steps remaining:
-    1. Go to Google Workspace Admin Console: ${output.workspace_admin_console_url.value}
+    1. Go to Google Workspace Admin Console: https://admin.google.com/ac/owl/domainwidedelegation
     2. Add OAuth Client ID: ${google_service_account.omni_sa.unique_id}
     3. Add OAuth Scopes: ${join(", ", local.oauth_scopes)}
     4. Configure Omni with the generated service account key
@@ -71,13 +71,13 @@ output "next_steps" {
   description = "Next steps for completing the setup"
   value = {
     workspace_admin_console = {
-      url                = "https://admin.google.com/ac/owl/domainwidedelegation"
-      oauth_client_id    = google_service_account.omni_sa.unique_id
-      oauth_scopes       = local.oauth_scopes
+      url             = "https://admin.google.com/ac/owl/domainwidedelegation"
+      oauth_client_id = google_service_account.omni_sa.unique_id
+      oauth_scopes    = local.oauth_scopes
     }
     omni_configuration = {
-      admin_email        = var.admin_email
-      workspace_domain   = var.workspace_domain
+      admin_email              = var.admin_email
+      workspace_domain         = var.workspace_domain
       service_account_key_file = var.output_key_file ? "omni-service-account-key.json" : "Use the private_key output"
     }
   }
