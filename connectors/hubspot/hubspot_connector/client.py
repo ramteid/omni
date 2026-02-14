@@ -6,7 +6,6 @@ from functools import wraps
 from typing import Any
 
 from hubspot import HubSpot
-from hubspot.crm.contacts import ApiException
 
 from .config import BATCH_SIZE, HUBSPOT_OBJECT_CONFIGS
 
@@ -25,6 +24,12 @@ class AuthenticationError(HubSpotError):
     pass
 
 
+class ForbiddenError(HubSpotError):
+    """Missing scope / insufficient permissions (403)."""
+
+    pass
+
+
 class NotFoundError(HubSpotError):
     """Resource not found (404)."""
 
@@ -38,7 +43,14 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0):
     Handles:
     - 429 Rate Limit: Wait for Retry-After header (unlimited retries)
     - 500/502/503/504: Exponential backoff (limited retries)
-    - 401: Re-raise immediately (auth issue)
+    - 401: Re-raise as AuthenticationError (non-retryable)
+    - 403: Re-raise as ForbiddenError (non-retryable, missing scope)
+    - 404: Re-raise as NotFoundError (non-retryable)
+
+    Uses duck-typed exception catching because each HubSpot SDK module
+    (contacts, tickets, deals, etc.) has its own independent exception
+    hierarchy — a tickets ForbiddenException is NOT a subclass of
+    contacts ApiException.
     """
 
     def decorator(func):
@@ -50,7 +62,10 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0):
             while True:
                 try:
                     return await func(*args, **kwargs)
-                except ApiException as e:
+                except Exception as e:
+                    if not hasattr(e, "status"):
+                        raise
+
                     last_exception = e
 
                     if e.status == 401:
@@ -58,11 +73,15 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0):
                             "Invalid or expired access token"
                         ) from e
 
+                    if e.status == 403:
+                        raise ForbiddenError(
+                            f"Insufficient permissions (missing scope): {e.body}"
+                        ) from e
+
                     if e.status == 404:
                         raise NotFoundError(f"Resource not found: {e.body}") from e
 
                     if e.status == 429:
-                        # Rate limits don't count against max_retries
                         retry_after = 10
                         if e.headers:
                             retry_after = int(e.headers.get("Retry-After", 10))
@@ -88,7 +107,6 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0):
                         await asyncio.sleep(delay)
                         continue
 
-                    # Other errors: re-raise immediately
                     raise HubSpotError(f"API error {e.status}: {e.body}") from e
 
             raise HubSpotError(

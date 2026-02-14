@@ -228,10 +228,12 @@ class MockHubSpotAPI:
     def __init__(self) -> None:
         self.objects: dict[str, list[dict[str, Any]]] = {}
         self.should_fail_auth: bool = False
+        self.forbidden_types: set[str] = set()
 
     def reset(self) -> None:
         self.objects.clear()
         self.should_fail_auth = False
+        self.forbidden_types.clear()
 
     def add_contact(self, obj_id: str = "101", **kwargs: Any) -> None:
         self.objects.setdefault("contacts", []).append(
@@ -279,6 +281,17 @@ class MockHubSpotAPI:
                 )
 
             object_type = request.path_params["object_type"]
+
+            if object_type in mock.forbidden_types:
+                return JSONResponse(
+                    {
+                        "status": "error",
+                        "message": "This access token does not have proper permissions",
+                        "category": "FORBIDDEN",
+                    },
+                    status_code=403,
+                )
+
             items = mock.objects.get(object_type, [])
 
             limit = int(request.query_params.get("limit", "100"))

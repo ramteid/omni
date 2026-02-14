@@ -5,7 +5,7 @@ from typing import Any
 
 from omni_connector import Connector, Document, SyncContext
 
-from .client import AuthenticationError, HubSpotClient, HubSpotError
+from .client import AuthenticationError, ForbiddenError, HubSpotClient, HubSpotError
 from .config import HUBSPOT_OBJECT_TYPES
 from .mappers import generate_content, map_hubspot_object_to_document
 from .pagination import paginate_all
