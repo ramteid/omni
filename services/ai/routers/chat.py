@@ -59,7 +59,7 @@ SEARCH_TOOLS = [
                 "sources": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional: specific source types to search (e.g., google_drive, slack, confluence)",
+                    "description": "Optional: specific source types to search (valid values: google_drive, slack, confluence, jira, web, slack, fireflies, hubspot.)",
                 },
                 "content_types": {
                     "type": "array",

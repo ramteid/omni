@@ -10,6 +10,7 @@ import slackIcon from '$lib/images/icons/slack.svg'
 import atlassianIcon from '$lib/images/icons/atlassian.svg'
 import confluenceIcon from '$lib/images/icons/confluence.svg'
 import jiraIcon from '$lib/images/icons/jira.svg'
+import firefliesIcon from '$lib/images/icons/fireflies.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -57,6 +58,8 @@ export function getDocumentIconPath(sourceType: string, contentType: string): st
         return confluenceIcon
     } else if (sourceType === SourceType.JIRA) {
         return jiraIcon
+    } else if (sourceType === SourceType.FIREFLIES) {
+        return firefliesIcon
     }
 
     // For other source types, return null (will use fallback icon)
@@ -76,6 +79,8 @@ export function getSourceIconPath(sourceType: string): string | null {
             return confluenceIcon
         case SourceType.JIRA:
             return jiraIcon
+        case SourceType.FIREFLIES:
+            return firefliesIcon
         case SourceType.GITHUB:
             return null // TODO: Add github icon when available
         case SourceType.LOCAL_FILES:
@@ -137,6 +142,8 @@ export function inferSourceFromUrl(url: string): SourceType | null {
     if (urlLower.includes('slack.com')) return SourceType.SLACK
     if (urlLower.includes('atlassian.net/spaces')) return SourceType.CONFLUENCE
     if (urlLower.includes('atlassian.net/jira')) return SourceType.JIRA
+    if (urlLower.includes('github.com')) return SourceType.GITHUB
+    if (urlLower.includes('fireflies.ai')) return SourceType.FIREFLIES
 
     return null
 }
@@ -182,7 +189,18 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.GITHUB]: 'GitHub',
         [SourceType.LOCAL_FILES]: 'Files',
         [SourceType.WEB]: 'Web',
+        [SourceType.FIREFLIES]: 'Fireflies',
     }
 
     return sourceDisplayNames[sourceType]
+}
+
+export function getSourceTypeFromDisplayName(displayName: string): SourceType | null {
+    const lower = displayName.toLowerCase()
+    for (const sourceType of Object.values(SourceType)) {
+        if (getSourceDisplayName(sourceType)?.toLowerCase() === lower) {
+            return sourceType
+        }
+    }
+    return null
 }

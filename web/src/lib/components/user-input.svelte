@@ -110,8 +110,8 @@
     )
 
     $effect(() => {
-        if (inputRef && value === '' && inputRef.innerHTML !== '') {
-            inputRef.innerHTML = ''
+        if (inputRef && value !== inputRef.textContent) {
+            inputRef.textContent = value
         }
     })
 
@@ -377,7 +377,7 @@
             onfocus={handleFocus}
             onblur={handleBlur}
             class={cn(
-                'before:text-muted-foreground relative min-h-12 cursor-text overflow-y-auto before:absolute before:inset-0 focus:outline-none',
+                'before:text-muted-foreground relative min-h-12 cursor-text overflow-y-auto before:pointer-events-none before:absolute before:inset-0 focus:outline-none',
                 value.trim() ? "before:content-['']" : 'before:content-[attr(data-placeholder)]',
             )}
             contenteditable="true"
@@ -401,7 +401,7 @@
                         }}>
                         <Select.Trigger
                             size="sm"
-                            class="hover:bg-muted h-8 max-w-[180px] cursor-pointer border-none text-sm shadow-none"
+                            class="hover:bg-muted text-muted-foreground h-8 max-w-[180px] cursor-pointer border-none text-sm shadow-none"
                             onclick={(e) => e.stopPropagation()}>
                             {models.find((m) => m.id === selectedModelId)?.displayName ??
                                 'Select model'}

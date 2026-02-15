@@ -98,7 +98,6 @@
     function selectSuggestion(query: string) {
         searchQuery = query
         popoverOpen = false
-        submitQuery()
     }
 
     // Map recent searches to popover items format
@@ -150,10 +149,11 @@
         <!-- Suggested Questions -->
         {#if data.suggestedQuestions && data.suggestedQuestions.length > 0}
             <div class="mt-8 w-full max-w-2xl">
-                <div class="flex flex-col items-center gap-2">
+                <div class="flex flex-col items-start gap-2">
+                    <p class="text-muted-foreground text-xs font-medium uppercase">Try asking</p>
                     {#each data.suggestedQuestions as suggestion}
                         <button
-                            class="hover:border-primary/20 hover:bg-muted max-w-screen-md cursor-pointer truncate rounded-full border border-gray-300 bg-white px-4 py-2 text-sm transition-colors"
+                            class="hover:border-primary/20 hover:bg-muted max-w-screen-md cursor-pointer truncate rounded-full border border-gray-300 bg-white px-4 py-2 text-xs transition-colors"
                             onclick={() => selectSuggestion(suggestion.question)}>
                             {suggestion.question}
                         </button>

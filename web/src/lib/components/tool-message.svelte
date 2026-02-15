@@ -3,7 +3,12 @@
     import { Search, FileText, TextSearch, ExternalLink } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { cn } from '$lib/utils'
-    import { getIconFromSearchResult } from '$lib/utils/icons'
+    import {
+        getIconFromSearchResult,
+        getSourceIconPath,
+        getSourceDisplayName,
+    } from '$lib/utils/icons'
+    import { SourceType } from '$lib/types'
 
     type Props = {
         message: ToolMessageContent
@@ -27,10 +32,14 @@
 
     let { message }: Props = $props()
     const toolName = message.toolUse.name as ToolName
-    const statusIndicator = message.toolResult
-        ? ToolIndicators[toolName]?.loaded
-        : ToolIndicators[toolName]?.loading || 'using'
+    let statusIndicator = $derived(
+        message.toolResult
+            ? ToolIndicators[toolName]?.loaded
+            : ToolIndicators[toolName]?.loading || 'using',
+    )
     const toolInputKey = ToolInputKey[toolName] || 'query'
+
+    let sources = $derived<string[]>(message.toolUse.input?.sources || [])
 
     let selectedItem = $state<string>()
 </script>
@@ -59,9 +68,32 @@
                 )}>
                 <div class="flex w-full items-center justify-between">
                     <div class="flex items-center gap-2">
-                        <Search class="h-4 w-4" />
+                        {#if sources.length > 0}
+                            <div class="flex items-center gap-1">
+                                {#each sources as source}
+                                    {#if getSourceIconPath(source)}
+                                        <img
+                                            src={getSourceIconPath(source)}
+                                            alt={getSourceDisplayName(source as SourceType) ||
+                                                source}
+                                            title={getSourceDisplayName(source as SourceType) ||
+                                                source}
+                                            class="!m-0 h-4 w-4" />
+                                    {/if}
+                                {/each}
+                            </div>
+                        {:else}
+                            <Search class="h-4 w-4" />
+                        {/if}
                         <div class="max-w-screen-md truncate text-sm font-normal">
-                            {statusIndicator}: {message.toolUse.input[toolInputKey]}
+                            {#if sources.length > 0}
+                                {statusIndicator}
+                                {sources
+                                    .map((s) => getSourceDisplayName(s as SourceType) || s)
+                                    .join(', ')}: {message.toolUse.input[toolInputKey]}
+                            {:else}
+                                {statusIndicator}: {message.toolUse.input[toolInputKey]}
+                            {/if}
                         </div>
                     </div>
                     {#if message.toolResult}

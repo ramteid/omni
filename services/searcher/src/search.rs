@@ -26,7 +26,7 @@ pub struct SearchEngine {
 }
 
 impl SearchEngine {
-    const CONTENT_SIZE_THRESHOLD: usize = 10_000; // 10KB threshold
+    const CONTENT_SIZE_THRESHOLD: usize = 50_000; // 10KB threshold
 
     pub async fn new(
         db_pool: DatabasePool,
