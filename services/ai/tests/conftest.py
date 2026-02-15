@@ -308,7 +308,8 @@ def app_state(mock_embedding_provider, mock_llm_provider):
     """Create AppState with mocked providers for unit tests."""
     state = AppState()
     state.embedding_provider = mock_embedding_provider
-    state.llm_provider = mock_llm_provider
+    state.models = {"mock-model": mock_llm_provider}
+    state.default_model_id = "mock-model"
     state.searcher_tool = AsyncMock()
     state.content_storage = AsyncMock()
     return state

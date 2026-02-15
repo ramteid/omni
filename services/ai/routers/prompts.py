@@ -16,8 +16,22 @@ from processing import (
     extract_text_from_pdf,
 )
 
+from providers import LLMProvider
+
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["prompts"])
+
+
+def _get_default_llm_provider(request: Request) -> LLMProvider | None:
+    """Return the default LLM provider from app.state.models."""
+    models = getattr(request.app.state, "models", None)
+    if not models:
+        return None
+    default_id = getattr(request.app.state, "default_model_id", None)
+    if default_id and default_id in models:
+        return models[default_id]
+    return next(iter(models.values()), None)
+
 
 # Thread pool for async operations - scale based on CPU cores
 # Reserve some cores for the web server and other processes
@@ -28,10 +42,8 @@ _executor = ThreadPoolExecutor(max_workers=max_workers)
 @router.post("/prompt")
 async def generate_response(request: Request, body: PromptRequest):
     """Generate a response from the configured LLM provider with streaming support."""
-    if (
-        not hasattr(request.app.state, "llm_provider")
-        or not request.app.state.llm_provider
-    ):
+    llm_provider = _get_default_llm_provider(request)
+    if not llm_provider:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
     logger.info(
@@ -45,7 +57,7 @@ async def generate_response(request: Request, body: PromptRequest):
     # Streaming response
     async def stream_generator():
         try:
-            async for event in request.app.state.llm_provider.stream_response(
+            async for event in llm_provider.stream_response(
                 body.prompt,
                 max_tokens=body.max_tokens,
                 temperature=body.temperature,
@@ -70,14 +82,12 @@ async def _generate_non_streaming_response(
     request: Request, body: PromptRequest
 ) -> PromptResponse:
     """Generate non-streaming response for backward compatibility."""
-    if (
-        not hasattr(request.app.state, "llm_provider")
-        or not request.app.state.llm_provider
-    ):
+    llm_provider = _get_default_llm_provider(request)
+    if not llm_provider:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
     try:
-        generated_text = await request.app.state.llm_provider.generate_response(
+        generated_text = await llm_provider.generate_response(
             body.prompt,
             max_tokens=body.max_tokens,
             temperature=body.temperature,

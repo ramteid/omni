@@ -14,13 +14,19 @@ router = APIRouter(tags=["health"])
 @router.get("/health")
 async def health_check(request: Request):
     """Health check endpoint."""
-    # Check LLM provider health
+    # Check LLM provider health (check default model)
     llm_health = False
-    if hasattr(request.app.state, "llm_provider") and request.app.state.llm_provider:
-        try:
-            llm_health = await request.app.state.llm_provider.health_check()
-        except Exception:
-            llm_health = False
+    models = getattr(request.app.state, "models", {})
+    if models:
+        default_id = getattr(request.app.state, "default_model_id", None)
+        provider = (
+            models.get(default_id) if default_id else next(iter(models.values()), None)
+        )
+        if provider:
+            try:
+                llm_health = await provider.health_check()
+            except Exception:
+                llm_health = False
 
     # Get embedding model name from provider
     embedding_model = (

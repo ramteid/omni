@@ -212,8 +212,32 @@ def parse_sse_events(body: str) -> list[tuple[str, str]]:
 
 
 @pytest.fixture
-async def chat_with_message(db_pool):
-    """Create a user, chat, and user message in the real DB, return (chat_id, user_id)."""
+async def test_model(db_pool) -> str:
+    """Create a model provider and model in the DB, return the model row ID."""
+    async with db_pool.acquire() as conn:
+        provider_id = str(ULID())
+        await conn.execute(
+            "INSERT INTO model_providers (id, name, provider_type, config) VALUES ($1, $2, $3, $4)",
+            provider_id,
+            "Test Provider",
+            "anthropic",
+            "{}",
+        )
+        model_id = str(ULID())
+        await conn.execute(
+            "INSERT INTO models (id, model_provider_id, model_id, display_name, is_default) VALUES ($1, $2, $3, $4, $5)",
+            model_id,
+            provider_id,
+            "test-model",
+            "Test Model",
+            False,
+        )
+    return model_id
+
+
+@pytest.fixture
+async def chat_with_message(db_pool, test_model):
+    """Create a user, chat, and user message in the real DB, return (chat_id, user_id, model_id)."""
     users_repo = UsersRepository(pool=db_pool)
     user = await users_repo.create(
         email=f"{ULID()}@test.local",
@@ -222,14 +246,14 @@ async def chat_with_message(db_pool):
     )
 
     chats_repo = ChatsRepository(pool=db_pool)
-    chat = await chats_repo.create(user_id=user.id)
+    chat = await chats_repo.create(user_id=user.id, model_id=test_model)
 
     messages_repo = MessagesRepository(pool=db_pool)
     await messages_repo.create(
         chat_id=chat.id,
         message={"role": "user", "content": "Find all high-priority bugs"},
     )
-    return chat.id, user.id
+    return chat.id, user.id, test_model
 
 
 @pytest.fixture
@@ -248,10 +272,11 @@ async def _stream_chat(app: FastAPI, chat_id: str) -> str:
         return resp.text
 
 
-def _build_app(llm_provider, searcher_tool) -> FastAPI:
+def _build_app(llm_provider, searcher_tool, model_id: str) -> FastAPI:
     app = FastAPI()
     app.state = AppState()
-    app.state.llm_provider = llm_provider
+    app.state.models = {model_id: llm_provider}
+    app.state.default_model_id = model_id
     app.state.searcher_tool = searcher_tool
     app.include_router(chat_router)
     return app
@@ -267,13 +292,13 @@ async def test_attribute_filters_flow_to_searcher(
     db_pool, chat_with_message, _patch_db_pool
 ):
     """attribute_filters from LLM tool call reach SearchRequest."""
-    chat_id, _ = chat_with_message
+    chat_id, _, model_id = chat_with_message
     tool_call_json = {
         "query": "high priority bugs",
         "attributes": {"priority": "High", "issue_type": "Bug"},
     }
     searcher = create_mock_searcher()
-    app = _build_app(create_mock_llm(tool_call_json), searcher)
+    app = _build_app(create_mock_llm(tool_call_json), searcher, model_id)
 
     await _stream_chat(app, chat_id)
 
@@ -288,10 +313,10 @@ async def test_attribute_filters_flow_to_searcher(
 @pytest.mark.asyncio
 async def test_no_attributes_sends_none(db_pool, chat_with_message, _patch_db_pool):
     """When the LLM omits attributes, attribute_filters should be None."""
-    chat_id, _ = chat_with_message
+    chat_id, _, model_id = chat_with_message
     tool_call_json = {"query": "recent documents"}
     searcher = create_mock_searcher()
-    app = _build_app(create_mock_llm(tool_call_json), searcher)
+    app = _build_app(create_mock_llm(tool_call_json), searcher, model_id)
 
     await _stream_chat(app, chat_id)
 
@@ -303,13 +328,13 @@ async def test_no_attributes_sends_none(db_pool, chat_with_message, _patch_db_po
 @pytest.mark.asyncio
 async def test_array_attribute_filter(db_pool, chat_with_message, _patch_db_pool):
     """Array-valued attributes pass through for OR matching."""
-    chat_id, _ = chat_with_message
+    chat_id, _, model_id = chat_with_message
     tool_call_json = {
         "query": "critical issues",
         "attributes": {"priority": ["High", "Critical"]},
     }
     searcher = create_mock_searcher()
-    app = _build_app(create_mock_llm(tool_call_json), searcher)
+    app = _build_app(create_mock_llm(tool_call_json), searcher, model_id)
 
     await _stream_chat(app, chat_id)
 
@@ -323,14 +348,14 @@ async def test_stream_completes_with_tool_results(
     db_pool, chat_with_message, _patch_db_pool
 ):
     """Full SSE stream contains tool call events, save_message, tool_result, text, and end_of_stream."""
-    chat_id, _ = chat_with_message
+    chat_id, _, model_id = chat_with_message
     tool_call_json = {
         "query": "high priority bugs",
         "attributes": {"priority": "High"},
     }
     response_text = "I found 2 high-priority bugs."
     searcher = create_mock_searcher()
-    app = _build_app(create_mock_llm(tool_call_json, response_text), searcher)
+    app = _build_app(create_mock_llm(tool_call_json, response_text), searcher, model_id)
 
     body = await _stream_chat(app, chat_id)
     events = parse_sse_events(body)
