@@ -143,12 +143,6 @@ services:
       AI_WORKERS: ${AI_WORKERS:-1}
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
       SEARCHER_URL: ${SEARCHER_URL}
-      # LLM provider configuration
-      LLM_PROVIDER: ${LLM_PROVIDER}
-      LLM_API_KEY: ${LLM_API_KEY}
-      LLM_MODEL: ${LLM_MODEL}
-      LLM_API_URL: ${LLM_API_URL}
-      LLM_SECONDARY_MODEL: ${LLM_SECONDARY_MODEL}
       # Embedding provider configuration
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL}
@@ -224,12 +218,12 @@ services:
     environment:
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     command: >
-      --model ${LLM_MODEL}
+      --model ${VLLM_MODEL}
       --dtype ${VLLM_DTYPE:-auto}
-      --api-key ${LLM_API_KEY}
+      --api-key ${VLLM_API_KEY}
       --port ${VLLM_PORT}
       --host 0.0.0.0
-      --max-model-len ${LLM_MAX_MODEL_LEN}
+      --max-model-len ${VLLM_MAX_MODEL_LEN}
     networks:
       - omni-network
     volumes:

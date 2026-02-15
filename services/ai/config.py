@@ -78,12 +78,6 @@ EMBEDDING_API_KEY = get_optional_env("EMBEDDING_API_KEY", "")
 EMBEDDING_API_URL = get_optional_env("EMBEDDING_API_URL", "")
 EMBEDDING_MAX_MODEL_LEN = int(get_optional_env("EMBEDDING_MAX_MODEL_LEN", "8192"))
 
-# LLM provider configuration
-LLM_PROVIDER = get_optional_env("LLM_PROVIDER", "vllm").lower()
-LLM_API_KEY = get_optional_env("LLM_API_KEY", "")
-LLM_MODEL = get_optional_env("LLM_MODEL", "")
-LLM_API_URL = get_optional_env("LLM_API_URL", "")
-LLM_SECONDARY_MODEL = get_optional_env("LLM_SECONDARY_MODEL", "")
 DEFAULT_MAX_TOKENS = int(get_optional_env("DEFAULT_MAX_TOKENS", "8192"))
 DEFAULT_TEMPERATURE = float(get_optional_env("DEFAULT_TEMPERATURE", "0.0"))
 DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))

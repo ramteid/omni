@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Request
 
 from config import PORT, EMBEDDING_DIMENSIONS
-from db_config import get_llm_config, get_embedding_config
+from db_config import get_embedding_config
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
@@ -16,6 +16,8 @@ async def health_check(request: Request):
     """Health check endpoint."""
     # Check LLM provider health (check default model)
     llm_health = False
+    llm_provider_name = "none"
+    llm_model_name = "none"
     models = getattr(request.app.state, "models", {})
     if models:
         default_id = getattr(request.app.state, "default_model_id", None)
@@ -23,6 +25,10 @@ async def health_check(request: Request):
             models.get(default_id) if default_id else next(iter(models.values()), None)
         )
         if provider:
+            llm_provider_name = type(provider).__name__
+            llm_model_name = getattr(provider, "model", None) or getattr(
+                provider, "model_id", "unknown"
+            )
             try:
                 llm_health = await provider.health_check()
             except Exception:
@@ -36,7 +42,6 @@ async def health_check(request: Request):
     )
 
     # Get current configurations
-    llm_config = await get_llm_config()
     embedding_config = await get_embedding_config()
 
     return {
@@ -46,7 +51,7 @@ async def health_check(request: Request):
         "embedding_model": embedding_model,
         "port": PORT,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
-        "llm_provider": llm_config.provider,
-        "llm_model": llm_config.model or "default",
+        "llm_provider": llm_provider_name,
+        "llm_model": llm_model_name,
         "llm_health": llm_health,
     }

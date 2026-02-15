@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from config import LLM_PROVIDER
 from schemas import PromptRequest, PromptResponse
 from processing import (
     PDFExtractionRequest,
@@ -47,7 +46,7 @@ async def generate_response(request: Request, body: PromptRequest):
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
     logger.info(
-        f"Generating response for prompt: {body.prompt[:50]}... (stream={body.stream}, provider={LLM_PROVIDER})"
+        f"Generating response for prompt: {body.prompt[:50]}... (stream={body.stream})"
     )
 
     if not body.stream:

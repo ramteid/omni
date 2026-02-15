@@ -3,7 +3,7 @@ from .models import User, Chat, ChatMessage
 from .users import UsersRepository
 from .chats import ChatsRepository
 from .messages import MessagesRepository
-from .config import fetch_llm_config, fetch_embedding_config
+from .config import fetch_embedding_config
 from .documents import DocumentsRepository, Document, ContentBlob
 from .content_blobs import ContentBlobsRepository, ContentBlobRecord
 from .embedding_queue import EmbeddingQueueRepository, EmbeddingQueueItem, QueueStatus
@@ -25,7 +25,6 @@ __all__ = [
     "UsersRepository",
     "ChatsRepository",
     "MessagesRepository",
-    "fetch_llm_config",
     "fetch_embedding_config",
     "DocumentsRepository",
     "Document",
