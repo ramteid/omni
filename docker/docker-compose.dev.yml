@@ -157,6 +157,8 @@ services:
     build:
       context: ..
       dockerfile: connectors/fireflies/Dockerfile
+    environment:
+      RUST_LOG: debug
 
   microsoft-connector:
     image: omni-microsoft-connector:dev

@@ -66,10 +66,19 @@ impl FirefliesClient {
             return Err(anyhow!("Fireflies API returned HTTP {}: {}", status, body));
         }
 
-        let gql_response: GraphQLResponse = response
-            .json()
+        let response_text = response
+            .text()
             .await
-            .context("Failed to parse Fireflies GraphQL response")?;
+            .context("Failed to read Fireflies response body")?;
+        debug!("Fireflies API response: {}", response_text);
+
+        let gql_response: GraphQLResponse = match serde_json::from_str(&response_text) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to parse Fireflies GraphQL response: {}", e);
+                return Err(e).context("Failed to parse Fireflies GraphQL response");
+            }
+        };
 
         if let Some(errors) = &gql_response.errors {
             if !errors.is_empty() {

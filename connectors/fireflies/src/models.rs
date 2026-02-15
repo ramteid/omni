@@ -5,10 +5,17 @@ use std::collections::HashMap;
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum DateValue {
+    Timestamp(i64),
+    Text(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Transcript {
     pub id: String,
     pub title: Option<String>,
-    pub date: Option<String>,
+    pub date: Option<DateValue>,
     pub duration: Option<f64>,
     pub organizer_email: Option<String>,
     pub participants: Option<Vec<String>>,
@@ -30,10 +37,10 @@ pub struct Sentence {
 #[allow(dead_code)]
 pub struct Summary {
     pub keywords: Option<Vec<String>>,
-    pub action_items: Option<Vec<String>>,
-    pub outline: Option<Vec<String>>,
+    pub action_items: Option<String>,
+    pub outline: Option<String>,
     pub overview: Option<String>,
-    pub shorthand_bullet: Option<Vec<String>>,
+    pub shorthand_bullet: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,7 +72,14 @@ impl Transcript {
 
         let mut meta_parts = Vec::new();
         if let Some(date) = &self.date {
-            meta_parts.push(format!("Date: {}", date));
+            match date {
+                DateValue::Timestamp(ms) => {
+                    if let Ok(dt) = OffsetDateTime::from_unix_timestamp(ms / 1000) {
+                        meta_parts.push(format!("Date: {}", dt));
+                    }
+                }
+                DateValue::Text(s) => meta_parts.push(format!("Date: {}", s)),
+            }
         }
         if let Some(duration) = self.duration {
             let mins = (duration / 60.0).round() as u64;
@@ -89,10 +103,7 @@ impl Transcript {
 
             if let Some(action_items) = &summary.action_items {
                 if !action_items.is_empty() {
-                    content.push_str("\n## Action Items\n");
-                    for item in action_items {
-                        content.push_str(&format!("- {}\n", item));
-                    }
+                    content.push_str(&format!("\n## Action Items\n{}\n", action_items));
                 }
             }
 
@@ -140,24 +151,26 @@ impl Transcript {
         let title = self
             .title
             .clone()
-            .or_else(|| self.date.as_ref().map(|d| format!("Meeting on {}", d)))
+            .or_else(|| {
+                self.date.as_ref().map(|d| match d {
+                    DateValue::Timestamp(ms) => OffsetDateTime::from_unix_timestamp(ms / 1000)
+                        .map(|dt| format!("Meeting on {}", dt))
+                        .unwrap_or_else(|_| "Untitled Meeting".to_string()),
+                    DateValue::Text(s) => format!("Meeting on {}", s),
+                })
+            })
             .unwrap_or_else(|| "Untitled Meeting".to_string());
 
-        let created_at = self
-            .date
-            .as_ref()
-            .and_then(|d| {
-                // Fireflies returns millisecond timestamps as strings
-                d.parse::<i64>()
-                    .ok()
-                    .and_then(|ms| OffsetDateTime::from_unix_timestamp(ms / 1000).ok())
-            })
-            .or_else(|| {
-                self.date.as_ref().and_then(|d| {
-                    time::OffsetDateTime::parse(d, &time::format_description::well_known::Rfc3339)
-                        .ok()
-                })
-            });
+        let created_at = self.date.as_ref().and_then(|d| match d {
+            DateValue::Timestamp(ms) => OffsetDateTime::from_unix_timestamp(ms / 1000).ok(),
+            DateValue::Text(s) => s
+                .parse::<i64>()
+                .ok()
+                .and_then(|ms| OffsetDateTime::from_unix_timestamp(ms / 1000).ok())
+                .or_else(|| {
+                    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+                }),
+        });
 
         let url = Some(format!("https://app.fireflies.ai/view/{}", self.id));
 
