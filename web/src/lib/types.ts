@@ -13,6 +13,7 @@ export enum SourceType {
     SHARE_POINT = 'share_point',
     OUTLOOK = 'outlook',
     OUTLOOK_CALENDAR = 'outlook_calendar',
+    FIREFLIES = 'fireflies',
 }
 
 export enum ServiceProvider {
@@ -22,6 +23,7 @@ export enum ServiceProvider {
     GITHUB = 'github',
     MICROSOFT = 'microsoft',
     HUBSPOT = 'hubspot',
+    FIREFLIES = 'fireflies',
 }
 
 export enum AuthType {

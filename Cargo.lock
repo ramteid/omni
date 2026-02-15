@@ -3843,6 +3843,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-fireflies-connector"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "dashmap 6.1.0",
+ "dotenvy",
+ "futures",
+ "reqwest 0.12.23",
+ "serde",
+ "serde_json",
+ "shared",
+ "time",
+ "tokio",
+ "tower 0.5.2",
+ "tower-http 0.6.6",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "omni-google-connector"
 version = "0.1.0"
 dependencies = [

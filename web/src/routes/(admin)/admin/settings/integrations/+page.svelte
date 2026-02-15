@@ -17,6 +17,7 @@
     import confluenceLogo from '$lib/images/icons/confluence.svg'
     import jiraLogo from '$lib/images/icons/jira.svg'
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
+    import firefliesLogo from '$lib/images/icons/fireflies.svg'
     import microsoftLogo from '$lib/images/icons/microsoft.svg'
     import { Globe, HardDrive, Loader2 } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
@@ -24,6 +25,7 @@
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
     import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
+    import FirefliesConnectorSetup from '$lib/components/fireflies-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import FilesystemConnectorSetupDialog from '$lib/components/filesystem-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
@@ -97,6 +99,7 @@
     let showWebSetup = $state(false)
     let showFilesystemSetup = $state(false)
     let showHubspotSetup = $state(false)
+    let showFirefliesSetup = $state(false)
 
     function handleConnect(integrationId: string) {
         if (integrationId === 'google') {
@@ -111,6 +114,8 @@
             showFilesystemSetup = true
         } else if (integrationId === 'hubspot') {
             showHubspotSetup = true
+        } else if (integrationId === 'fireflies') {
+            showFirefliesSetup = true
         }
     }
 
@@ -144,6 +149,11 @@
         window.location.reload()
     }
 
+    function handleFirefliesSetupSuccess() {
+        showFirefliesSetup = false
+        window.location.reload()
+    }
+
     function getSourceIcon(sourceType: SourceType) {
         switch (sourceType) {
             case SourceType.GOOGLE_DRIVE:
@@ -158,6 +168,8 @@
                 return jiraLogo
             case SourceType.HUBSPOT:
                 return hubspotLogo
+            case SourceType.FIREFLIES:
+                return firefliesLogo
             case SourceType.WEB:
                 return null
             case SourceType.LOCAL_FILES:
@@ -177,6 +189,8 @@
                 return atlassianLogo
             case 'hubspot':
                 return hubspotLogo
+            case 'fireflies':
+                return firefliesLogo
             case 'microsoft':
                 return microsoftLogo
             default:
@@ -209,6 +223,8 @@
                 return 'issues'
             case SourceType.HUBSPOT:
                 return 'records'
+            case SourceType.FIREFLIES:
+                return 'transcripts'
             case SourceType.WEB:
                 return 'pages'
             case SourceType.LOCAL_FILES:
@@ -232,6 +248,8 @@
                 return `/admin/settings/integrations/slack/${sourceId}`
             case SourceType.HUBSPOT:
                 return `/admin/settings/integrations/hubspot/${sourceId}`
+            case SourceType.FIREFLIES:
+                return `/admin/settings/integrations/fireflies/${sourceId}`
             case SourceType.WEB:
                 return `/admin/settings/integrations/web/${sourceId}`
             case SourceType.LOCAL_FILES:
@@ -426,3 +444,8 @@
     bind:open={showHubspotSetup}
     onSuccess={handleHubspotSetupSuccess}
     onCancel={() => (showHubspotSetup = false)} />
+
+<FirefliesConnectorSetup
+    bind:open={showFirefliesSetup}
+    onSuccess={handleFirefliesSetupSuccess}
+    onCancel={() => (showFirefliesSetup = false)} />

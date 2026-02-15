@@ -63,6 +63,14 @@ export const load: PageServerLoad = async ({ locals }) => {
                 authType: 'access_token',
             },
             {
+                id: 'fireflies',
+                name: 'Fireflies',
+                description:
+                    'Index meeting transcripts, summaries, and action items from Fireflies.ai',
+                connected: connectedSources.some((source) => source.sourceType === 'fireflies'),
+                authType: 'api_key',
+            },
+            {
                 id: 'microsoft',
                 name: 'Microsoft 365',
                 description: 'Connect to OneDrive, SharePoint, Outlook mail and calendar',

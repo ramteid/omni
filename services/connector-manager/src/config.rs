@@ -52,6 +52,9 @@ impl ConnectorManagerConfig {
         if let Ok(url) = env::var("CONNECTOR_HUBSPOT_URL") {
             connector_urls.insert(SourceType::Hubspot, url);
         }
+        if let Ok(url) = env::var("CONNECTOR_FIREFLIES_URL") {
+            connector_urls.insert(SourceType::Fireflies, url);
+        }
         if let Ok(url) = env::var("CONNECTOR_MICROSOFT_URL") {
             connector_urls.insert(SourceType::OneDrive, url.clone());
             connector_urls.insert(SourceType::SharePoint, url.clone());
