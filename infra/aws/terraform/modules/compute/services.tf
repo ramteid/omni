@@ -178,3 +178,178 @@ resource "aws_ecs_service" "web_connector" {
     Name = "omni-${var.customer_name}-web-connector"
   })
 }
+
+# Connector Manager Service
+resource "aws_ecs_service" "connector_manager" {
+  name            = "omni-${var.customer_name}-connector-manager"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.connector_manager.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.connector_manager.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-connector-manager"
+  })
+}
+
+# Slack Connector Service
+resource "aws_ecs_service" "slack_connector" {
+  name            = "omni-${var.customer_name}-slack-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.slack_connector.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.slack_connector.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-slack-connector"
+  })
+}
+
+# GitHub Connector Service
+resource "aws_ecs_service" "github_connector" {
+  name            = "omni-${var.customer_name}-github-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.github_connector.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.github_connector.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-github-connector"
+  })
+}
+
+# HubSpot Connector Service
+resource "aws_ecs_service" "hubspot_connector" {
+  name            = "omni-${var.customer_name}-hubspot-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.hubspot_connector.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.hubspot_connector.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-hubspot-connector"
+  })
+}
+
+# Microsoft Connector Service
+resource "aws_ecs_service" "microsoft_connector" {
+  name            = "omni-${var.customer_name}-microsoft-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.microsoft_connector.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.microsoft_connector.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-microsoft-connector"
+  })
+}
+
+# Notion Connector Service
+resource "aws_ecs_service" "notion_connector" {
+  name            = "omni-${var.customer_name}-notion-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.notion_connector.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.notion_connector.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-notion-connector"
+  })
+}
+
+# Fireflies Connector Service
+resource "aws_ecs_service" "fireflies_connector" {
+  name            = "omni-${var.customer_name}-fireflies-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.fireflies_connector.arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.fireflies_connector.arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-fireflies-connector"
+  })
+}

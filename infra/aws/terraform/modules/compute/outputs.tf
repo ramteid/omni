@@ -52,3 +52,48 @@ output "service_discovery_namespace_id" {
   description = "Service discovery namespace ID"
   value       = var.service_discovery_namespace_id
 }
+
+output "connector_manager_service_name" {
+  description = "Connector manager service name"
+  value       = aws_ecs_service.connector_manager.name
+}
+
+output "slack_connector_service_name" {
+  description = "Slack connector service name"
+  value       = aws_ecs_service.slack_connector.name
+}
+
+output "atlassian_connector_service_name" {
+  description = "Atlassian connector service name"
+  value       = aws_ecs_service.atlassian_connector.name
+}
+
+output "web_connector_service_name" {
+  description = "Web connector service name"
+  value       = aws_ecs_service.web_connector.name
+}
+
+output "github_connector_service_name" {
+  description = "GitHub connector service name"
+  value       = aws_ecs_service.github_connector.name
+}
+
+output "hubspot_connector_service_name" {
+  description = "HubSpot connector service name"
+  value       = aws_ecs_service.hubspot_connector.name
+}
+
+output "microsoft_connector_service_name" {
+  description = "Microsoft connector service name"
+  value       = aws_ecs_service.microsoft_connector.name
+}
+
+output "notion_connector_service_name" {
+  description = "Notion connector service name"
+  value       = aws_ecs_service.notion_connector.name
+}
+
+output "fireflies_connector_service_name" {
+  description = "Fireflies connector service name"
+  value       = aws_ecs_service.fireflies_connector.name
+}

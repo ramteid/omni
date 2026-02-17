@@ -47,11 +47,11 @@ resource "aws_secretsmanager_secret_version" "jina_api_key" {
 }
 
 resource "random_password" "encryption_key" {
-  length  = 64
-  special = true
-  upper   = true
-  lower   = true
-  numeric = true
+  length           = 64
+  special          = true
+  upper            = true
+  lower            = true
+  numeric          = true
   override_special = "!@#$%^&*()-_=+[]{}|;:,.<>?"
 }
 
@@ -72,11 +72,11 @@ resource "aws_secretsmanager_secret_version" "encryption_key" {
 }
 
 resource "random_password" "encryption_salt" {
-  length  = 32
-  special = true
-  upper   = true
-  lower   = true
-  numeric = true
+  length           = 32
+  special          = true
+  upper            = true
+  lower            = true
+  numeric          = true
   override_special = "!@#$%^&*()-_=+[]{}|;:,.<>?"
 }
 
@@ -97,11 +97,11 @@ resource "aws_secretsmanager_secret_version" "encryption_salt" {
 }
 
 resource "random_password" "session_secret" {
-  length  = 64
-  special = true
-  upper   = true
-  lower   = true
-  numeric = true
+  length           = 64
+  special          = true
+  upper            = true
+  lower            = true
+  numeric          = true
   override_special = "!@#$%^&*()-_=+[]{}|;:,.<>?"
 }
 

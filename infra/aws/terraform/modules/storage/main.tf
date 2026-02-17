@@ -5,7 +5,7 @@ resource "aws_s3_bucket" "content" {
   bucket = "omni-${var.customer_name}-content"
 
   tags = merge(var.tags, {
-    Name = "omni-${var.customer_name}-content"
+    Name    = "omni-${var.customer_name}-content"
     Purpose = "Document content storage"
   })
 }
@@ -42,7 +42,7 @@ resource "aws_s3_bucket" "batch" {
   bucket = "omni-${var.customer_name}-batch-inference"
 
   tags = merge(var.tags, {
-    Name = "omni-${var.customer_name}-batch-inference"
+    Name    = "omni-${var.customer_name}-batch-inference"
     Purpose = "Bedrock batch inference"
   })
 }
@@ -75,11 +75,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "batch" {
     status = "Enabled"
 
     filter {
-      prefix = ""  # Apply to all objects
+      prefix = "" # Apply to all objects
     }
 
     expiration {
-      days = 7  # Delete batch files after 7 days
+      days = 7 # Delete batch files after 7 days
     }
   }
 }
@@ -149,7 +149,7 @@ resource "aws_iam_role" "bedrock_batch" {
   }
 
   tags = merge(var.tags, {
-    Name = "omni-${var.customer_name}-bedrock-batch-role"
+    Name    = "omni-${var.customer_name}-bedrock-batch-role"
     Purpose = "Bedrock batch inference S3 access"
   })
 }

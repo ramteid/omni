@@ -98,9 +98,9 @@ data "external" "migrations_hash" {
 resource "null_resource" "run_migrations" {
   triggers = {
     # Only run when migrations change or when the task definition changes
-    migrations_hash        = data.external.migrations_hash.result.hash
-    task_definition_arn    = var.migrator_task_definition_arn
-    lambda_code_hash       = aws_lambda_function.migrator.source_code_hash
+    migrations_hash     = data.external.migrations_hash.result.hash
+    task_definition_arn = var.migrator_task_definition_arn
+    lambda_code_hash    = aws_lambda_function.migrator.source_code_hash
   }
 
   provisioner "local-exec" {
@@ -109,11 +109,11 @@ resource "null_resource" "run_migrations" {
         --function-name ${aws_lambda_function.migrator.function_name} \
         --cli-binary-format raw-in-base64-out \
         --payload '${jsonencode({
-          Cluster        = var.cluster_name
-          TaskDefinition = var.migrator_task_definition_arn
-          Subnets        = join(",", var.subnet_ids)
-          SecurityGroups = var.security_group_id
-        })}' \
+    Cluster        = var.cluster_name
+    TaskDefinition = var.migrator_task_definition_arn
+    Subnets        = join(",", var.subnet_ids)
+    SecurityGroups = var.security_group_id
+})}' \
         --region ${var.region} \
         response.json
 
@@ -127,7 +127,7 @@ resource "null_resource" "run_migrations" {
 
       rm -f response.json
     EOT
-  }
+}
 
-  depends_on = [aws_lambda_function.migrator]
+depends_on = [aws_lambda_function.migrator]
 }

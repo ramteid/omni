@@ -87,8 +87,8 @@ resource "aws_iam_role" "ecs_task" {
           Resource = "*"
         },
         {
-          Effect = "Allow"
-          Action = ["iam:PassRole"]
+          Effect   = "Allow"
+          Action   = ["iam:PassRole"]
           Resource = var.bedrock_batch_role_arn
           Condition = {
             StringEquals = {

@@ -167,11 +167,11 @@ module "compute" {
   resend_api_key = var.resend_api_key
 
   # Storage resources for S3 and batch inference
-  content_bucket_arn       = module.storage.content_bucket_arn
-  content_bucket_name      = module.storage.content_bucket_name
-  batch_bucket_arn         = module.storage.batch_bucket_arn
-  batch_bucket_name        = module.storage.batch_bucket_name
-  bedrock_batch_role_arn   = module.storage.bedrock_batch_role_arn
+  content_bucket_arn     = module.storage.content_bucket_arn
+  content_bucket_name    = module.storage.content_bucket_name
+  batch_bucket_arn       = module.storage.batch_bucket_arn
+  batch_bucket_name      = module.storage.batch_bucket_name
+  bedrock_batch_role_arn = module.storage.bedrock_batch_role_arn
 }
 
 module "migrations" {

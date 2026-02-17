@@ -169,7 +169,7 @@ resource "aws_security_group" "ecs" {
   ingress {
     description = "Inter-service communication"
     from_port   = 3001
-    to_port     = 3004
+    to_port     = 4009
     protocol    = "tcp"
     self        = true
   }

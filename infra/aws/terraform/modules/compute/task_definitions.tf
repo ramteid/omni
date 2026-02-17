@@ -2,15 +2,9 @@ locals {
   database_url = "postgresql://${var.database_username}@${var.database_endpoint}:${var.database_port}/${var.database_name}?sslmode=disable"
   redis_url    = "redis://${var.redis_endpoint}:${var.redis_port}"
 
-  common_environment = [
-    { name = "DATABASE_HOST", value = var.database_endpoint },
-    { name = "DATABASE_PORT", value = tostring(var.database_port) },
-    { name = "DATABASE_NAME", value = var.database_name },
-    { name = "DATABASE_USERNAME", value = var.database_username },
-    { name = "DATABASE_SSL", value = "false" },
-    { name = "REDIS_URL", value = local.redis_url },
-    { name = "DB_MAX_CONNECTIONS", value = "10" },
-    { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "30" },
+  connector_manager_url = "http://connector-manager.omni-${var.customer_name}.local:3004"
+
+  otel_environment = [
     { name = "RUST_LOG", value = "debug" },
     { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint },
     { name = "OTEL_DEPLOYMENT_ID", value = var.customer_name },
@@ -18,9 +12,29 @@ locals {
     { name = "SERVICE_VERSION", value = var.service_version }
   ]
 
+  redis_environment = [
+    { name = "REDIS_URL", value = local.redis_url }
+  ]
+
+  db_environment = [
+    { name = "DATABASE_HOST", value = var.database_endpoint },
+    { name = "DATABASE_PORT", value = tostring(var.database_port) },
+    { name = "DATABASE_NAME", value = var.database_name },
+    { name = "DATABASE_USERNAME", value = var.database_username },
+    { name = "DATABASE_SSL", value = "false" },
+    { name = "DB_MAX_CONNECTIONS", value = "10" },
+    { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "30" }
+  ]
+
+  common_environment = concat(local.db_environment, local.redis_environment, local.otel_environment)
+
   common_secrets = [
     { name = "DATABASE_PASSWORD", valueFrom = "${var.database_password_arn}:password::" }
   ]
+
+  connector_base_environment = concat(local.otel_environment, [
+    { name = "CONNECTOR_MANAGER_URL", value = local.connector_manager_url }
+  ])
 }
 
 # Migrator Task Definition
@@ -89,10 +103,11 @@ resource "aws_ecs_task_definition" "web" {
       { name = "SEARCHER_URL", value = "http://searcher.omni-${var.customer_name}.local:3001" },
       { name = "INDEXER_URL", value = "http://indexer.omni-${var.customer_name}.local:3002" },
       { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
-      { name = "GOOGLE_CONNECTOR_URL", value = "http://google-connector.omni-${var.customer_name}.local:3004" },
-      { name = "SLACK_CONNECTOR_URL", value = "http://slack-connector.omni-${var.customer_name}.local:3007" },
-      { name = "ATLASSIAN_CONNECTOR_URL", value = "http://atlassian-connector.omni-${var.customer_name}.local:3005" },
-      { name = "WEB_CONNECTOR_URL", value = "http://web-connector.omni-${var.customer_name}.local:3006" },
+      { name = "CONNECTOR_MANAGER_URL", value = local.connector_manager_url },
+      { name = "GOOGLE_CONNECTOR_URL", value = "http://google-connector.omni-${var.customer_name}.local:4001" },
+      { name = "SLACK_CONNECTOR_URL", value = "http://slack-connector.omni-${var.customer_name}.local:4002" },
+      { name = "ATLASSIAN_CONNECTOR_URL", value = "http://atlassian-connector.omni-${var.customer_name}.local:4003" },
+      { name = "WEB_CONNECTOR_URL", value = "http://web-connector.omni-${var.customer_name}.local:4004" },
       { name = "SESSION_COOKIE_NAME", value = "omni_session" },
       { name = "SESSION_DURATION_DAYS", value = "30" },
       { name = "ORIGIN", value = local.app_url },
@@ -280,6 +295,63 @@ resource "aws_ecs_task_definition" "ai" {
   })
 }
 
+# Connector Manager Task Definition
+resource "aws_ecs_task_definition" "connector_manager" {
+  family                   = "omni-${var.customer_name}-connector-manager"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-connector-manager"
+    image     = "ghcr.io/${var.github_org}/omni/omni-connector-manager:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 3004
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "connector-manager"
+      }
+    }
+
+    environment = concat(local.common_environment, [
+      { name = "PORT", value = "3004" },
+      { name = "CONNECTOR_GOOGLE_URL", value = "http://google-connector.omni-${var.customer_name}.local:4001" },
+      { name = "CONNECTOR_SLACK_URL", value = "http://slack-connector.omni-${var.customer_name}.local:4002" },
+      { name = "CONNECTOR_ATLASSIAN_URL", value = "http://atlassian-connector.omni-${var.customer_name}.local:4003" },
+      { name = "CONNECTOR_WEB_URL", value = "http://web-connector.omni-${var.customer_name}.local:4004" },
+      { name = "CONNECTOR_GITHUB_URL", value = "http://github-connector.omni-${var.customer_name}.local:4005" },
+      { name = "CONNECTOR_HUBSPOT_URL", value = "http://hubspot-connector.omni-${var.customer_name}.local:4006" },
+      { name = "CONNECTOR_MICROSOFT_URL", value = "http://microsoft-connector.omni-${var.customer_name}.local:4007" },
+      { name = "CONNECTOR_NOTION_URL", value = "http://notion-connector.omni-${var.customer_name}.local:4008" },
+      { name = "CONNECTOR_FIREFLIES_URL", value = "http://fireflies-connector.omni-${var.customer_name}.local:4009" },
+      # Storage configuration
+      { name = "STORAGE_BACKEND", value = "s3" },
+      { name = "S3_BUCKET", value = var.content_bucket_name },
+      { name = "S3_REGION", value = var.region }
+    ])
+
+    secrets = concat(local.common_secrets, [
+      { name = "ENCRYPTION_KEY", valueFrom = "${var.encryption_key_arn}:key::" },
+      { name = "ENCRYPTION_SALT", valueFrom = "${var.encryption_salt_arn}:salt::" }
+    ])
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-connector-manager"
+  })
+}
+
 # Google Connector Task Definition
 resource "aws_ecs_task_definition" "google_connector" {
   family                   = "omni-${var.customer_name}-google-connector"
@@ -296,7 +368,7 @@ resource "aws_ecs_task_definition" "google_connector" {
     essential = true
 
     portMappings = [{
-      containerPort = 3004
+      containerPort = 4001
       protocol      = "tcp"
     }]
 
@@ -309,23 +381,11 @@ resource "aws_ecs_task_definition" "google_connector" {
       }
     }
 
-    environment = concat(local.common_environment, [
-      { name = "PORT", value = "3004" },
-      { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
-      { name = "GOOGLE_SYNC_INTERVAL_SECONDS", value = "3600" },
-      { name = "GOOGLE_MAX_AGE_DAYS", value = "730" },
-      { name = "GOOGLE_WEBHOOK_URL", value = "${local.app_url}/api/integrations/google/webhook" },
-      { name = "WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS", value = "3600" },
-      # Storage configuration
-      { name = "STORAGE_BACKEND", value = "s3" },
-      { name = "S3_BUCKET", value = var.content_bucket_name },
-      { name = "S3_REGION", value = var.region }
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4001" }
     ])
 
-    secrets = concat(local.common_secrets, [
-      { name = "ENCRYPTION_KEY", valueFrom = "${var.encryption_key_arn}:key::" },
-      { name = "ENCRYPTION_SALT", valueFrom = "${var.encryption_salt_arn}:salt::" }
-    ])
+    secrets = []
   }])
 
   tags = merge(local.common_tags, {
@@ -349,7 +409,7 @@ resource "aws_ecs_task_definition" "atlassian_connector" {
     essential = true
 
     portMappings = [{
-      containerPort = 3005
+      containerPort = 4003
       protocol      = "tcp"
     }]
 
@@ -362,18 +422,11 @@ resource "aws_ecs_task_definition" "atlassian_connector" {
       }
     }
 
-    environment = concat(local.common_environment, [
-      { name = "PORT", value = "3005" },
-      # Storage configuration
-      { name = "STORAGE_BACKEND", value = "s3" },
-      { name = "S3_BUCKET", value = var.content_bucket_name },
-      { name = "S3_REGION", value = var.region }
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4003" }
     ])
 
-    secrets = concat(local.common_secrets, [
-      { name = "ENCRYPTION_KEY", valueFrom = "${var.encryption_key_arn}:key::" },
-      { name = "ENCRYPTION_SALT", valueFrom = "${var.encryption_salt_arn}:salt::" }
-    ])
+    secrets = []
   }])
 
   tags = merge(local.common_tags, {
@@ -397,7 +450,7 @@ resource "aws_ecs_task_definition" "web_connector" {
     essential = true
 
     portMappings = [{
-      containerPort = 3006
+      containerPort = 4004
       protocol      = "tcp"
     }]
 
@@ -410,19 +463,260 @@ resource "aws_ecs_task_definition" "web_connector" {
       }
     }
 
-    environment = concat(local.common_environment, [
-      { name = "PORT", value = "3006" },
-      { name = "WEB_SYNC_INTERVAL_SECONDS", value = "86400" },
-      # Storage configuration
-      { name = "STORAGE_BACKEND", value = "s3" },
-      { name = "S3_BUCKET", value = var.content_bucket_name },
-      { name = "S3_REGION", value = var.region }
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4004" }
     ])
 
-    secrets = local.common_secrets
+    secrets = []
   }])
 
   tags = merge(local.common_tags, {
     Name = "omni-${var.customer_name}-web-connector"
+  })
+}
+
+# Slack Connector Task Definition
+resource "aws_ecs_task_definition" "slack_connector" {
+  family                   = "omni-${var.customer_name}-slack-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-slack-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-slack-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4002
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "slack-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4002" }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-slack-connector"
+  })
+}
+
+# GitHub Connector Task Definition
+resource "aws_ecs_task_definition" "github_connector" {
+  family                   = "omni-${var.customer_name}-github-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-github-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-github-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4005
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "github-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4005" }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-github-connector"
+  })
+}
+
+# HubSpot Connector Task Definition
+resource "aws_ecs_task_definition" "hubspot_connector" {
+  family                   = "omni-${var.customer_name}-hubspot-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-hubspot-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-hubspot-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4006
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "hubspot-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4006" }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-hubspot-connector"
+  })
+}
+
+# Microsoft Connector Task Definition
+resource "aws_ecs_task_definition" "microsoft_connector" {
+  family                   = "omni-${var.customer_name}-microsoft-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-microsoft-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-microsoft-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4007
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "microsoft-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4007" }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-microsoft-connector"
+  })
+}
+
+# Notion Connector Task Definition
+resource "aws_ecs_task_definition" "notion_connector" {
+  family                   = "omni-${var.customer_name}-notion-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-notion-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-notion-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4008
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "notion-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4008" }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-notion-connector"
+  })
+}
+
+# Fireflies Connector Task Definition
+resource "aws_ecs_task_definition" "fireflies_connector" {
+  family                   = "omni-${var.customer_name}-fireflies-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-fireflies-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-fireflies-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4009
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "fireflies-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4009" }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-fireflies-connector"
   })
 }
