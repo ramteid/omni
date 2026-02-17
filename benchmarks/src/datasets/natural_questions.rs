@@ -1,16 +1,19 @@
+use crate::config::NqConfig;
 use crate::datasets::{Dataset, DatasetLoader, Document, Query, RelevantDoc};
+use crate::prepare_nq;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{self};
 use futures::Stream;
+#[cfg(test)]
+use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use tracing::info;
-#[cfg(test)]
-use {futures::StreamExt, std::path::Path};
 
 /// Dataset loader for prepared Natural Questions benchmark data.
 ///
@@ -41,6 +44,99 @@ impl NaturalQuestionsDataset {
     pub fn with_max_queries(mut self, max: usize) -> Self {
         self.max_queries = Some(max);
         self
+    }
+
+    async fn download_shard(url: &str, output_path: &Path) -> Result<()> {
+        if output_path.exists() {
+            info!("Shard already exists: {}", output_path.display());
+            return Ok(());
+        }
+
+        info!("Downloading: {}", url);
+        let response = reqwest::get(url).await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Failed to download shard: HTTP {}",
+                response.status()
+            ));
+        }
+
+        let total_size = response.content_length().unwrap_or(0);
+        let progress_bar = ProgressBar::new(total_size);
+        progress_bar.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut file = File::create(output_path)?;
+        let mut reader = response.bytes_stream();
+        let mut downloaded = 0u64;
+
+        use futures_util::StreamExt;
+        use std::io::Write;
+
+        while let Some(item) = reader.next().await {
+            let chunk = item?;
+            file.write_all(&chunk)?;
+            downloaded += chunk.len() as u64;
+            progress_bar.set_position(downloaded);
+        }
+
+        progress_bar.finish_with_message("Download completed");
+        Ok(())
+    }
+
+    pub async fn download_and_prepare(config: &NqConfig) -> Result<Self> {
+        let prepared_dir = Path::new(&config.prepared_data_dir);
+        if prepared_dir.join("corpus.jsonl").exists() {
+            info!(
+                "NQ prepared data already exists at {}",
+                config.prepared_data_dir
+            );
+            let mut dataset = Self::new(config.prepared_data_dir.clone());
+            if let Some(max) = config.max_documents {
+                dataset = dataset.with_max_documents(max);
+            }
+            if let Some(max) = config.max_queries {
+                dataset = dataset.with_max_queries(max);
+            }
+            return Ok(dataset);
+        }
+
+        let raw_dev_dir = Path::new(&config.raw_data_dir).join("dev");
+        fs::create_dir_all(&raw_dev_dir)?;
+
+        let base_url = "https://storage.googleapis.com/natural_questions/v1.0/dev";
+        for i in 0..5 {
+            let filename = format!("nq-dev-{:02}.jsonl.gz", i);
+            let url = format!("{}/{}", base_url, filename);
+            let output_path = raw_dev_dir.join(&filename);
+            Self::download_shard(&url, &output_path).await?;
+        }
+
+        info!("Preparing NQ data...");
+        prepare_nq::prepare_nq_data(
+            Path::new(&config.raw_data_dir),
+            prepared_dir,
+            config.max_documents,
+            config.max_queries,
+        )?;
+
+        let mut dataset = Self::new(config.prepared_data_dir.clone());
+        if let Some(max) = config.max_documents {
+            dataset = dataset.with_max_documents(max);
+        }
+        if let Some(max) = config.max_queries {
+            dataset = dataset.with_max_queries(max);
+        }
+        Ok(dataset)
     }
 
     fn corpus_path(&self) -> PathBuf {
@@ -328,28 +424,15 @@ impl NaturalQuestionsDataset {
 #[async_trait]
 impl DatasetLoader for NaturalQuestionsDataset {
     async fn download(&self) -> Result<()> {
-        // Data is prepared by prepare_nq_data.py script
-        if !self.data_dir.exists() {
-            return Err(anyhow::anyhow!(
-                "NQ benchmark data not found at {}. Run prepare_nq_data.py first.",
-                self.data_dir.display()
-            ));
+        if self.corpus_path().exists() && self.queries_path().exists() {
+            info!("NQ benchmark data found at {}", self.data_dir.display());
+            return Ok(());
         }
 
-        if !self.corpus_path().exists() {
-            return Err(anyhow::anyhow!(
-                "Corpus file not found. Run prepare_nq_data.py first."
-            ));
-        }
-
-        if !self.queries_path().exists() {
-            return Err(anyhow::anyhow!(
-                "Queries file not found. Run prepare_nq_data.py first."
-            ));
-        }
-
-        info!("NQ benchmark data found at {}", self.data_dir.display());
-        Ok(())
+        Err(anyhow::anyhow!(
+            "NQ benchmark data not found at {}. Run `setup --dataset nq` first.",
+            self.data_dir.display()
+        ))
     }
 
     async fn load_dataset(&self) -> Result<Dataset> {

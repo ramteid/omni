@@ -47,6 +47,11 @@ queries = "https://msmarco.blob.core.windows.net/msmarcoranking/queries.tar.gz"
 corpus = "https://msmarco.blob.core.windows.net/msmarcoranking/collection.tar.gz"  
 qrels = "https://msmarco.blob.core.windows.net/msmarcoranking/qrels.dev.small.tsv"
 
+[datasets.nq]
+cache_dir = "benchmarks/data/nq"
+raw_data_dir = "benchmarks/data/nq/raw"
+prepared_data_dir = "benchmarks/data/nq/prepared"
+
 [datasets.custom]
 data_dir = "benchmarks/data/custom"
 generate_synthetic = false

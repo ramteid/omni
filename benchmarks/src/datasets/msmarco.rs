@@ -19,6 +19,8 @@ pub struct MsMarcoDataset {
     query_url: String,
     corpus_url: String,
     qrels_url: String,
+    max_documents: Option<usize>,
+    max_queries: Option<usize>,
 }
 
 impl MsMarcoDataset {
@@ -32,7 +34,19 @@ impl MsMarcoDataset {
                 .to_string(),
             qrels_url: "https://msmarco.blob.core.windows.net/msmarcoranking/qrels.dev.small.tsv"
                 .to_string(),
+            max_documents: None,
+            max_queries: None,
         }
+    }
+
+    pub fn with_max_documents(mut self, max: usize) -> Self {
+        self.max_documents = Some(max);
+        self
+    }
+
+    pub fn with_max_queries(mut self, max: usize) -> Self {
+        self.max_queries = Some(max);
+        self
     }
 
     pub fn with_dataset_type(mut self, dataset_type: String) -> Self {
@@ -133,6 +147,11 @@ impl MsMarcoDataset {
         let mut documents = Vec::new();
 
         for line in reader.lines() {
+            if let Some(max) = self.max_documents {
+                if documents.len() >= max {
+                    break;
+                }
+            }
             let line = line?;
             if line.trim().is_empty() {
                 continue;
@@ -199,6 +218,12 @@ impl MsMarcoDataset {
         let mut combined_queries = Vec::new();
 
         for (query_id, query_text) in queries {
+            if let Some(max) = self.max_queries {
+                if combined_queries.len() >= max {
+                    break;
+                }
+            }
+
             let relevant_docs: Vec<RelevantDoc> = qrels
                 .get(&query_id)
                 .map(|rels| {
@@ -233,9 +258,15 @@ impl MsMarcoDataset {
         corpus_file: &str,
     ) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>> {
         let corpus_file = corpus_file.to_string();
+        let max_documents = self.max_documents;
         Box::pin(stream::try_unfold(
-            (corpus_file, None::<BufReader<File>>),
-            move |(corpus_file, mut reader_opt)| async move {
+            (corpus_file, max_documents, None::<BufReader<File>>, 0usize),
+            move |(corpus_file, max_docs, mut reader_opt, count)| async move {
+                if let Some(max) = max_docs {
+                    if count >= max {
+                        return Ok(None);
+                    }
+                }
                 // Initialize reader if needed
                 if reader_opt.is_none() {
                     let file = File::open(&corpus_file).map_err(|e| {
@@ -275,7 +306,10 @@ impl MsMarcoDataset {
                                     metadata: HashMap::new(),
                                 };
 
-                                return Ok(Some((document, (corpus_file, reader_opt))));
+                                return Ok(Some((
+                                    document,
+                                    (corpus_file, max_docs, reader_opt, count + 1),
+                                )));
                             }
                         }
                         Err(e) => return Err(anyhow::anyhow!("Failed to read line: {}", e)),
@@ -292,18 +326,26 @@ impl MsMarcoDataset {
     ) -> Pin<Box<dyn Stream<Item = Result<Query>> + Send>> {
         let queries_file = queries_file.to_string();
         let qrels_file = qrels_file.to_string();
+        let max_queries = self.max_queries;
 
         Box::pin(stream::try_unfold(
             (
                 queries_file,
                 qrels_file,
+                max_queries,
                 None::<(
                     HashMap<String, String>,
                     HashMap<String, Vec<(String, f64)>>,
                     std::collections::hash_map::IntoIter<String, String>,
                 )>,
+                0usize,
             ),
-            move |(queries_file, qrels_file, mut state_opt)| async move {
+            move |(queries_file, qrels_file, max_queries, mut state_opt, count)| async move {
+                if let Some(max) = max_queries {
+                    if count >= max {
+                        return Ok(None);
+                    }
+                }
                 // Initialize state if needed
                 if state_opt.is_none() {
                     // Create a new instance to avoid borrowing self
@@ -336,7 +378,10 @@ impl MsMarcoDataset {
                             text: query_text,
                             relevant_docs,
                         };
-                        return Ok(Some((query, (queries_file, qrels_file, state_opt))));
+                        return Ok(Some((
+                            query,
+                            (queries_file, qrels_file, max_queries, state_opt, count + 1),
+                        )));
                     }
                 }
 

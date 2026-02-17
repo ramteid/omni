@@ -24,6 +24,8 @@ pub struct BenchmarkConfig {
 pub struct DatasetsConfig {
     pub beir: BeirConfig,
     pub msmarco: MsMarcoConfig,
+    #[serde(default)]
+    pub nq: NqConfig,
     pub custom: CustomDatasetConfig,
 }
 
@@ -33,6 +35,10 @@ pub struct BeirConfig {
     pub download_url_base: String,
     pub cache_dir: String,
     pub selected_dataset: Option<String>,
+    #[serde(default)]
+    pub max_documents: Option<usize>,
+    #[serde(default)]
+    pub max_queries: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +46,21 @@ pub struct MsMarcoConfig {
     pub dataset_type: String, // "passage" or "document"
     pub download_urls: MsMarcoUrls,
     pub cache_dir: String,
+    #[serde(default)]
+    pub max_documents: Option<usize>,
+    #[serde(default)]
+    pub max_queries: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NqConfig {
+    pub cache_dir: String,
+    pub raw_data_dir: String,
+    pub prepared_data_dir: String,
+    #[serde(default)]
+    pub max_documents: Option<usize>,
+    #[serde(default)]
+    pub max_queries: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +122,7 @@ impl Default for DatasetsConfig {
         Self {
             beir: BeirConfig::default(),
             msmarco: MsMarcoConfig::default(),
+            nq: NqConfig::default(),
             custom: CustomDatasetConfig::default(),
         }
     }
@@ -127,6 +149,8 @@ impl Default for BeirConfig {
                 .to_string(),
             cache_dir: "benchmarks/data/beir".to_string(),
             selected_dataset: None,
+            max_documents: None,
+            max_queries: None,
         }
     }
 }
@@ -144,6 +168,20 @@ impl Default for MsMarcoConfig {
                     .to_string(),
             },
             cache_dir: "benchmarks/data/msmarco".to_string(),
+            max_documents: None,
+            max_queries: None,
+        }
+    }
+}
+
+impl Default for NqConfig {
+    fn default() -> Self {
+        Self {
+            cache_dir: "benchmarks/data/nq".to_string(),
+            raw_data_dir: "benchmarks/data/nq/raw".to_string(),
+            prepared_data_dir: "benchmarks/data/nq/prepared".to_string(),
+            max_documents: None,
+            max_queries: None,
         }
     }
 }

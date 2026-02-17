@@ -11,7 +11,7 @@ mod reporter;
 mod search_client;
 
 use config::BenchmarkConfig;
-use datasets::{BeirDataset, DatasetLoader, MsMarcoDataset};
+use datasets::{BeirDataset, DatasetLoader, MsMarcoDataset, NaturalQuestionsDataset};
 use evaluator::BenchmarkEvaluator;
 use indexer::BenchmarkIndexer;
 use reporter::BenchmarkReporter;
@@ -59,21 +59,6 @@ enum Commands {
         #[arg(short, long, default_value = "html")]
         format: String,
     },
-    /// Prepare Natural Questions dataset (fast Rust implementation)
-    PrepareNq {
-        /// Input directory containing raw NQ JSONL.gz files
-        #[arg(long, default_value = "benchmarks/data/v1.0")]
-        input_dir: String,
-        /// Output directory for prepared data
-        #[arg(long, default_value = "benchmarks/data/nq_benchmark")]
-        output_dir: String,
-        /// Maximum number of documents to extract
-        #[arg(long)]
-        max_documents: Option<usize>,
-        /// Maximum number of queries to extract
-        #[arg(long)]
-        max_queries: Option<usize>,
-    },
 }
 
 #[tokio::main]
@@ -112,20 +97,6 @@ async fn main() -> Result<()> {
             );
             generate_report(results_dir, format).await?;
         }
-        Commands::PrepareNq {
-            input_dir,
-            output_dir,
-            max_documents,
-            max_queries,
-        } => {
-            info!("Preparing NQ dataset: {:?} -> {:?}", input_dir, output_dir);
-            prepare_nq::prepare_nq_data(
-                std::path::Path::new(input_dir),
-                std::path::Path::new(output_dir),
-                *max_documents,
-                *max_queries,
-            )?;
-        }
     }
 
     Ok(())
@@ -143,8 +114,13 @@ async fn setup_datasets(dataset: &str) -> Result<()> {
             let msmarco_loader = MsMarcoDataset::new("benchmarks/data/msmarco".to_string());
             msmarco_loader.download().await?;
         }
+        "nq" => {
+            info!("Setting up Natural Questions dataset (dev shards, ~1GB)...");
+            let nq_config = config::NqConfig::default();
+            NaturalQuestionsDataset::download_and_prepare(&nq_config).await?;
+        }
         "all" => {
-            info!("Setting up all datasets...");
+            info!("Setting up all datasets (excluding NQ, use --dataset nq separately)...");
             let beir_loader = BeirDataset::new("benchmarks/data/beir".to_string());
             beir_loader.download_all().await?;
 
@@ -196,12 +172,31 @@ async fn run_benchmarks(
             if let Some(selected) = &config.datasets.beir.selected_dataset {
                 beir_dataset = beir_dataset.with_selected_dataset(selected.clone());
             }
+            if let Some(max) = config.datasets.beir.max_documents {
+                beir_dataset = beir_dataset.with_max_documents(max);
+            }
+            if let Some(max) = config.datasets.beir.max_queries {
+                beir_dataset = beir_dataset.with_max_queries(max);
+            }
 
             Box::new(beir_dataset)
         }
-        "msmarco" => Box::new(MsMarcoDataset::new(
-            config.datasets.msmarco.cache_dir.clone(),
-        )),
+        "msmarco" => {
+            let mut msmarco_dataset =
+                MsMarcoDataset::new(config.datasets.msmarco.cache_dir.clone());
+            if let Some(max) = config.datasets.msmarco.max_documents {
+                msmarco_dataset = msmarco_dataset.with_max_documents(max);
+            }
+            if let Some(max) = config.datasets.msmarco.max_queries {
+                msmarco_dataset = msmarco_dataset.with_max_queries(max);
+            }
+            Box::new(msmarco_dataset)
+        }
+        "nq" => {
+            let nq_dataset =
+                NaturalQuestionsDataset::download_and_prepare(&config.datasets.nq).await?;
+            Box::new(nq_dataset)
+        }
         _ => return Err(anyhow::anyhow!("Unsupported dataset: {}", dataset)),
     };
 

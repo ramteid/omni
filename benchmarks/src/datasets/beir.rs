@@ -16,6 +16,8 @@ pub struct BeirDataset {
     dataset_names: Vec<String>,
     download_url_base: String,
     selected_dataset: Option<String>,
+    max_documents: Option<usize>,
+    max_queries: Option<usize>,
 }
 
 impl BeirDataset {
@@ -39,7 +41,19 @@ impl BeirDataset {
             download_url_base: "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets"
                 .to_string(),
             selected_dataset: None,
+            max_documents: None,
+            max_queries: None,
         }
+    }
+
+    pub fn with_max_documents(mut self, max: usize) -> Self {
+        self.max_documents = Some(max);
+        self
+    }
+
+    pub fn with_max_queries(mut self, max: usize) -> Self {
+        self.max_queries = Some(max);
+        self
     }
 
     pub fn with_datasets(mut self, dataset_names: Vec<String>) -> Self {
@@ -207,6 +221,12 @@ impl BeirDataset {
         let mut documents = Vec::new();
 
         for line in reader.lines() {
+            if let Some(max) = self.max_documents {
+                if documents.len() >= max {
+                    break;
+                }
+            }
+
             let line = line?;
             if line.trim().is_empty() {
                 continue;
@@ -276,6 +296,12 @@ impl BeirDataset {
         let mut combined_queries = Vec::new();
 
         for (query_id, query_text) in queries {
+            if let Some(max) = self.max_queries {
+                if combined_queries.len() >= max {
+                    break;
+                }
+            }
+
             let relevant_docs: Vec<RelevantDoc> = qrels
                 .get(&query_id)
                 .map(|rels| {
@@ -288,7 +314,6 @@ impl BeirDataset {
                 })
                 .unwrap_or_default();
 
-            // Only include queries that have relevant documents
             if !relevant_docs.is_empty() {
                 combined_queries.push(Query {
                     id: query_id,
@@ -305,11 +330,20 @@ impl BeirDataset {
         Ok(combined_queries)
     }
 
-    fn stream_corpus(&self, path: &str) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>> {
+    fn stream_corpus(
+        &self,
+        path: &str,
+        max_documents: Option<usize>,
+    ) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>> {
         let path = path.to_string();
         Box::pin(stream::try_unfold(
-            (path, None::<BufReader<File>>),
-            move |(path, mut reader_opt)| async move {
+            (path, max_documents, None::<BufReader<File>>, 0usize),
+            move |(path, max_docs, mut reader_opt, count)| async move {
+                if let Some(max) = max_docs {
+                    if count >= max {
+                        return Ok(None);
+                    }
+                }
                 // Initialize reader if needed
                 if reader_opt.is_none() {
                     let file = File::open(&path).map_err(|e| {
@@ -359,7 +393,10 @@ impl BeirDataset {
                                     metadata,
                                 };
 
-                                return Ok(Some((document, (path, reader_opt))));
+                                return Ok(Some((
+                                    document,
+                                    (path, max_docs, reader_opt, count + 1),
+                                )));
                             }
                         }
                         Err(e) => return Err(anyhow::anyhow!("Failed to read line: {}", e)),
@@ -373,6 +410,7 @@ impl BeirDataset {
         &self,
         queries_path: &str,
         qrels_path: &str,
+        max_queries: Option<usize>,
     ) -> Pin<Box<dyn Stream<Item = Result<Query>> + Send>> {
         let queries_path = queries_path.to_string();
         let qrels_path = qrels_path.to_string();
@@ -388,8 +426,19 @@ impl BeirDataset {
         };
 
         Box::pin(stream::try_unfold(
-            (queries_path, qrels, None::<BufReader<File>>),
-            move |(queries_path, qrels, mut queries_reader_opt)| async move {
+            (
+                queries_path,
+                qrels,
+                max_queries,
+                None::<BufReader<File>>,
+                0usize,
+            ),
+            move |(queries_path, qrels, max_queries, mut queries_reader_opt, count)| async move {
+                if let Some(max) = max_queries {
+                    if count >= max {
+                        return Ok(None);
+                    }
+                }
                 // Initialize queries reader if needed
                 if queries_reader_opt.is_none() {
                     let queries_file = File::open(&queries_path)?;
@@ -443,7 +492,13 @@ impl BeirDataset {
                                     };
                                     return Ok(Some((
                                         query,
-                                        (queries_path, qrels, queries_reader_opt),
+                                        (
+                                            queries_path,
+                                            qrels,
+                                            max_queries,
+                                            queries_reader_opt,
+                                            count + 1,
+                                        ),
                                     )));
                                 }
                             }
@@ -495,7 +550,7 @@ impl DatasetLoader for BeirDataset {
             let dataset_dir = format!("{}/{}", self.cache_dir, dataset_name);
             if Path::new(&dataset_dir).exists() {
                 let corpus_path = format!("{}/corpus.jsonl", dataset_dir);
-                return self.stream_corpus(&corpus_path);
+                return self.stream_corpus(&corpus_path, self.max_documents);
             }
         }
 
@@ -509,7 +564,7 @@ impl DatasetLoader for BeirDataset {
             if Path::new(&dataset_dir).exists() {
                 let queries_path = format!("{}/queries.jsonl", dataset_dir);
                 let qrels_path = format!("{}/qrels/test.tsv", dataset_dir);
-                return self.stream_corpus_queries(&queries_path, &qrels_path);
+                return self.stream_corpus_queries(&queries_path, &qrels_path, self.max_queries);
             }
         }
 
