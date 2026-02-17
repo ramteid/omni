@@ -1,0 +1,59 @@
+name: Package Deployment Configs
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths:
+      - 'docker/docker-compose.yml'
+      - 'docker/docker-compose.gpu.yml'
+      - '.env.example'
+      - 'Caddyfile'
+      - 'infra/**'
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package Docker Compose deployment
+        run: |
+          mkdir -p staging/docker-compose/docker
+          cp docker/docker-compose.yml staging/docker-compose/docker/
+          cp docker/docker-compose.gpu.yml staging/docker-compose/docker/
+          cp .env.example staging/docker-compose/
+          cp Caddyfile staging/docker-compose/
+          tar -czf omni-docker-compose.tar.gz -C staging/docker-compose .
+
+      - name: Package AWS Terraform deployment
+        run: |
+          mkdir -p staging/terraform-aws
+          cp -r infra/aws/terraform staging/terraform-aws/
+          tar -czf omni-terraform-aws.tar.gz -C staging/terraform-aws .
+
+      - name: Package GCP Terraform deployment
+        run: |
+          mkdir -p staging/terraform-gcp
+          cp -r infra/gcp/terraform staging/terraform-gcp/
+          tar -czf omni-terraform-gcp.tar.gz -C staging/terraform-gcp .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-archives
+          path: |
+            omni-docker-compose.tar.gz
+            omni-terraform-aws.tar.gz
+            omni-terraform-gcp.tar.gz
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            omni-docker-compose.tar.gz
+            omni-terraform-aws.tar.gz
+            omni-terraform-gcp.tar.gz
