@@ -1,11 +1,14 @@
 # Benchmark overlay — layers on top of the base docker-compose.yml
 # Does NOT require docker-compose.dev.yml
 #
-# Usage:
+# Usage (with GPU for embeddings):
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.benchmark.yml -f docker/docker-compose.gpu.yml --env-file .env up -d --build
+#
+# Usage (without GPU — will be slow):
 #   docker compose -f docker/docker-compose.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d --build
 #
-# Only starts: postgres, redis, migrator, searcher, indexer, ai
-# Connectors, web, and caddy are disabled via profiles.
+# Starts: postgres, redis, migrator, searcher, indexer, ai, embeddings
+# Connectors, web, vllm, and caddy are disabled via profiles.
 
 x-benchmark-db: &benchmark-db
   DATABASE_HOST: postgres
@@ -72,7 +75,15 @@ services:
     environment:
       <<: *benchmark-db
 
+  # Enable embeddings service (overrides profiles: [local-embeddings] from base)
+  embeddings:
+    profiles: []
+    ports:
+      - "${LOCAL_EMBEDDINGS_PORT}:${LOCAL_EMBEDDINGS_PORT}"
+
   # Disable services not needed for benchmarks
+  vllm:
+    profiles: [full]
   web:
     profiles: [full]
   connector-manager:
