@@ -1,73 +1,86 @@
-# Benchmark-specific overrides
-# Uses a separate postgres volume and database for benchmark isolation
+# Benchmark overlay — layers on top of the base docker-compose.yml
+# Does NOT require docker-compose.dev.yml
 #
-# Usage: docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d
+# Usage:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d
 #
-# Why dev overlay is needed:
-# - Builds local Docker images (:dev tags)
-# - Exposes ports for local access (searcher, indexer, ai)
-# - Volume mounts for hot reload during development
-# - Excludes vllm/caddy profiles not needed for benchmarks
-#
-# IMPORTANT: This uses a separate volume (postgres_benchmark_data) to isolate
-# benchmark data from development data. The postgres container will be recreated
-# with an empty database.
+# Only starts: postgres, redis, migrator, searcher, indexer, ai
+# Connectors, web, and caddy are disabled via profiles.
 
 x-benchmark-db: &benchmark-db
+  DATABASE_HOST: postgres
+  DATABASE_PORT: 5432
+  DATABASE_USERNAME: omni_bench
+  DATABASE_PASSWORD: omni_bench_password
   DATABASE_NAME: omni_benchmark
 
 services:
-  # Postgres uses a separate volume for benchmark isolation
   postgres:
     container_name: omni-postgres-benchmark
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_benchmark_data:/var/lib/postgresql/data
     environment:
       POSTGRES_DB: omni_benchmark
+      POSTGRES_USER: omni_bench
+      POSTGRES_PASSWORD: omni_bench_password
 
-  # Redis uses a separate volume for benchmark isolation
   redis:
     container_name: omni-redis-benchmark
+    ports:
+      - "6379:6379"
     volumes:
       - redis_benchmark_data:/data
 
-  # All services use DATABASE_NAME env var
   migrator:
     environment:
       <<: *benchmark-db
 
   searcher:
+    ports:
+      - "${SEARCHER_PORT}:${SEARCHER_PORT}"
     environment:
       <<: *benchmark-db
 
   indexer:
+    ports:
+      - "${INDEXER_PORT}:${INDEXER_PORT}"
     environment:
       <<: *benchmark-db
       RUST_LOG: info
 
   ai:
+    ports:
+      - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     environment:
       <<: *benchmark-db
 
+  # Disable services not needed for benchmarks
   web:
-    environment:
-      <<: *benchmark-db
-
+    profiles: [full]
+  connector-manager:
+    profiles: [full]
   google-connector:
-    environment:
-      <<: *benchmark-db
-
+    profiles: [full]
   slack-connector:
-    environment:
-      <<: *benchmark-db
-
+    profiles: [full]
   atlassian-connector:
-    environment:
-      <<: *benchmark-db
-
+    profiles: [full]
   web-connector:
-    environment:
-      <<: *benchmark-db
+    profiles: [full]
+  github-connector:
+    profiles: [full]
+  notion-connector:
+    profiles: [full]
+  hubspot-connector:
+    profiles: [full]
+  fireflies-connector:
+    profiles: [full]
+  microsoft-connector:
+    profiles: [full]
+  caddy:
+    profiles: [full]
 
 volumes:
   postgres_benchmark_data:

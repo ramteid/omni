@@ -79,7 +79,7 @@ echo ""
 # Start services if requested
 if [ "$START_SERVICES" = true ]; then
     echo "Starting Docker services..."
-    docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d
+    docker compose -f docker/docker-compose.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d
     echo "Waiting for services to be ready..."
     sleep 5
 fi
@@ -89,7 +89,7 @@ echo "Checking service health..."
 
 if ! curl -sf http://localhost:3001/health > /dev/null 2>&1; then
     echo "ERROR: Searcher service not available at http://localhost:3001"
-    echo "Please start services with: docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d"
+    echo "Please start services with: docker compose -f docker/docker-compose.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d"
     exit 1
 fi
 echo "✓ Searcher service is healthy"
