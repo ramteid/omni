@@ -184,15 +184,15 @@ services:
       PORT: ${CONNECTOR_MANAGER_PORT}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       ENCRYPTION_SALT: ${ENCRYPTION_SALT}
-      CONNECTOR_GOOGLE_URL: http://google-connector:${GOOGLE_CONNECTOR_PORT}
-      CONNECTOR_SLACK_URL: http://slack-connector:${SLACK_CONNECTOR_PORT}
-      CONNECTOR_ATLASSIAN_URL: http://atlassian-connector:${ATLASSIAN_CONNECTOR_PORT}
-      CONNECTOR_WEB_URL: http://web-connector:${WEB_CONNECTOR_PORT}
-      CONNECTOR_MICROSOFT_URL: http://microsoft-connector:${MICROSOFT_CONNECTOR_PORT}
-      CONNECTOR_GITHUB_URL: http://github-connector:${GITHUB_CONNECTOR_PORT:-8010}
-      CONNECTOR_NOTION_URL: http://notion-connector:${NOTION_CONNECTOR_PORT:-8011}
-      CONNECTOR_HUBSPOT_URL: http://hubspot-connector:${HUBSPOT_CONNECTOR_PORT}
-      CONNECTOR_FIREFLIES_URL: http://fireflies-connector:${FIREFLIES_CONNECTOR_PORT}
+      CONNECTOR_GOOGLE_URL: ${CONNECTOR_GOOGLE_URL}
+      CONNECTOR_SLACK_URL: ${CONNECTOR_SLACK_URL}
+      CONNECTOR_ATLASSIAN_URL: ${CONNECTOR_ATLASSIAN_URL}
+      CONNECTOR_WEB_URL: ${CONNECTOR_WEB_URL}
+      CONNECTOR_MICROSOFT_URL: ${CONNECTOR_MICROSOFT_URL}
+      CONNECTOR_GITHUB_URL: ${CONNECTOR_GITHUB_URL}
+      CONNECTOR_NOTION_URL: ${CONNECTOR_NOTION_URL}
+      CONNECTOR_HUBSPOT_URL: ${CONNECTOR_HUBSPOT_URL}
+      CONNECTOR_FIREFLIES_URL: ${CONNECTOR_FIREFLIES_URL}
       MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
       MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
       SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
@@ -269,6 +269,8 @@ services:
   google-connector:
     image: ghcr.io/getomnico/omni/omni-google-connector:${OMNI_VERSION:-latest}
     container_name: omni-google-connector
+    profiles:
+      - google
     expose:
       - "${GOOGLE_CONNECTOR_PORT}"
     environment:
@@ -296,6 +298,8 @@ services:
   slack-connector:
     image: ghcr.io/getomnico/omni/omni-slack-connector:${OMNI_VERSION:-latest}
     container_name: omni-slack-connector
+    profiles:
+      - slack
     expose:
       - "${SLACK_CONNECTOR_PORT}"
     environment:
@@ -314,6 +318,8 @@ services:
   atlassian-connector:
     image: ghcr.io/getomnico/omni/omni-atlassian-connector:${OMNI_VERSION:-latest}
     container_name: omni-atlassian-connector
+    profiles:
+      - atlassian
     expose:
       - "${ATLASSIAN_CONNECTOR_PORT}"
     environment:
@@ -334,6 +340,8 @@ services:
   web-connector:
     image: ghcr.io/getomnico/omni/omni-web-connector:${OMNI_VERSION:-latest}
     container_name: omni-web-connector
+    profiles:
+      - web
     expose:
       - "${WEB_CONNECTOR_PORT}"
     environment:
@@ -354,6 +362,8 @@ services:
   github-connector:
     image: ghcr.io/getomnico/omni/omni-github-connector:${OMNI_VERSION:-latest}
     container_name: omni-github-connector
+    profiles:
+      - github
     expose:
       - "${GITHUB_CONNECTOR_PORT:-8010}"
     environment:
@@ -371,6 +381,8 @@ services:
   notion-connector:
     image: ghcr.io/getomnico/omni/omni-notion-connector:${OMNI_VERSION:-latest}
     container_name: omni-notion-connector
+    profiles:
+      - notion
     expose:
       - "${NOTION_CONNECTOR_PORT}"
     environment:
@@ -388,6 +400,8 @@ services:
   hubspot-connector:
     image: ghcr.io/getomnico/omni/omni-hubspot-connector:${OMNI_VERSION:-latest}
     container_name: omni-hubspot-connector
+    profiles:
+      - hubspot
     expose:
       - "${HUBSPOT_CONNECTOR_PORT}"
     environment:
@@ -405,6 +419,8 @@ services:
   fireflies-connector:
     image: ghcr.io/getomnico/omni/omni-fireflies-connector:${OMNI_VERSION:-latest}
     container_name: omni-fireflies-connector
+    profiles:
+      - fireflies
     expose:
       - "${FIREFLIES_CONNECTOR_PORT}"
     environment:
@@ -422,6 +438,8 @@ services:
   microsoft-connector:
     image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
     container_name: omni-microsoft-connector
+    profiles:
+      - microsoft
     expose:
       - "${MICROSOFT_CONNECTOR_PORT}"
     environment:

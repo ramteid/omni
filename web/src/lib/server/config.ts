@@ -15,10 +15,10 @@ export interface AppConfig {
         indexerUrl: string
         aiServiceUrl: string
         connectorManagerUrl: string
-        googleConnectorUrl: string
-        slackConnectorUrl: string
-        atlassianConnectorUrl: string
-        webConnectorUrl: string
+        googleConnectorUrl: string | undefined
+        slackConnectorUrl: string | undefined
+        atlassianConnectorUrl: string | undefined
+        webConnectorUrl: string | undefined
     }
     session: {
         secret: string
@@ -107,10 +107,10 @@ function loadConfig(): AppConfig {
                 indexerUrl: 'http://placeholder',
                 aiServiceUrl: 'http://placeholder',
                 connectorManagerUrl: 'http://placeholder',
-                googleConnectorUrl: 'http://placeholder',
-                slackConnectorUrl: 'http://placeholder',
-                atlassianConnectorUrl: 'http://placeholder',
-                webConnectorUrl: 'http://placeholder',
+                googleConnectorUrl: undefined,
+                slackConnectorUrl: undefined,
+                atlassianConnectorUrl: undefined,
+                webConnectorUrl: undefined,
             },
             session: {
                 secret: 'placeholder',
@@ -144,18 +144,14 @@ function loadConfig(): AppConfig {
     const indexerUrl = getRequiredEnv('INDEXER_URL')
     const aiServiceUrl = getRequiredEnv('AI_SERVICE_URL')
     const connectorManagerUrl = getRequiredEnv('CONNECTOR_MANAGER_URL')
-    const googleConnectorUrl = getRequiredEnv('GOOGLE_CONNECTOR_URL')
-    const slackConnectorUrl = getRequiredEnv('SLACK_CONNECTOR_URL')
-    const atlassianConnectorUrl = getRequiredEnv('ATLASSIAN_CONNECTOR_URL')
-    const webConnectorUrl = getRequiredEnv('WEB_CONNECTOR_URL')
+    const googleConnectorUrl = env.GOOGLE_CONNECTOR_URL || undefined
+    const slackConnectorUrl = env.SLACK_CONNECTOR_URL || undefined
+    const atlassianConnectorUrl = env.ATLASSIAN_CONNECTOR_URL || undefined
+    const webConnectorUrl = env.WEB_CONNECTOR_URL || undefined
     validateUrl(searcherUrl, 'SEARCHER_URL')
     validateUrl(indexerUrl, 'INDEXER_URL')
     validateUrl(aiServiceUrl, 'AI_SERVICE_URL')
     validateUrl(connectorManagerUrl, 'CONNECTOR_MANAGER_URL')
-    validateUrl(googleConnectorUrl, 'GOOGLE_CONNECTOR_URL')
-    validateUrl(slackConnectorUrl, 'SLACK_CONNECTOR_URL')
-    validateUrl(atlassianConnectorUrl, 'ATLASSIAN_CONNECTOR_URL')
-    validateUrl(webConnectorUrl, 'WEB_CONNECTOR_URL')
 
     // Session configuration
     const sessionSecret = getRequiredEnv('SESSION_SECRET')

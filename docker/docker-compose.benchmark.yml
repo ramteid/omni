@@ -82,29 +82,13 @@ services:
       - "${LOCAL_EMBEDDINGS_PORT}:${LOCAL_EMBEDDINGS_PORT}"
 
   # Disable services not needed for benchmarks
+  # Connectors are already gated by their own profiles (google, slack, etc.)
+  # and won't start unless explicitly activated.
   vllm:
     profiles: [full]
   web:
     profiles: [full]
   connector-manager:
-    profiles: [full]
-  google-connector:
-    profiles: [full]
-  slack-connector:
-    profiles: [full]
-  atlassian-connector:
-    profiles: [full]
-  web-connector:
-    profiles: [full]
-  github-connector:
-    profiles: [full]
-  notion-connector:
-    profiles: [full]
-  hubspot-connector:
-    profiles: [full]
-  fireflies-connector:
-    profiles: [full]
-  microsoft-connector:
     profiles: [full]
   caddy:
     profiles: [full]
