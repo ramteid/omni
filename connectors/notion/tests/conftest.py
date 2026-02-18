@@ -371,7 +371,7 @@ async def harness(
     await h.start_infra()
     await h.start_connector_manager(
         {
-            "CONNECTOR_NOTION_URL": f"http://host.docker.internal:{connector_port}",
+            "NOTION_CONNECTOR_URL": f"http://host.docker.internal:{connector_port}",
         }
     )
 

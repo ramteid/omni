@@ -414,7 +414,7 @@ async def harness(
     await h.start_infra()
     await h.start_connector_manager(
         {
-            "CONNECTOR_HUBSPOT_URL": f"http://host.docker.internal:{connector_port}",
+            "HUBSPOT_CONNECTOR_URL": f"http://host.docker.internal:{connector_port}",
         }
     )
 

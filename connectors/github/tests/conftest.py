@@ -653,7 +653,7 @@ async def harness(
     await h.start_infra()
     await h.start_connector_manager(
         {
-            "CONNECTOR_GITHUB_URL": f"http://host.docker.internal:{connector_port}",
+            "GITHUB_CONNECTOR_URL": f"http://host.docker.internal:{connector_port}",
         }
     )
 

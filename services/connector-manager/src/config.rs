@@ -29,33 +29,33 @@ impl ConnectorManagerConfig {
 
         let mut connector_urls = HashMap::new();
 
-        if let Ok(url) = env::var("CONNECTOR_GOOGLE_URL") {
+        if let Ok(url) = env::var("GOOGLE_CONNECTOR_URL") {
             connector_urls.insert(SourceType::GoogleDrive, url.clone());
             connector_urls.insert(SourceType::Gmail, url);
         }
-        if let Ok(url) = env::var("CONNECTOR_SLACK_URL") {
+        if let Ok(url) = env::var("SLACK_CONNECTOR_URL") {
             connector_urls.insert(SourceType::Slack, url);
         }
-        if let Ok(url) = env::var("CONNECTOR_ATLASSIAN_URL") {
+        if let Ok(url) = env::var("ATLASSIAN_CONNECTOR_URL") {
             connector_urls.insert(SourceType::Confluence, url.clone());
             connector_urls.insert(SourceType::Jira, url);
         }
-        if let Ok(url) = env::var("CONNECTOR_WEB_URL") {
+        if let Ok(url) = env::var("WEB_CONNECTOR_URL") {
             connector_urls.insert(SourceType::Web, url);
         }
-        if let Ok(url) = env::var("CONNECTOR_GITHUB_URL") {
+        if let Ok(url) = env::var("GITHUB_CONNECTOR_URL") {
             connector_urls.insert(SourceType::Github, url);
         }
-        if let Ok(url) = env::var("CONNECTOR_NOTION_URL") {
+        if let Ok(url) = env::var("NOTION_CONNECTOR_URL") {
             connector_urls.insert(SourceType::Notion, url);
         }
-        if let Ok(url) = env::var("CONNECTOR_HUBSPOT_URL") {
+        if let Ok(url) = env::var("HUBSPOT_CONNECTOR_URL") {
             connector_urls.insert(SourceType::Hubspot, url);
         }
-        if let Ok(url) = env::var("CONNECTOR_FIREFLIES_URL") {
+        if let Ok(url) = env::var("FIREFLIES_CONNECTOR_URL") {
             connector_urls.insert(SourceType::Fireflies, url);
         }
-        if let Ok(url) = env::var("CONNECTOR_MICROSOFT_URL") {
+        if let Ok(url) = env::var("MICROSOFT_CONNECTOR_URL") {
             connector_urls.insert(SourceType::OneDrive, url.clone());
             connector_urls.insert(SourceType::SharePoint, url.clone());
             connector_urls.insert(SourceType::Outlook, url.clone());

@@ -442,15 +442,15 @@ resource "google_cloud_run_v2_service" "connector_manager" {
       dynamic "env" {
         for_each = merge(local.common_env, local.storage_env, {
           PORT                            = "3004"
-          CONNECTOR_GOOGLE_URL            = local.service_url["google-conn"]
-          CONNECTOR_SLACK_URL             = local.service_url["slack-conn"]
-          CONNECTOR_ATLASSIAN_URL         = local.service_url["atlassian-conn"]
-          CONNECTOR_WEB_URL               = local.service_url["web-conn"]
-          CONNECTOR_GITHUB_URL            = local.service_url["github-conn"]
-          CONNECTOR_HUBSPOT_URL           = local.service_url["hubspot-conn"]
-          CONNECTOR_MICROSOFT_URL         = local.service_url["microsoft-conn"]
-          CONNECTOR_NOTION_URL            = local.service_url["notion-conn"]
-          CONNECTOR_FIREFLIES_URL         = local.service_url["fireflies-conn"]
+          GOOGLE_CONNECTOR_URL            = local.service_url["google-conn"]
+          SLACK_CONNECTOR_URL             = local.service_url["slack-conn"]
+          ATLASSIAN_CONNECTOR_URL         = local.service_url["atlassian-conn"]
+          WEB_CONNECTOR_URL               = local.service_url["web-conn"]
+          GITHUB_CONNECTOR_URL            = local.service_url["github-conn"]
+          HUBSPOT_CONNECTOR_URL           = local.service_url["hubspot-conn"]
+          MICROSOFT_CONNECTOR_URL         = local.service_url["microsoft-conn"]
+          NOTION_CONNECTOR_URL            = local.service_url["notion-conn"]
+          FIREFLIES_CONNECTOR_URL         = local.service_url["fireflies-conn"]
           MAX_CONCURRENT_SYNCS            = "10"
           MAX_CONCURRENT_SYNCS_PER_TYPE   = "3"
           SCHEDULER_POLL_INTERVAL_SECONDS = "60"
