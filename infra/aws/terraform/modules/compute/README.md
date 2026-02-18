@@ -63,7 +63,7 @@ module "compute" {
   region         = var.region
 
   database_password_arn = module.secrets.database_password_arn
-  jina_api_key_arn      = module.secrets.jina_api_key_arn
+  embedding_api_key_arn      = module.secrets.embedding_api_key_arn
   encryption_key_arn    = module.secrets.encryption_key_arn
   encryption_salt_arn   = module.secrets.encryption_salt_arn
 
@@ -97,7 +97,7 @@ module "compute" {
 | log_group_name | CloudWatch log group | string | - | yes |
 | region | AWS region | string | - | yes |
 | database_password_arn | Database password secret ARN | string | - | yes |
-| jina_api_key_arn | JINA API key secret ARN | string | - | yes |
+| embedding_api_key_arn | Embedding API key secret ARN | string | - | yes |
 | encryption_key_arn | Encryption key secret ARN | string | - | yes |
 | encryption_salt_arn | Encryption salt secret ARN | string | - | yes |
 | resend_api_key | Resend API key | string | "CONFIGURE_RESEND_API_KEY" | no |

@@ -27,7 +27,7 @@ resource "aws_iam_role" "ecs_task_execution" {
         ]
         Resource = [
           var.database_password_arn,
-          var.jina_api_key_arn,
+          var.embedding_api_key_arn,
           var.encryption_key_arn,
           var.encryption_salt_arn
         ]

@@ -48,7 +48,7 @@ Before deployment, gather:
 
 - **Customer name**: Unique identifier (e.g., `acme-corp`)
 - **GitHub organization**: For container images (use `getomnico`)
-- **JINA API key**: Get from [jina.ai](https://jina.ai/)
+- **Embedding API key**: From your embedding provider (e.g., [jina.ai](https://jina.ai/))
 - **Custom domain**: Domain name for your deployment (e.g., `demo.getomni.co`)
 - **Google OAuth credentials**: For Google Workspace integration (optional)
 - **Resend API key**: For email functionality (optional)
@@ -88,7 +88,7 @@ Edit `terraform.tfvars` with your values:
 # Required
 customer_name = "acme-corp"
 github_org    = "omni-platform"
-jina_api_key  = "your-jina-api-key"
+embedding_api_key  = "your-embedding-api-key"
 custom_domain = "demo.getomni.co"
 
 # Optional
@@ -158,7 +158,7 @@ terraform/
 |----------|-------------|---------|
 | `customer_name` | Customer identifier | `acme-corp` |
 | `github_org` | GitHub org for images | `omni-platform` |
-| `jina_api_key` | JINA AI API key | `jina_xxx` |
+| `embedding_api_key` | Embedding API key | `your-key` |
 | `custom_domain` | Custom domain name | `demo.getomni.co` |
 
 ### Optional Variables
@@ -255,7 +255,7 @@ See `variables.tf` for the complete list.
 
 ### AI Integration
 
-- **Embedding Provider**: JINA AI (via API)
+- **Embedding Provider**: Configurable (default: Jina AI)
 - **LLM Provider**: AWS Bedrock
   - Default model: Amazon Nova Pro (RAG)
   - Title generation: Amazon Nova Lite
@@ -269,7 +269,7 @@ See `variables.tf` for the complete list.
 
 All secrets stored in AWS Secrets Manager:
 - Database password (auto-generated)
-- JINA API key
+- Embedding API key
 - Encryption keys (auto-generated)
 - Encryption salt (auto-generated)
 - Session secret (auto-generated)

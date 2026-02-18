@@ -32,18 +32,18 @@ resource "aws_secretsmanager_secret_version" "database_password" {
   })
 }
 
-resource "aws_secretsmanager_secret" "jina_api_key" {
-  name        = "omni/${var.customer_name}/jina-api-key"
-  description = "JINA AI API key for embedding generation"
+resource "aws_secretsmanager_secret" "embedding_api_key" {
+  name        = "omni/${var.customer_name}/embedding-api-key"
+  description = "Embedding API key for embedding generation"
 
   tags = merge(local.common_tags, {
-    Name = "omni-${var.customer_name}-jina-api-key"
+    Name = "omni-${var.customer_name}-embedding-api-key"
   })
 }
 
-resource "aws_secretsmanager_secret_version" "jina_api_key" {
-  secret_id     = aws_secretsmanager_secret.jina_api_key.id
-  secret_string = var.jina_api_key
+resource "aws_secretsmanager_secret_version" "embedding_api_key" {
+  secret_id     = aws_secretsmanager_secret.embedding_api_key.id
+  secret_string = var.embedding_api_key
 }
 
 resource "random_password" "encryption_key" {

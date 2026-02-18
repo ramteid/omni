@@ -5,7 +5,7 @@ locals {
   connector_manager_url = "http://connector-manager.omni-${var.customer_name}.local:3004"
 
   otel_environment = [
-    { name = "RUST_LOG", value = "info" },
+    { name = "RUST_LOG", value = var.rust_log },
     { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint },
     { name = "OTEL_DEPLOYMENT_ID", value = var.customer_name },
     { name = "OTEL_DEPLOYMENT_ENVIRONMENT", value = "production" },
@@ -22,8 +22,8 @@ locals {
     { name = "DATABASE_NAME", value = var.database_name },
     { name = "DATABASE_USERNAME", value = var.database_username },
     { name = "DATABASE_SSL", value = "false" },
-    { name = "DB_MAX_CONNECTIONS", value = "10" },
-    { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "3" }
+    { name = "DB_MAX_CONNECTIONS", value = var.db_max_connections },
+    { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = var.db_acquire_timeout_seconds }
   ]
 
   common_environment = concat(local.db_environment, local.redis_environment, local.otel_environment)
@@ -108,15 +108,15 @@ resource "aws_ecs_task_definition" "web" {
       { name = "SLACK_CONNECTOR_URL", value = "http://slack-connector.omni-${var.customer_name}.local:4002" },
       { name = "ATLASSIAN_CONNECTOR_URL", value = "http://atlassian-connector.omni-${var.customer_name}.local:4003" },
       { name = "WEB_CONNECTOR_URL", value = "http://web-connector.omni-${var.customer_name}.local:4004" },
-      { name = "SESSION_COOKIE_NAME", value = "auth-session" },
-      { name = "SESSION_DURATION_DAYS", value = "7" },
+      { name = "SESSION_COOKIE_NAME", value = var.session_cookie_name },
+      { name = "SESSION_DURATION_DAYS", value = var.session_duration_days },
       { name = "OMNI_DOMAIN", value = var.custom_domain },
       { name = "ORIGIN", value = local.app_url },
       { name = "APP_URL", value = local.app_url },
       { name = "EMAIL_PROVIDER", value = "resend" },
       { name = "RESEND_API_KEY", value = var.resend_api_key },
       { name = "EMAIL_FROM", value = "Omni <noreply@getomni.co>" },
-      { name = "AI_ANSWER_ENABLED", value = "true" }
+      { name = "AI_ANSWER_ENABLED", value = var.ai_answer_enabled }
     ])
 
     secrets = local.common_secrets
@@ -159,8 +159,8 @@ resource "aws_ecs_task_definition" "searcher" {
     environment = concat(local.common_environment, [
       { name = "PORT", value = "3001" },
       { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
-      { name = "SEMANTIC_SEARCH_TIMEOUT_MS", value = "1000" },
-      { name = "RAG_CONTEXT_WINDOW", value = "2" },
+      { name = "SEMANTIC_SEARCH_TIMEOUT_MS", value = var.semantic_search_timeout_ms },
+      { name = "RAG_CONTEXT_WINDOW", value = var.rag_context_window },
       # Storage configuration
       { name = "STORAGE_BACKEND", value = "s3" },
       { name = "S3_BUCKET", value = var.content_bucket_name },
@@ -259,12 +259,12 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "PORT", value = "3003" },
       { name = "SEARCHER_URL", value = "http://searcher.omni-${var.customer_name}.local:3001" },
       { name = "MODEL_PATH", value = "/models" },
-      { name = "EMBEDDING_PROVIDER", value = "jina" },
-      { name = "EMBEDDING_MODEL", value = "jina-embeddings-v3" },
-      { name = "EMBEDDING_DIMENSIONS", value = "1024" },
+      { name = "EMBEDDING_PROVIDER", value = var.embedding_provider },
+      { name = "EMBEDDING_MODEL", value = var.embedding_model },
+      { name = "EMBEDDING_DIMENSIONS", value = var.embedding_dimensions },
       { name = "EMBEDDING_API_URL", value = var.embedding_api_url },
-      { name = "EMBEDDING_MAX_MODEL_LEN", value = "8192" },
-      { name = "AI_WORKERS", value = "1" },
+      { name = "EMBEDDING_MAX_MODEL_LEN", value = var.embedding_max_model_len },
+      { name = "AI_WORKERS", value = var.ai_workers },
       # Storage configuration
       { name = "STORAGE_BACKEND", value = "s3" },
       { name = "S3_BUCKET", value = var.content_bucket_name },
@@ -276,13 +276,15 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "ENABLE_EMBEDDING_BATCH_INFERENCE", value = "false" },
       { name = "EMBEDDING_BATCH_S3_BUCKET", value = var.batch_bucket_name },
       { name = "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", value = var.bedrock_batch_role_arn },
-      { name = "EMBEDDING_BATCH_MIN_DOCUMENTS", value = "100" },
-      { name = "EMBEDDING_BATCH_MAX_DOCUMENTS", value = "50000" },
-      { name = "EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS", value = "300" }
+      { name = "EMBEDDING_BATCH_MIN_DOCUMENTS", value = var.embedding_batch_min_documents },
+      { name = "EMBEDDING_BATCH_MAX_DOCUMENTS", value = var.embedding_batch_max_documents },
+      { name = "EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS", value = var.embedding_batch_accumulation_timeout_seconds },
+      { name = "EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL", value = var.embedding_batch_accumulation_poll_interval },
+      { name = "EMBEDDING_BATCH_MONITOR_POLL_INTERVAL", value = var.embedding_batch_monitor_poll_interval }
     ])
 
     secrets = concat(local.common_secrets, [
-      { name = "EMBEDDING_API_KEY", valueFrom = var.jina_api_key_arn }
+      { name = "EMBEDDING_API_KEY", valueFrom = var.embedding_api_key_arn }
     ])
   }])
 
@@ -331,10 +333,10 @@ resource "aws_ecs_task_definition" "connector_manager" {
       { name = "MICROSOFT_CONNECTOR_URL", value = "http://microsoft-connector.omni-${var.customer_name}.local:4007" },
       { name = "NOTION_CONNECTOR_URL", value = "http://notion-connector.omni-${var.customer_name}.local:4008" },
       { name = "FIREFLIES_CONNECTOR_URL", value = "http://fireflies-connector.omni-${var.customer_name}.local:4009" },
-      { name = "MAX_CONCURRENT_SYNCS", value = "10" },
-      { name = "MAX_CONCURRENT_SYNCS_PER_TYPE", value = "3" },
-      { name = "SCHEDULER_POLL_INTERVAL_SECONDS", value = "60" },
-      { name = "STALE_SYNC_TIMEOUT_MINUTES", value = "60" },
+      { name = "MAX_CONCURRENT_SYNCS", value = var.max_concurrent_syncs },
+      { name = "MAX_CONCURRENT_SYNCS_PER_TYPE", value = var.max_concurrent_syncs_per_type },
+      { name = "SCHEDULER_POLL_INTERVAL_SECONDS", value = var.scheduler_poll_interval_seconds },
+      { name = "STALE_SYNC_TIMEOUT_MINUTES", value = var.stale_sync_timeout_minutes },
       # Storage configuration
       { name = "STORAGE_BACKEND", value = "s3" },
       { name = "S3_BUCKET", value = var.content_bucket_name },
@@ -381,11 +383,19 @@ resource "aws_ecs_task_definition" "google_connector" {
       }
     }
 
-    environment = concat(local.connector_base_environment, [
-      { name = "PORT", value = "4001" }
+    environment = concat(local.connector_base_environment, local.redis_environment, [
+      { name = "PORT", value = "4001" },
+      { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
+      { name = "GOOGLE_WEBHOOK_URL", value = var.google_webhook_url },
+      { name = "GOOGLE_SYNC_INTERVAL_SECONDS", value = var.google_sync_interval_seconds },
+      { name = "GOOGLE_MAX_AGE_DAYS", value = var.google_max_age_days },
+      { name = "WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS", value = var.webhook_renewal_check_interval_seconds }
     ])
 
-    secrets = []
+    secrets = [
+      { name = "ENCRYPTION_KEY", valueFrom = "${var.encryption_key_arn}:key::" },
+      { name = "ENCRYPTION_SALT", valueFrom = "${var.encryption_salt_arn}:salt::" }
+    ]
   }])
 
   tags = merge(local.common_tags, {
@@ -422,7 +432,7 @@ resource "aws_ecs_task_definition" "atlassian_connector" {
       }
     }
 
-    environment = concat(local.connector_base_environment, [
+    environment = concat(local.connector_base_environment, local.redis_environment, [
       { name = "PORT", value = "4003" }
     ])
 
@@ -463,7 +473,7 @@ resource "aws_ecs_task_definition" "web_connector" {
       }
     }
 
-    environment = concat(local.connector_base_environment, [
+    environment = concat(local.connector_base_environment, local.redis_environment, [
       { name = "PORT", value = "4004" }
     ])
 

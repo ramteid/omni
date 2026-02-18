@@ -5,7 +5,7 @@ This module creates and manages secrets in AWS Secrets Manager for Omni infrastr
 ## Resources Created
 
 - Database password secret (auto-generated, 48 characters, alphanumeric)
-- JINA API key secret (provided via variable)
+- Embedding API key secret (provided via variable)
 - Encryption key secret (auto-generated, 64 characters)
 - Encryption salt secret (auto-generated, 32 characters)
 
@@ -18,7 +18,7 @@ module "secrets" {
   customer_name     = "acme-corp"
   environment       = "production"
   database_username = "omni"
-  jina_api_key      = var.jina_api_key
+  embedding_api_key      = var.embedding_api_key
 }
 ```
 
@@ -29,7 +29,7 @@ module "secrets" {
 | customer_name | Customer name for resource naming | string | - | yes |
 | environment | Environment (production, staging, development) | string | "production" | no |
 | database_username | PostgreSQL master username | string | "omni" | no |
-| jina_api_key | JINA AI API key for embedding generation | string | - | yes |
+| embedding_api_key | Embedding API key for embedding generation | string | - | yes |
 
 ## Outputs
 
@@ -37,7 +37,7 @@ module "secrets" {
 |------|-------------|
 | database_password_arn | ARN of database password secret |
 | database_password | Database password value (sensitive) |
-| jina_api_key_arn | ARN of JINA API key secret |
+| embedding_api_key_arn | ARN of Embedding API key secret |
 | encryption_key_arn | ARN of encryption key secret |
 | encryption_salt_arn | ARN of encryption salt secret |
 
@@ -51,7 +51,7 @@ module "secrets" {
 }
 ```
 
-### JINA API Key
+### Embedding API Key
 ```
 <api-key-string>
 ```
@@ -75,4 +75,4 @@ module "secrets" {
 - All secrets are encrypted at rest using AWS KMS
 - Passwords are auto-generated using Terraform's random_password resource
 - Sensitive outputs are marked as sensitive to prevent accidental exposure
-- JINA API key must be provided as a variable and should be stored securely
+- Embedding API key must be provided as a variable and should be stored securely

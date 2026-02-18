@@ -15,7 +15,7 @@ module "secrets" {
   customer_name     = var.customer_name
   environment       = var.environment
   database_username = var.database_username
-  jina_api_key      = var.jina_api_key
+  embedding_api_key      = var.embedding_api_key
 }
 
 module "monitoring" {
@@ -159,12 +159,50 @@ module "compute" {
   region         = var.region
 
   database_password_arn = module.secrets.database_password_arn
-  jina_api_key_arn      = module.secrets.jina_api_key_arn
+  embedding_api_key_arn      = module.secrets.embedding_api_key_arn
   encryption_key_arn    = module.secrets.encryption_key_arn
   encryption_salt_arn   = module.secrets.encryption_salt_arn
 
   resend_api_key    = var.resend_api_key
   embedding_api_url = var.embedding_api_url
+
+  # AI service configuration
+  embedding_provider      = var.embedding_provider
+  embedding_model         = var.embedding_model
+  embedding_dimensions    = var.embedding_dimensions
+  embedding_max_model_len = var.embedding_max_model_len
+  ai_workers              = var.ai_workers
+
+  # Batch embedding configuration
+  embedding_batch_min_documents                = var.embedding_batch_min_documents
+  embedding_batch_max_documents                = var.embedding_batch_max_documents
+  embedding_batch_accumulation_timeout_seconds = var.embedding_batch_accumulation_timeout_seconds
+  embedding_batch_accumulation_poll_interval   = var.embedding_batch_accumulation_poll_interval
+  embedding_batch_monitor_poll_interval        = var.embedding_batch_monitor_poll_interval
+
+  # Searcher configuration
+  semantic_search_timeout_ms = var.semantic_search_timeout_ms
+  rag_context_window         = var.rag_context_window
+
+  # Connector manager configuration
+  max_concurrent_syncs            = var.max_concurrent_syncs
+  max_concurrent_syncs_per_type   = var.max_concurrent_syncs_per_type
+  scheduler_poll_interval_seconds = var.scheduler_poll_interval_seconds
+  stale_sync_timeout_minutes      = var.stale_sync_timeout_minutes
+
+  # Google connector configuration
+  google_webhook_url                     = var.google_webhook_url
+  google_sync_interval_seconds           = var.google_sync_interval_seconds
+  google_max_age_days                    = var.google_max_age_days
+  webhook_renewal_check_interval_seconds = var.webhook_renewal_check_interval_seconds
+
+  # Common service configuration
+  rust_log                   = var.rust_log
+  db_max_connections         = var.db_max_connections
+  db_acquire_timeout_seconds = var.db_acquire_timeout_seconds
+  session_cookie_name        = var.session_cookie_name
+  session_duration_days      = var.session_duration_days
+  ai_answer_enabled          = var.ai_answer_enabled
 
   # Storage resources for S3 and batch inference
   content_bucket_arn     = module.storage.content_bucket_arn

@@ -15,8 +15,8 @@ variable "database_username" {
   default     = "omni"
 }
 
-variable "jina_api_key" {
-  description = "JINA AI API key for embedding generation"
+variable "embedding_api_key" {
+  description = "Embedding API key for embedding generation"
   type        = string
   sensitive   = true
 }

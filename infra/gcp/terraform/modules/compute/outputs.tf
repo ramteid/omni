@@ -30,7 +30,14 @@ output "connector_manager_service_uri" {
 
 output "connector_service_uris" {
   description = "Map of connector name to Cloud Run URI"
-  value       = { for k, _ in local.connectors : k => local.service_url["${k}-conn"] }
+  value = merge(
+    { for k, _ in local.simple_connectors : k => local.service_url["${k}-conn"] },
+    {
+      google    = local.service_url["google-conn"]
+      atlassian = local.service_url["atlassian-conn"]
+      web       = local.service_url["web-conn"]
+    }
+  )
 }
 
 output "cloud_run_sa_email" {

@@ -9,9 +9,9 @@ output "database_password" {
   sensitive   = true
 }
 
-output "jina_api_key_secret_id" {
-  description = "Secret Manager secret ID for JINA API key"
-  value       = google_secret_manager_secret.jina_api_key.secret_id
+output "embedding_api_key_secret_id" {
+  description = "Secret Manager secret ID for Embedding API key"
+  value       = google_secret_manager_secret.embedding_api_key.secret_id
 }
 
 output "encryption_key_secret_id" {
@@ -28,7 +28,7 @@ output "all_secret_ids" {
   description = "List of all secret IDs for IAM binding"
   value = [
     google_secret_manager_secret.database_password.secret_id,
-    google_secret_manager_secret.jina_api_key.secret_id,
+    google_secret_manager_secret.embedding_api_key.secret_id,
     google_secret_manager_secret.encryption_key.secret_id,
     google_secret_manager_secret.encryption_salt.secret_id,
   ]
