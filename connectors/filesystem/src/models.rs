@@ -72,8 +72,8 @@ impl FileSystemFile {
         // For filesystem, we'll use basic read permissions
         // In the future, this could be enhanced to map actual filesystem permissions
         let permissions = DocumentPermissions {
-            public: false,
-            users: vec![], // TODO: Map filesystem users/groups to users
+            public: true,
+            users: vec![],
             groups: vec![],
         };
 
@@ -126,5 +126,57 @@ impl FileSystemSource {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::models::ConnectorEvent;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn create_text_file(dir: &TempDir, name: &str, content: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    fn make_file(path: PathBuf, mime_type: &str) -> FileSystemFile {
+        let metadata = std::fs::metadata(&path).unwrap();
+        FileSystemFile {
+            name: path.file_name().unwrap().to_string_lossy().to_string(),
+            size: metadata.len(),
+            mime_type: mime_type.to_string(),
+            created_time: metadata.created().ok(),
+            modified_time: metadata.modified().ok(),
+            is_directory: false,
+            permissions: FileSystemPermissions {
+                readable: true,
+                writable: true,
+                executable: false,
+            },
+            path,
+        }
+    }
+
+    #[test]
+    fn test_connector_event_has_public_permissions() {
+        let dir = TempDir::new().unwrap();
+        let path = create_text_file(&dir, "test.txt", "content");
+        let file = make_file(path, "text/plain");
+
+        let event = file.to_connector_event(
+            "sync-1".to_string(),
+            "source-1".to_string(),
+            "content-1".to_string(),
+        );
+
+        match event {
+            ConnectorEvent::DocumentCreated { permissions, .. } => {
+                assert!(permissions.public, "Permissions should be public");
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
     }
 }
