@@ -1,4 +1,3 @@
-# Multi-stage build for Atlassian connector service
 FROM lukemathwalker/cargo-chef:latest-rust-1.91.1-bookworm AS chef
 WORKDIR /app
 
@@ -12,15 +11,16 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
-COPY connectors/atlassian/ connectors/atlassian/
-RUN cargo build --release --bin omni-atlassian-connector
+COPY connectors/imap/ connectors/imap/
+RUN cargo build --release --bin omni-imap-connector
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/omni-atlassian-connector /usr/local/bin/omni-atlassian-connector
+COPY --from=builder /app/target/release/omni-imap-connector /usr/local/bin/omni-imap-connector
 
-CMD ["omni-atlassian-connector"]
+CMD ["omni-imap-connector"]

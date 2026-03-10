@@ -239,6 +239,7 @@ services:
       NOTION_CONNECTOR_URL: ${NOTION_CONNECTOR_URL}
       HUBSPOT_CONNECTOR_URL: ${HUBSPOT_CONNECTOR_URL}
       FIREFLIES_CONNECTOR_URL: ${FIREFLIES_CONNECTOR_URL}
+      IMAP_CONNECTOR_URL: ${IMAP_CONNECTOR_URL}
       MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
       MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
       SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
@@ -480,6 +481,25 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  imap-connector:
+    image: ghcr.io/getomnico/omni/omni-imap-connector:${OMNI_VERSION:-latest}
+    container_name: omni-imap-connector
+    profiles:
+      - imap
+    expose:
+      - "${IMAP_CONNECTOR_PORT}"
+    environment:
+      <<: *otel-config
+      PORT: ${IMAP_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   microsoft-connector:
     image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
     container_name: omni-microsoft-connector
@@ -519,13 +539,13 @@ services:
       SESSION_DURATION_DAYS: ${SESSION_DURATION_DAYS}
       APP_URL: ${APP_URL}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-resend}
-      RESEND_API_KEY: ${RESEND_API_KEY}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-Clio <noreply@yourdomain.com>}
-      EMAIL_HOST: ${EMAIL_HOST}
-      EMAIL_PORT: ${EMAIL_PORT}
-      EMAIL_USER: ${EMAIL_USER}
-      EMAIL_PASSWORD: ${EMAIL_PASSWORD}
-      EMAIL_SECURE: ${EMAIL_SECURE}
+      EMAIL_HOST: ${EMAIL_HOST:-}
+      EMAIL_PORT: ${EMAIL_PORT:-}
+      EMAIL_USER: ${EMAIL_USER:-}
+      EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+      EMAIL_SECURE: ${EMAIL_SECURE:-}
       AI_ANSWER_ENABLED: ${AI_ANSWER_ENABLED}
     networks:
       - omni-network
