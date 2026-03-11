@@ -10,6 +10,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/build-imap-connector.yml'
+      - '.github/workflows/build-connector.yml'
   pull_request:
     branches: [main, master]
     paths:
@@ -18,6 +19,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/build-imap-connector.yml'
+      - '.github/workflows/build-connector.yml'
 
 permissions:
   contents: read

@@ -8,12 +8,14 @@ on:
       - 'connectors/github/**'
       - 'sdk/python/**'
       - '.github/workflows/build-github-connector.yml'
+      - '.github/workflows/build-connector.yml'
   pull_request:
     branches: [main, master]
     paths:
       - 'connectors/github/**'
       - 'sdk/python/**'
       - '.github/workflows/build-github-connector.yml'
+      - '.github/workflows/build-connector.yml'
 
 permissions:
   contents: read

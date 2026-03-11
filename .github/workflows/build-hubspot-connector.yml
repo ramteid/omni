@@ -8,12 +8,14 @@ on:
       - 'connectors/hubspot/**'
       - 'sdk/python/**'
       - '.github/workflows/build-hubspot-connector.yml'
+      - '.github/workflows/build-connector.yml'
   pull_request:
     branches: [main, master]
     paths:
       - 'connectors/hubspot/**'
       - 'sdk/python/**'
       - '.github/workflows/build-hubspot-connector.yml'
+      - '.github/workflows/build-connector.yml'
 
 permissions:
   contents: read

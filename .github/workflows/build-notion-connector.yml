@@ -8,12 +8,14 @@ on:
       - 'connectors/notion/**'
       - 'sdk/python/**'
       - '.github/workflows/build-notion-connector.yml'
+      - '.github/workflows/build-connector.yml'
   pull_request:
     branches: [main, master]
     paths:
       - 'connectors/notion/**'
       - 'sdk/python/**'
       - '.github/workflows/build-notion-connector.yml'
+      - '.github/workflows/build-connector.yml'
 
 permissions:
   contents: read

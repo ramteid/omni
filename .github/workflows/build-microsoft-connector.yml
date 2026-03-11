@@ -8,12 +8,14 @@ on:
       - 'connectors/microsoft/**'
       - 'sdk/python/**'
       - '.github/workflows/build-microsoft-connector.yml'
+      - '.github/workflows/build-connector.yml'
   pull_request:
     branches: [main, master]
     paths:
       - 'connectors/microsoft/**'
       - 'sdk/python/**'
       - '.github/workflows/build-microsoft-connector.yml'
+      - '.github/workflows/build-connector.yml'
 
 permissions:
   contents: read
