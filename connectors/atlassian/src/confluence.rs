@@ -39,18 +39,30 @@ impl ConfluenceProcessor {
         sync_run_id: &str,
         last_sync: DateTime<Utc>,
         cancelled: &AtomicBool,
+        space_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         info!(
-            "Starting incremental Confluence sync for source: {} since {} (sync_run_id: {})",
+            "Starting incremental Confluence sync for source: {} since {}{} (sync_run_id: {})",
             source_id,
             last_sync.format("%Y-%m-%d %H:%M"),
+            space_filters.as_ref().map_or(String::new(), |f| format!(" (spaces: {:?})", f)),
             sync_run_id
         );
 
-        let cql = format!(
+        let mut cql = format!(
             "lastModified >= \"{}\" AND type = page",
             last_sync.format("%Y-%m-%d %H:%M")
         );
+        if let Some(filters) = space_filters {
+            if !filters.is_empty() {
+                let spaces_str = filters
+                    .iter()
+                    .map(|s| format!("\"{}\"", s))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                cql = format!("space IN ({}) AND {}", spaces_str, cql);
+            }
+        }
 
         let mut total_pages_processed = 0;
         let mut pages_batch = Vec::with_capacity(100);
@@ -114,13 +126,29 @@ impl ConfluenceProcessor {
         source_id: &str,
         sync_run_id: &str,
         cancelled: &AtomicBool,
+        space_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         info!(
             "Starting full Confluence sync for source: {} (sync_run_id: {})",
             source_id, sync_run_id
         );
 
-        let spaces = self.get_accessible_spaces(creds).await?;
+        let all_spaces = self.get_accessible_spaces(creds).await?;
+        let spaces: Vec<ConfluenceSpace> = match space_filters {
+            Some(filters) => {
+                let filtered: Vec<ConfluenceSpace> = all_spaces
+                    .into_iter()
+                    .filter(|s| filters.iter().any(|f| f.eq_ignore_ascii_case(&s.key)))
+                    .collect();
+                info!(
+                    "Filtered to {} spaces (from {} accessible)",
+                    filtered.len(),
+                    filters.len()
+                );
+                filtered
+            }
+            None => all_spaces,
+        };
         let mut total_pages_processed = 0;
 
         for space in spaces {

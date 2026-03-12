@@ -2,7 +2,10 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::models::{ServiceCredentials, ServiceProvider, SourceType, SyncRequest, SyncType};
+use shared::models::{
+    ConfluenceSourceConfig, JiraSourceConfig, ServiceCredentials, ServiceProvider, SourceType,
+    SyncRequest, SyncType,
+};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -297,6 +300,24 @@ impl SyncManager {
         }
 
         let source_type = source.source_type.clone();
+        let project_filters: Option<Vec<String>> = if source_type == SourceType::Jira {
+            serde_json::from_value::<JiraSourceConfig>(source.config.clone())
+                .ok()
+                .and_then(|c| c.project_filters)
+                .filter(|f| !f.is_empty())
+        } else {
+            None
+        };
+
+        let space_filters: Option<Vec<String>> = if source_type == SourceType::Confluence {
+            serde_json::from_value::<ConfluenceSourceConfig>(source.config.clone())
+                .ok()
+                .and_then(|c| c.space_filters)
+                .filter(|f| !f.is_empty())
+        } else {
+            None
+        };
+
         if source_type != SourceType::Confluence && source_type != SourceType::Jira {
             let err_msg = format!(
                 "Invalid source type for Atlassian connector: {:?}",
@@ -313,7 +334,7 @@ impl SyncManager {
 
         debug!("Validating Atlassian credentials...");
         let mut credentials = match self
-            .get_or_validate_credentials(&base_url, &user_email, &api_token)
+            .get_or_validate_credentials(&base_url, &user_email, &api_token, Some(&source_type))
             .await
         {
             Ok(creds) => creds,
@@ -326,7 +347,7 @@ impl SyncManager {
 
         if let Err(e) = self
             .auth_manager
-            .ensure_valid_credentials(&mut credentials)
+            .ensure_valid_credentials(&mut credentials, Some(&source_type))
             .await
         {
             self.sdk_client.fail(sync_run_id, &e.to_string()).await?;
@@ -353,6 +374,8 @@ impl SyncManager {
                 sync_run_id,
                 &source.source_type,
                 &cancelled,
+                &project_filters,
+                &space_filters,
             )
             .await
         } else {
@@ -367,6 +390,8 @@ impl SyncManager {
                 &source.source_type,
                 last_sync,
                 &cancelled,
+                &project_filters,
+                &space_filters,
             )
             .await
         };
@@ -419,16 +444,24 @@ impl SyncManager {
         sync_run_id: &str,
         source_type: &SourceType,
         cancelled: &AtomicBool,
+        project_filters: &Option<Vec<String>>,
+        space_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         match source_type {
             SourceType::Confluence => {
                 self.confluence_processor
-                    .sync_all_spaces(credentials, source_id, sync_run_id, cancelled)
+                    .sync_all_spaces(credentials, source_id, sync_run_id, cancelled, space_filters)
                     .await
             }
             SourceType::Jira => {
                 self.jira_processor
-                    .sync_all_projects(credentials, source_id, sync_run_id, cancelled)
+                    .sync_all_projects(
+                        credentials,
+                        source_id,
+                        sync_run_id,
+                        cancelled,
+                        project_filters,
+                    )
                     .await
             }
             _ => Err(anyhow!("Unsupported source type: {:?}", source_type)),
@@ -443,6 +476,8 @@ impl SyncManager {
         source_type: &SourceType,
         last_sync: DateTime<Utc>,
         cancelled: &AtomicBool,
+        project_filters: &Option<Vec<String>>,
+        space_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         match source_type {
             SourceType::Confluence => {
@@ -453,6 +488,7 @@ impl SyncManager {
                         sync_run_id,
                         last_sync,
                         cancelled,
+                        space_filters,
                     )
                     .await
             }
@@ -462,7 +498,7 @@ impl SyncManager {
                         credentials,
                         source_id,
                         last_sync,
-                        None,
+                        project_filters.as_ref(),
                         sync_run_id,
                         cancelled,
                     )
@@ -522,9 +558,10 @@ impl SyncManager {
         base_url: &str,
         user_email: &str,
         api_token: &str,
+        source_type: Option<&SourceType>,
     ) -> Result<AtlassianCredentials> {
         self.auth_manager
-            .validate_credentials(base_url, user_email, api_token)
+            .validate_credentials(base_url, user_email, api_token, source_type)
             .await
     }
 
@@ -534,7 +571,7 @@ impl SyncManager {
     ) -> Result<(Vec<String>, Vec<String>)> {
         let (base_url, user_email, api_token) = config;
         let credentials = self
-            .get_or_validate_credentials(base_url, user_email, api_token)
+            .get_or_validate_credentials(base_url, user_email, api_token, None)
             .await?;
 
         let jira_projects = self
@@ -725,7 +762,7 @@ impl SyncManager {
                     };
 
                 let creds = match self
-                    .get_or_validate_credentials(&base_url, &user_email, &api_token)
+                    .get_or_validate_credentials(&base_url, &user_email, &api_token, None)
                     .await
                 {
                     Ok(c) => c,

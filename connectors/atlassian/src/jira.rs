@@ -84,6 +84,7 @@ impl JiraProcessor {
         source_id: &str,
         sync_run_id: &str,
         cancelled: &AtomicBool,
+        project_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         info!(
             "Starting JIRA projects sync for source: {} (sync_run_id: {})",
@@ -91,7 +92,27 @@ impl JiraProcessor {
         );
 
         let custom_field_ids = self.get_custom_field_ids(creds).await;
-        let projects = self.get_accessible_projects(creds).await?;
+        let all_projects = self.get_accessible_projects(creds).await?;
+        let projects: Vec<serde_json::Value> = match project_filters {
+            Some(filters) => {
+                let filtered: Vec<serde_json::Value> = all_projects
+                    .into_iter()
+                    .filter(|p| {
+                        p.get("key")
+                            .and_then(|k| k.as_str())
+                            .map(|k| filters.iter().any(|f| f.eq_ignore_ascii_case(k)))
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                info!(
+                    "Filtered to {} projects (from {} accessible)",
+                    filtered.len(),
+                    filters.len()
+                );
+                filtered
+            }
+            None => all_projects,
+        };
         let mut total_issues_processed = 0;
 
         for project in projects {
@@ -159,7 +180,7 @@ impl JiraProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
         since: DateTime<Utc>,
-        project_key: Option<&str>,
+        project_filters: Option<&Vec<String>>,
         sync_run_id: &str,
         cancelled: &AtomicBool,
     ) -> Result<u32> {
@@ -167,7 +188,7 @@ impl JiraProcessor {
             "Starting incremental JIRA sync for source: {} since {}{} (sync_run_id: {})",
             source_id,
             since.format("%Y-%m-%d %H:%M:%S"),
-            project_key.map_or(String::new(), |p| format!(" (project: {})", p)),
+            project_filters.map_or(String::new(), |f| format!(" (projects: {:?})", f)),
             sync_run_id
         );
 
@@ -175,8 +196,11 @@ impl JiraProcessor {
 
         let since_str = since.format("%Y-%m-%d %H:%M").to_string();
         let mut jql = format!("updated >= '{}'", since_str);
-        if let Some(project) = project_key {
-            jql = format!("project = {} AND {}", project, jql);
+        if let Some(filters) = project_filters {
+            if !filters.is_empty() {
+                let projects_str = filters.join(", ");
+                jql = format!("project IN ({}) AND {}", projects_str, jql);
+            }
         }
 
         let fields = build_fields(Some(&custom_field_ids));
