@@ -10,10 +10,17 @@ def map_drive_item_to_document(
     item: dict[str, Any],
     content_id: str,
     source_type: str = "one_drive",
+    graph_permissions: list[dict[str, Any]] | None = None,
+    user_cache: dict[str, str] | None = None,
+    group_cache: dict[str, str] | None = None,
     owner_email: str | None = None,
     site_id: str | None = None,
 ) -> Document:
-    """Map a OneDrive/SharePoint driveItem to an Omni Document."""
+    """Map a OneDrive/SharePoint driveItem to an Omni Document.
+
+    Resolves Graph API permission entries into Omni's permission model
+    using pre-built user_cache (id→email) and group_cache (id→email).
+    """
     parent_ref = item.get("parentReference", {})
     drive_id = parent_ref.get("driveId", "unknown")
     item_id = item["id"]
@@ -26,6 +33,13 @@ def map_drive_item_to_document(
     file_info = item.get("file", {})
     mime_type = file_info.get("mimeType")
     size = item.get("size")
+
+    doc_perms = _resolve_graph_permissions(
+        graph_permissions or [],
+        user_cache or {},
+        group_cache or {},
+        owner_email,
+    )
 
     return Document(
         external_id=external_id,
@@ -43,28 +57,118 @@ def map_drive_item_to_document(
                 "item_id": item_id,
             },
         ),
-        permissions=DocumentPermissions(
-            public=(source_type == "share_point"),
-            users=[owner_email] if owner_email else [],
-        ),
+        permissions=doc_perms,
         attributes={
             "source_type": source_type,
         },
     )
 
 
+def _resolve_graph_permissions(
+    graph_permissions: list[dict[str, Any]],
+    user_cache: dict[str, str],
+    group_cache: dict[str, str],
+    owner_email: str | None,
+) -> DocumentPermissions:
+    """Map Microsoft Graph permission entries to Omni DocumentPermissions."""
+    is_public = False
+    users: set[str] = set()
+    groups: set[str] = set()
+
+    for perm in graph_permissions:
+        # Sharing link permissions
+        link = perm.get("link")
+        if link:
+            scope = link.get("scope", "")
+            if scope == "anonymous":
+                is_public = True
+            elif scope == "organization":
+                # Org-wide link — everyone in the tenant can access
+                is_public = True
+
+            # Specific-people links have grantedToIdentitiesV2
+            for identity in perm.get("grantedToIdentitiesV2", []):
+                _resolve_identity(identity, user_cache, group_cache, users, groups)
+            # Fallback to deprecated grantedToIdentities
+            for identity in perm.get("grantedToIdentities", []):
+                _resolve_identity(identity, user_cache, group_cache, users, groups)
+
+        # Direct user/group grants
+        granted_to = perm.get("grantedToV2") or perm.get("grantedTo")
+        if granted_to:
+            _resolve_identity(granted_to, user_cache, group_cache, users, groups)
+
+        # Email invitations
+        invitation = perm.get("invitation")
+        if invitation:
+            email = invitation.get("email")
+            if email:
+                users.add(email.lower())
+
+    # Fallback: if no permissions resolved, use the drive owner
+    if not is_public and not users and not groups and owner_email:
+        users.add(owner_email.lower())
+
+    return DocumentPermissions(
+        public=is_public,
+        users=sorted(users),
+        groups=sorted(groups),
+    )
+
+
+def _resolve_identity(
+    identity: dict[str, Any],
+    user_cache: dict[str, str],
+    group_cache: dict[str, str],
+    users: set[str],
+    groups: set[str],
+) -> None:
+    """Resolve a Graph identitySet to user emails or group emails."""
+    # Check for site group
+    site_group = identity.get("siteGroup")
+    if site_group:
+        group_id = site_group.get("id", "")
+        if group_id in group_cache:
+            groups.add(group_cache[group_id].lower())
+        return
+
+    # Check for user
+    user = identity.get("user")
+    if user:
+        user_id = user.get("id", "")
+        if user_id in user_cache:
+            users.add(user_cache[user_id].lower())
+
+
 def map_message_to_document(
     message: dict[str, Any],
-    user_id: str,
-    user_email: str | None,
     content_id: str,
 ) -> Document:
-    """Map an Outlook message to an Omni Document."""
+    """Map an Outlook message to an Omni Document.
+
+    Uses internetMessageId as external_id to deduplicate the same message
+    across multiple users' mailboxes. Permissions include all participants.
+    """
     msg_id = message["id"]
-    external_id = f"mail:{user_id}:{msg_id}"
+    internet_msg_id = message.get("internetMessageId") or msg_id
+    external_id = f"mail:{internet_msg_id}"
 
     sender = message.get("from", {}).get("emailAddress", {})
     sender_name = sender.get("name") or sender.get("address")
+
+    # Collect all participant emails for permissions
+    participants: set[str] = set()
+    sender_email = sender.get("address")
+    if sender_email:
+        participants.add(sender_email.lower())
+    for recipient in message.get("toRecipients", []):
+        addr = recipient.get("emailAddress", {}).get("address")
+        if addr:
+            participants.add(addr.lower())
+    for recipient in message.get("ccRecipients", []):
+        addr = recipient.get("emailAddress", {}).get("address")
+        if addr:
+            participants.add(addr.lower())
 
     return Document(
         external_id=external_id,
@@ -84,7 +188,7 @@ def map_message_to_document(
         ),
         permissions=DocumentPermissions(
             public=False,
-            users=[user_email] if user_email else [],
+            users=sorted(participants),
         ),
         attributes={
             "source_type": "outlook",
