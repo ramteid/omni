@@ -13,6 +13,7 @@ export {
   ConnectorEventSchema,
   ActionParameterSchema,
   ActionDefinitionSchema,
+  SearchOperatorSchema,
   ConnectorManifestSchema,
   SyncRequestSchema,
   SyncResponseSchema,
@@ -32,6 +33,7 @@ export {
   type ConnectorEvent,
   type ActionParameter,
   type ActionDefinition,
+  type SearchOperator,
   type ConnectorManifest,
   type SyncRequest,
   type SyncResponse,
@@ -48,3 +50,5 @@ export {
   SyncCancelledError,
   ConfigurationError,
 } from './errors.js';
+
+export { getLogger } from './logger.js';
