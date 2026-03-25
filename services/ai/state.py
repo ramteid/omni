@@ -1,5 +1,6 @@
 """Typed application state for FastAPI app.state"""
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -25,7 +26,9 @@ class AppState:
     embedding_provider_updated_at: datetime | None = None
     models: dict[str, LLMProvider] = field(default_factory=dict)
     default_model_id: str | None = None
+    secondary_model_id: str | None = None
     searcher_tool: SearcherTool | None = None
     content_storage: ContentStorage | None = None
     redis_client: aioredis.Redis | None = None
+    listener_task: asyncio.Task | None = None
     agent_run_queues: dict = field(default_factory=dict)  # {run_id: asyncio.Queue}
