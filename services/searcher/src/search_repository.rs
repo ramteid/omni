@@ -529,6 +529,44 @@ impl SearchDocumentRepository {
         let facet_rows = query_builder.fetch_all(&self.pool).await?;
         Ok(rows_to_facets(facet_rows))
     }
+
+    pub async fn get_distinct_attribute_values(
+        &self,
+        keys: &[String],
+        limit: i64,
+    ) -> Result<HashMap<String, Vec<String>>, DatabaseError> {
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT key, val FROM (
+                SELECT
+                    key,
+                    val,
+                    ROW_NUMBER() OVER (PARTITION BY key ORDER BY val) AS rn
+                FROM (
+                    SELECT DISTINCT k AS key, attributes->>k AS val
+                    FROM documents, UNNEST($1::text[]) AS k
+                    WHERE attributes ? k AND attributes->>k IS NOT NULL
+                ) distinct_vals
+            ) ranked
+            WHERE rn <= $2
+            ORDER BY key, val
+            "#,
+        )
+        .bind(keys)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result: HashMap<String, Vec<String>> = HashMap::new();
+        for (key, val) in rows {
+            result.entry(key).or_default().push(val);
+        }
+        Ok(result)
+    }
 }
 
 fn rows_to_facets(rows: Vec<(String, String, i64)>) -> Vec<Facet> {
