@@ -388,85 +388,89 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------------------------
-  # Release: retag existing master images with version tags
+  # Release: build all images from scratch on tag push
   # ---------------------------------------------------------------------------
-  release-retag:
+  release-services:
     needs: detect-changes
     if: needs.detect-changes.outputs.is-tag == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v6
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image-name: omni-ai
+            docker-context: services/ai
+            dockerfile: services/ai/Dockerfile
+            free-disk-space: true
+          - image-name: omni-web
+            docker-context: web
+            dockerfile: web/Dockerfile
+            free-disk-space: false
+          - image-name: omni-searcher
+            docker-context: .
+            dockerfile: services/searcher/Dockerfile
+            free-disk-space: false
+          - image-name: omni-indexer
+            docker-context: .
+            dockerfile: services/indexer/Dockerfile
+            free-disk-space: false
+          - image-name: omni-connector-manager
+            docker-context: .
+            dockerfile: services/connector-manager/Dockerfile
+            free-disk-space: false
+          - image-name: omni-sandbox
+            docker-context: .
+            dockerfile: services/sandbox/Dockerfile
+            free-disk-space: false
+          - image-name: omni-migrator
+            docker-context: .
+            dockerfile: services/migrations/Dockerfile
+            free-disk-space: false
+    uses: ./.github/workflows/build-service.yml
+    with:
+      image-name: ${{ matrix.image-name }}
+      docker-context: ${{ matrix.docker-context }}
+      dockerfile: ${{ matrix.dockerfile }}
+      free-disk-space: ${{ matrix.free-disk-space }}
+    secrets: inherit
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Retag all images with version tags
-        run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          REPO="${{ github.repository }}"
-          SOURCE_PREFIX="master-${SHORT_SHA}"
-
-          VERSION="${GITHUB_REF_NAME#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f1-2)
-
-          IMAGES=(
-            omni-ai
-            omni-web
-            omni-searcher
-            omni-indexer
-            omni-connector-manager
-            omni-sandbox
-            omni-migrator
-            omni-google-connector
-            omni-slack-connector
-            omni-atlassian-connector
-            omni-github-connector
-            omni-microsoft-connector
-            omni-filesystem-connector
-            omni-fireflies-connector
-            omni-hubspot-connector
-            omni-imap-connector
-            omni-notion-connector
-            omni-web-connector
-            omni-clickup-connector
-            omni-linear-connector
-          )
-
-          TAGS=("$VERSION" "$MINOR" "$MAJOR" "latest")
-
-          FAILED=()
-          for IMAGE in "${IMAGES[@]}"; do
-            FULL="ghcr.io/${REPO}/${IMAGE}"
-            SOURCE="${FULL}:${SOURCE_PREFIX}"
-
-            if ! docker buildx imagetools inspect "$SOURCE" > /dev/null 2>&1; then
-              echo "::error::Source image not found: $SOURCE (commit ${SHORT_SHA} was never built on master)"
-              FAILED+=("$IMAGE")
-              continue
-            fi
-
-            for TAG in "${TAGS[@]}"; do
-              echo "Tagging ${FULL}:${TAG}"
-              docker buildx imagetools create -t "${FULL}:${TAG}" "$SOURCE"
-            done
-          done
-
-          if [ ${#FAILED[@]} -gt 0 ]; then
-            echo "::error::The following images were not found for commit ${SHORT_SHA}:"
-            printf '  - %s\n' "${FAILED[@]}"
-            exit 1
-          fi
+  release-connectors:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - connector-name: google
+            connector-type: rust
+          - connector-name: slack
+            connector-type: rust
+          - connector-name: atlassian
+            connector-type: rust
+          - connector-name: filesystem
+            connector-type: rust
+          - connector-name: fireflies
+            connector-type: rust
+          - connector-name: imap
+            connector-type: rust
+          - connector-name: web
+            connector-type: rust
+          - connector-name: github
+            connector-type: python
+          - connector-name: hubspot
+            connector-type: python
+          - connector-name: microsoft
+            connector-type: python
+          - connector-name: notion
+            connector-type: python
+          - connector-name: clickup
+            connector-type: python
+          - connector-name: linear
+            connector-type: typescript
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: ${{ matrix.connector-name }}
+      connector-type: ${{ matrix.connector-type }}
+    secrets: inherit
 
   # ---------------------------------------------------------------------------
   # Deployment packaging
