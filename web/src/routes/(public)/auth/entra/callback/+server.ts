@@ -1,23 +1,23 @@
-import { getOktaAuthConfig } from '$lib/server/db/auth-providers'
-import { loadOktaOAuthService } from '$lib/server/oauth/okta'
+import { getEntraAuthConfig } from '$lib/server/db/auth-providers'
+import { loadEntraOAuthService } from '$lib/server/oauth/entra'
 import { handleSsoCallback } from '$lib/server/oauth/sso-callback'
 import type { RequestHandler } from './$types'
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
     await handleSsoCallback(url, cookies, {
-        provider: 'okta',
-        loadConfig: getOktaAuthConfig,
-        loadService: loadOktaOAuthService,
+        provider: 'entra',
+        loadConfig: getEntraAuthConfig,
+        loadService: loadEntraOAuthService,
         createService: (ServiceClass, config, callbackUrl) =>
             new ServiceClass(
                 {
-                    oktaDomain: config.oktaDomain,
+                    tenant: config.tenant,
                     clientId: config.clientId,
                     clientSecret: config.clientSecret,
                 },
                 callbackUrl,
             ),
-        callbackPath: '/auth/okta/callback',
+        callbackPath: '/auth/entra/callback',
     })
 }
 
