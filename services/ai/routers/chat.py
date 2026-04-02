@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from typing import cast
 
 import httpx
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import ValidationError
 
+from agents.repository import AgentRepository, AgentRunRepository
 from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
 from db.models import Chat, Source
@@ -35,7 +36,7 @@ from config import (
     SANDBOX_URL,
 )
 from providers import LLMProvider
-from prompts import build_chat_system_prompt
+from prompts import build_chat_system_prompt, build_agent_chat_system_prompt
 from services.compaction import ConversationCompactor
 from state import AppState
 
@@ -257,6 +258,71 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
     )
 
 
+async def _build_agent_chat_registry(request: Request) -> RegistryResult:
+    """Build a read-only ToolRegistry for agent chat sessions.
+
+    Excludes connector actions (write tools) — only search, document read, and people search.
+    """
+    registry = ToolRegistry()
+
+    sources = await _fetch_sources_from_connector_manager()
+
+    # We still need connector handler for search operators, but won't register it
+    search_operators = None
+    if CONNECTOR_MANAGER_URL:
+        connector_handler = ConnectorToolHandler(
+            connector_manager_url=CONNECTOR_MANAGER_URL,
+            user_id="",
+            redis_client=getattr(request.app.state, "redis_client", None),
+            prefetched_sources=sources,
+            documents_repo=DocumentsRepository(),
+        )
+        await connector_handler._ensure_initialized()
+        if connector_handler.search_operators:
+            search_operators = connector_handler.search_operators
+
+    active_sources = [s for s in (sources or []) if s.is_active and not s.is_deleted]
+    connected_source_types = list({s.source_type for s in active_sources})
+    operator_values: dict[str, list[str]] = {}
+    if search_operators:
+        operator_values = await fetch_operator_values(
+            request.app.state.searcher_tool.client,
+            search_operators,
+            redis_client=getattr(request.app.state, "redis_client", None),
+        )
+
+    registry.register(
+        SearchToolHandler(
+            searcher_tool=request.app.state.searcher_tool,
+            search_operators=search_operators,
+            connected_source_types=connected_source_types,
+            operator_values=operator_values,
+        )
+    )
+
+    registry.register(
+        PeopleSearchHandler(searcher_tool=request.app.state.searcher_tool)
+    )
+
+    content_storage = getattr(request.app.state, "content_storage", None)
+    if content_storage or CONNECTOR_MANAGER_URL:
+        registry.register(
+            DocumentToolHandler(
+                content_storage=content_storage,
+                documents_repo=DocumentsRepository(),
+                sandbox_url=SANDBOX_URL or None,
+                connector_manager_url=CONNECTOR_MANAGER_URL or None,
+            )
+        )
+
+    return RegistryResult(
+        registry=registry,
+        connector_actions=None,
+        sources=sources,
+        search_operators=search_operators,
+    )
+
+
 async def _save_pending_approval(
     redis_client,
     chat_id: str,
@@ -309,7 +375,11 @@ async def _clear_pending_approval(redis_client, chat_id: str) -> None:
 
 @router.get("/chat/{chat_id}/stream")
 async def stream_chat(
-    request: Request, chat_id: str = Path(..., description="Chat thread ID")
+    request: Request,
+    chat_id: str = Path(..., description="Chat thread ID"),
+    auto_start: bool = Query(
+        False, description="Auto-inject initial message for agent chats"
+    ),
 ):
     """Stream AI response for a chat thread using Server-Sent Events"""
     if not request.app.state.searcher_tool:
@@ -322,36 +392,103 @@ async def stream_chat(
         raise HTTPException(status_code=404, detail="Chat thread not found")
 
     llm_provider = _resolve_llm_provider(request.app.state, chat)
-
-    # Resolve user info for permission checks and system prompt
-    user_email: str | None = None
-    user_name: str | None = None
-    if chat.user_id:
-        users_repo = UsersRepository()
-        user = await users_repo.find_by_id(chat.user_id)
-        if user:
-            user_email = user.email
-            user_name = user.full_name
-
+    redis_client = getattr(request.app.state, "redis_client", None)
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_active_path(chat_id)
-    if not chat_messages:
-        raise HTTPException(status_code=404, detail="No messages found for chat")
 
-    # Build registry and discover connector actions
-    build_result = await _build_registry(request, chat)
-    registry = build_result.registry
-    all_tools = registry.get_all_tools()
+    if chat.agent_id:
+        # --- Agent chat setup ---
+        users_repo = UsersRepository()
+        admin_user = await users_repo.find_by_id(chat.user_id)
+        if not admin_user or admin_user.role != "admin":
+            raise HTTPException(
+                status_code=403, detail="Admin access required for agent chats"
+            )
 
-    # Check for pending approval resume flow
-    redis_client = getattr(request.app.state, "redis_client", None)
-    pending = None
-    if redis_client:
-        pending = await _get_pending_approval(redis_client, chat_id)
+        agent_repo = AgentRepository()
+        agent = await agent_repo.get_agent(chat.agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        user_email = admin_user.email
+        user_name = admin_user.full_name
+
+        # Handle auto_start: inject ephemeral message when no messages exist
+        if not chat_messages:
+            if auto_start:
+                chat_messages = []
+            else:
+                raise HTTPException(
+                    status_code=404, detail="No messages found for chat"
+                )
+
+        build_result = await _build_agent_chat_registry(request)
+        registry = build_result.registry
+        all_tools = registry.get_all_tools()
+        pending = None  # no approval flow for agent chats
+
+        # Build agent chat system prompt with run history
+        run_repo = AgentRunRepository()
+        runs = await run_repo.list_runs(agent.id, limit=20)
+        active_sources = [
+            s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
+        ]
+        system_prompt = build_agent_chat_system_prompt(
+            agent,
+            runs,
+            active_sources,
+            user_name=user_name,
+            user_email=user_email,
+        )
+
+        # Build messages, injecting ephemeral start message if needed
+        messages: list[MessageParam] = [
+            MessageParam(**msg.message) for msg in chat_messages
+        ]
+        needs_start = not messages or messages[-1].get("role") != "user"
+        if auto_start and needs_start:
+            messages.append(MessageParam(role="user", content="Go."))
+
+    else:
+        # --- Regular chat setup ---
+        user_email: str | None = None
+        user_name: str | None = None
+        if chat.user_id:
+            users_repo = UsersRepository()
+            user = await users_repo.find_by_id(chat.user_id)
+            if user:
+                user_email = user.email
+                user_name = user.full_name
+
+        if not chat_messages:
+            raise HTTPException(status_code=404, detail="No messages found for chat")
+
+        build_result = await _build_registry(request, chat)
+        registry = build_result.registry
+        all_tools = registry.get_all_tools()
+
+        # Check for pending approval resume flow
+        pending = None
+        if redis_client:
+            pending = await _get_pending_approval(redis_client, chat_id)
+
+        active_sources = [
+            s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
+        ]
+        system_prompt = build_chat_system_prompt(
+            active_sources,
+            build_result.connector_actions,
+            user_name=user_name,
+            user_email=user_email,
+        )
+
+        messages: list[MessageParam] = [
+            MessageParam(**msg.message) for msg in chat_messages
+        ]
 
     # Check if we need to process - only if last message is from user (or resuming from approval)
-    last_message = chat_messages[-1]
-    if not pending and last_message.message.get("role") != "user":
+    last_message_role = messages[-1].get("role") if messages else None
+    if not pending and last_message_role != "user":
         logger.info(
             f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
         )
@@ -365,12 +502,7 @@ async def stream_chat(
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
-    # Build messages for conversation from stored messages
-    messages: list[MessageParam] = [
-        MessageParam(**msg.message) for msg in chat_messages
-    ]
-
-    # Check if conversation needs compaction — use secondary model for summarization
+    # Check if conversation needs compaction
     secondary_provider = _resolve_secondary_provider(request.app.state)
     compactor = ConversationCompactor(
         llm_provider=secondary_provider,
@@ -379,17 +511,6 @@ async def stream_chat(
     if compactor.needs_compaction(messages, all_tools):
         logger.info(f"Compacting conversation for chat {chat_id}")
         messages = await compactor.compact_conversation(chat_id, messages)
-
-    # Build system prompt from active sources
-    active_sources = [
-        s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
-    ]
-    system_prompt = build_chat_system_prompt(
-        active_sources,
-        build_result.connector_actions,
-        user_name=user_name,
-        user_email=user_email,
-    )
 
     # Stream AI response with tool calling
     async def stream_generator():

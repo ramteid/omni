@@ -1,7 +1,8 @@
-import { json } from '@sveltejs/kit'
+import { json, error } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
+import { getAgent } from '$lib/server/db/agents.js'
 
 async function triggerTitleGeneration(chatId: string, logger: any): Promise<string | null> {
     try {
@@ -54,12 +55,23 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'Chat not found' }, { status: 404 })
     }
 
+    // Agent chats require admin access
+    if (chat.agentId) {
+        const agent = await getAgent(chat.agentId)
+        if (agent?.agentType === 'org' && locals.user?.role !== 'admin') {
+            throw error(403, 'Admin access required for agent chats')
+        }
+    }
+
     logger.debug('Sending GET request to AI service to receive the streaming response', { chatId })
 
     const abortController = new AbortController()
 
     try {
-        const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/stream`, {
+        const streamUrl = chat.agentId
+            ? `${env.AI_SERVICE_URL}/chat/${chatId}/stream?auto_start=true`
+            : `${env.AI_SERVICE_URL}/chat/${chatId}/stream`
+        const response = await fetch(streamUrl, {
             signal: abortController.signal,
         })
 
