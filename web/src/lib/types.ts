@@ -13,7 +13,11 @@ export enum SourceType {
     SHARE_POINT = 'share_point',
     OUTLOOK = 'outlook',
     OUTLOOK_CALENDAR = 'outlook_calendar',
+    MS_TEAMS = 'ms_teams',
     FIREFLIES = 'fireflies',
+    IMAP = 'imap',
+    CLICKUP = 'clickup',
+    LINEAR = 'linear',
 }
 
 export enum ServiceProvider {
@@ -24,6 +28,9 @@ export enum ServiceProvider {
     MICROSOFT = 'microsoft',
     HUBSPOT = 'hubspot',
     FIREFLIES = 'fireflies',
+    IMAP = 'imap',
+    CLICKUP = 'clickup',
+    LINEAR = 'linear',
 }
 
 export enum AuthType {
@@ -75,12 +82,44 @@ export interface HubspotSourceConfig {
     portal_id?: string
 }
 
+export interface LinearSourceConfig {
+    team_keys?: string[]
+}
+
+export interface GitHubSourceConfig {
+    api_url?: string
+    include_discussions?: boolean
+    include_forks?: boolean
+    repos?: string[]
+    orgs?: string[]
+    users?: string[]
+    read_only?: boolean
+}
+
+export interface GitHubCredentials {
+    token: string
+}
+
+export interface ImapSourceConfig {
+    display_name?: string
+    host: string
+    port: number
+    /** "tls" | "starttls" | "none" */
+    encryption: string
+    folder_allowlist: string[]
+    folder_denylist: string[]
+    /** 0 = unlimited */
+    max_message_size: number
+    sync_enabled: boolean
+}
+
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,
     [SourceType.SLACK]: 1800,
     [SourceType.OUTLOOK]: 1800,
     [SourceType.ONE_DRIVE]: 1800,
+    [SourceType.MS_TEAMS]: 1800,
     [SourceType.CONFLUENCE]: 3600,
     [SourceType.JIRA]: 3600,
     [SourceType.GITHUB]: 3600,
@@ -89,8 +128,11 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.SHARE_POINT]: 3600,
     [SourceType.OUTLOOK_CALENDAR]: 3600,
     [SourceType.FIREFLIES]: 3600,
+    [SourceType.IMAP]: 3600,
+    [SourceType.LINEAR]: 3600,
     [SourceType.LOCAL_FILES]: 86400,
     [SourceType.WEB]: 86400,
+    [SourceType.CLICKUP]: 3600,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const
@@ -102,4 +144,13 @@ export const PROVIDER_LABELS: Record<EmbeddingProviderType, string> = {
     openai: 'OpenAI',
     cohere: 'Cohere',
     bedrock: 'AWS Bedrock',
+}
+
+export const EMAIL_PROVIDER_TYPES = ['acs', 'resend', 'smtp'] as const
+export type EmailProviderType = (typeof EMAIL_PROVIDER_TYPES)[number]
+
+export const EMAIL_PROVIDER_LABELS: Record<EmailProviderType, string> = {
+    acs: 'Azure Communication Services',
+    resend: 'Resend',
+    smtp: 'SMTP',
 }

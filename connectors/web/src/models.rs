@@ -16,21 +16,7 @@ pub use shared::models::{SyncRequest, SyncResponse};
 // Connector Protocol Models
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<ActionDefinition>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: JsonValue,
-}
+pub use shared::models::{ActionDefinition, ConnectorManifest};
 
 /// Extension trait for SyncResponse helper methods
 pub trait SyncResponseExt {
@@ -284,6 +270,7 @@ impl WebPage {
                     sqlx::types::time::OffsetDateTime::from_unix_timestamp(dt.timestamp()).ok()
                 })
                 .flatten(),
+            content_type: Some("webpage".to_string()),
             mime_type: Some("text/html".to_string()),
             size: Some(self.content.len().to_string()),
             url: Some(self.url.clone()),

@@ -4,16 +4,30 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from typing import Literal
 
 import httpx
 import redis.asyncio as aioredis
 
+from db.documents import DocumentsRepository
+from db.models import Source
 from tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
 
 ACTIONS_CACHE_TTL = 60  # seconds
+
+
+@dataclass
+class SearchOperator:
+    """A search operator declared by a connector."""
+
+    operator: str
+    attribute_key: str
+    value_type: Literal["text", "person", "datetime"]
+    source_type: str
+    display_name: str
 
 
 @dataclass
@@ -25,7 +39,7 @@ class ConnectorAction:
     source_name: str
     action_name: str
     description: str
-    parameters: dict
+    input_schema: dict
     mode: str  # "read" | "write"
 
 
@@ -37,12 +51,21 @@ class ConnectorToolHandler:
         connector_manager_url: str,
         user_id: str,
         redis_client: aioredis.Redis | None = None,
+        prefetched_sources: list[Source] | None = None,
+        source_filter: dict[str, list[str]] | None = None,
+        action_whitelist: list[str] | None = None,
+        documents_repo: DocumentsRepository | None = None,
     ) -> None:
         self._connector_manager_url = connector_manager_url.rstrip("/")
         self._user_id = user_id
         self._redis = redis_client
+        self._prefetched_sources = prefetched_sources
+        self._source_filter = source_filter  # {source_id: ["read","write"]}
+        self._action_whitelist = action_whitelist  # ["gmail__send_email"]
+        self._documents_repo = documents_repo
         self._actions: dict[str, ConnectorAction] = {}
         self._tools: list[dict] = []
+        self._search_operators: list[SearchOperator] = []
         self._initialized = False
 
     async def _ensure_initialized(self) -> None:
@@ -97,12 +120,15 @@ class ConnectorToolHandler:
                 connectors_resp.raise_for_status()
                 connectors = connectors_resp.json()
 
-                # Fetch active sources to map source_type -> source_id
-                sources_resp = await client.get(
-                    f"{self._connector_manager_url}/sources"
-                )
-                sources_resp.raise_for_status()
-                sources = sources_resp.json()
+                # Use pre-fetched sources if available, otherwise fetch from connector-manager
+                if self._prefetched_sources is not None:
+                    sources = [asdict(s) for s in self._prefetched_sources]
+                else:
+                    sources_resp = await client.get(
+                        f"{self._connector_manager_url}/sources"
+                    )
+                    sources_resp.raise_for_status()
+                    sources = sources_resp.json()
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")
@@ -114,6 +140,32 @@ class ConnectorToolHandler:
             if source.get("is_active") and not source.get("is_deleted"):
                 st = source.get("source_type", "")
                 source_by_type.setdefault(st, []).append(source)
+
+        # Extract search operators from connector manifests
+        search_operators: list[SearchOperator] = []
+        for connector in connectors:
+            source_type = connector.get("source_type", "")
+            manifest = connector.get("manifest")
+            if not manifest or not connector.get("healthy"):
+                continue
+
+            display_name = manifest.get("display_name", source_type)
+            for op in manifest.get("search_operators", []):
+                operator = op.get("operator")
+                attribute_key = op.get("attribute_key")
+                if not operator or not attribute_key:
+                    continue
+                search_operators.append(
+                    SearchOperator(
+                        operator=operator,
+                        attribute_key=attribute_key,
+                        value_type=op.get("value_type", "text"),
+                        source_type=source_type,
+                        display_name=display_name,
+                    )
+                )
+
+        self._search_operators = search_operators
 
         # Build action list from connector manifests
         actions: list[dict] = []
@@ -134,7 +186,9 @@ class ConnectorToolHandler:
                             "source_name": source.get("name", source_type),
                             "action_name": action_def["name"],
                             "description": action_def.get("description", ""),
-                            "parameters": action_def.get("parameters", {}),
+                            "input_schema": action_def.get(
+                                "input_schema", {"type": "object", "properties": {}}
+                            ),
                             "mode": action_def.get("mode", "write"),
                         }
                     )
@@ -149,9 +203,29 @@ class ConnectorToolHandler:
         self._actions.clear()
         self._tools.clear()
 
+        seen_tools: set[str] = set()
         for action in actions:
+            source_id = action["source_id"]
+
+            # Apply source_filter: skip actions not in allowed sources or modes
+            if self._source_filter is not None:
+                if source_id not in self._source_filter:
+                    continue
+                allowed_modes = self._source_filter[source_id]
+                if action.get("mode", "write") not in allowed_modes:
+                    continue
+
             # Namespace: {source_type}__{action_name}
             tool_name = f"{action['source_type']}__{action['action_name']}"
+
+            # Apply action_whitelist: skip actions not in whitelist
+            if self._action_whitelist is not None:
+                if tool_name not in self._action_whitelist:
+                    continue
+
+            if tool_name in seen_tools:
+                continue
+            seen_tools.add(tool_name)
 
             self._actions[tool_name] = ConnectorAction(
                 source_id=action["source_id"],
@@ -159,35 +233,22 @@ class ConnectorToolHandler:
                 source_name=action["source_name"],
                 action_name=action["action_name"],
                 description=action["description"],
-                parameters=action["parameters"],
+                input_schema=action["input_schema"],
                 mode=action["mode"],
             )
-
-            # Convert connector parameter definitions to JSON Schema
-            properties = {}
-            required = []
-            for param_name, param_def in action["parameters"].items():
-                prop: dict = {
-                    "type": param_def.get("type", "string"),
-                }
-                if param_def.get("description"):
-                    prop["description"] = param_def["description"]
-                properties[param_name] = prop
-                if param_def.get("required"):
-                    required.append(param_name)
 
             source_display = action["source_name"] or action["source_type"]
             self._tools.append(
                 {
                     "name": tool_name,
                     "description": f"[{source_display}] {action['description']}",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": properties,
-                        "required": required,
-                    },
+                    "input_schema": action["input_schema"],
                 }
             )
+
+    @property
+    def search_operators(self) -> list[SearchOperator]:
+        return self._search_operators
 
     def get_tools(self) -> list[dict]:
         # Note: caller must await _ensure_initialized() before calling this
@@ -197,6 +258,9 @@ class ConnectorToolHandler:
         return tool_name in self._actions
 
     def requires_approval(self, tool_name: str) -> bool:
+        # Pre-authorized when filters are active (background agent context)
+        if self._source_filter is not None or self._action_whitelist is not None:
+            return False
         action = self._actions.get(tool_name)
         if not action:
             return True
@@ -217,6 +281,24 @@ class ConnectorToolHandler:
         logger.info(
             f"Executing connector action: {action.action_name} on source {action.source_id}"
         )
+
+        # If this action references a document, check user permissions
+        document_id = tool_input.get("document_id")
+        if document_id and self._documents_repo and not context.skip_permission_check:
+            user_email = context.user_email
+            doc = await self._documents_repo.get_by_id(
+                document_id, user_email=user_email
+            )
+            if doc is None:
+                return ToolResult(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": f"Document not found: {document_id}",
+                        }
+                    ],
+                    is_error=True,
+                )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

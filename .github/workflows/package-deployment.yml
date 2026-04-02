@@ -1,15 +1,7 @@
 name: Package Deployment Configs
 
 on:
-  push:
-    branches: [master]
-    tags: ['v*']
-    paths:
-      - 'docker/docker-compose.yml'
-      - 'docker/docker-compose.gpu.yml'
-      - '.env.example'
-      - 'Caddyfile'
-      - 'infra/**'
+  workflow_call:
 
 jobs:
   package:
@@ -17,7 +9,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Package Docker Compose deployment
         run: |
@@ -41,7 +33,7 @@ jobs:
           tar -czf omni-terraform-gcp.tar.gz -C staging/terraform-gcp .
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-archives
           path: |

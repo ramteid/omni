@@ -1,7 +1,10 @@
+use crate::people_extractor;
 use crate::AppState;
 use anyhow::{Context, Result};
 use futures::future::join_all;
-use shared::db::repositories::{DocumentRepository, EmbeddingRepository, SyncRunRepository};
+use shared::db::repositories::{
+    DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SyncRunRepository,
+};
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
     ConnectorEvent, ConnectorEventQueueItem, Document, DocumentAttributes, DocumentMetadata,
@@ -10,6 +13,7 @@ use shared::models::{
 use shared::queue::EventQueue;
 use shared::storage::gc::{ContentBlobGC, GCConfig};
 use sqlx::postgres::PgListener;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{interval, Duration, Instant};
@@ -22,11 +26,21 @@ const BATCH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 // Batch processing types
 #[derive(Debug)]
+struct GroupSyncEvent {
+    source_id: String,
+    group_email: String,
+    group_name: Option<String>,
+    member_emails: Vec<String>,
+    event_ids: Vec<String>,
+}
+
+#[derive(Debug)]
 struct EventBatch {
     sync_run_id: String,
     documents_created: Vec<(Document, Vec<String>)>, // (document, event_ids)
     documents_updated: Vec<(Document, Vec<String>)>, // (document, event_ids)
     documents_deleted: Vec<(String, String, Vec<String>)>, // (source_id, document_id, event_ids)
+    group_syncs: Vec<GroupSyncEvent>,
 }
 
 impl EventBatch {
@@ -36,6 +50,7 @@ impl EventBatch {
             documents_created: Vec::new(),
             documents_updated: Vec::new(),
             documents_deleted: Vec::new(),
+            group_syncs: Vec::new(),
         }
     }
 
@@ -43,6 +58,7 @@ impl EventBatch {
         self.documents_created.is_empty()
             && self.documents_updated.is_empty()
             && self.documents_deleted.is_empty()
+            && self.group_syncs.is_empty()
     }
 
     #[allow(dead_code)]
@@ -477,6 +493,9 @@ impl QueueProcessor {
                         }
                     }
 
+                    // Extract people from the raw events and upsert into the people table
+                    self.extract_and_upsert_people(&events_clone).await;
+
                     let processed_count = batch_result.successful_event_ids.len();
                     total_processed += processed_count;
 
@@ -613,6 +632,33 @@ impl QueueProcessor {
                         deleted_docs.insert(key, (source_id, document_id, vec![event_id]));
                     }
                 }
+                ConnectorEvent::GroupMembershipSync {
+                    source_id,
+                    group_email,
+                    group_name,
+                    member_emails,
+                    ..
+                } => {
+                    // Dedup by source_id:group_email — last event wins
+                    let key = format!("{}:{}", source_id, group_email);
+                    if let Some(existing) = batch
+                        .group_syncs
+                        .iter_mut()
+                        .find(|g| format!("{}:{}", g.source_id, g.group_email) == key)
+                    {
+                        existing.member_emails = member_emails;
+                        existing.group_name = group_name;
+                        existing.event_ids.push(event_id);
+                    } else {
+                        batch.group_syncs.push(GroupSyncEvent {
+                            source_id,
+                            group_email,
+                            group_name,
+                            member_emails,
+                            event_ids: vec![event_id],
+                        });
+                    }
+                }
             }
         }
 
@@ -696,7 +742,150 @@ impl QueueProcessor {
             }
         }
 
+        // Process group membership syncs
+        if !batch.group_syncs.is_empty() {
+            let group_count = batch.group_syncs.len();
+            info!("Processing {} group membership sync events", group_count);
+            let group_repo = GroupRepository::new(self.state.db_pool.pool());
+
+            for group_sync in batch.group_syncs {
+                match self
+                    .process_group_membership_sync(&group_repo, &group_sync)
+                    .await
+                {
+                    Ok(()) => {
+                        result.successful_event_ids.extend(group_sync.event_ids);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Group membership sync failed for {}: {}",
+                            group_sync.group_email, e
+                        );
+                        for event_id in group_sync.event_ids {
+                            result.failed_events.push((event_id, e.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(result)
+    }
+
+    async fn process_group_membership_sync(
+        &self,
+        group_repo: &GroupRepository,
+        sync_event: &GroupSyncEvent,
+    ) -> Result<()> {
+        let group = group_repo
+            .upsert_group(
+                &sync_event.source_id,
+                &sync_event.group_email,
+                sync_event.group_name.as_deref(),
+                None,
+            )
+            .await
+            .context("Failed to upsert group")?;
+
+        let member_count = group_repo
+            .sync_group_members(&group.id, &sync_event.member_emails)
+            .await
+            .context("Failed to sync group members")?;
+
+        info!(
+            "Synced group {} ({}) with {} members",
+            sync_event.group_email, group.id, member_count
+        );
+
+        Ok(())
+    }
+
+    async fn extract_and_upsert_people(&self, events: &[ConnectorEventQueueItem]) {
+        let person_repo = PersonRepository::new(self.state.db_pool.pool());
+
+        let mut manifest_cache: HashMap<String, shared::models::ConnectorManifest> = HashMap::new();
+        let mut seen: HashMap<String, shared::PersonUpsert> = HashMap::new();
+
+        for event_item in events {
+            let event: ConnectorEvent = match serde_json::from_value(event_item.payload.clone()) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let source_id = event.source_id().to_string();
+
+            // Look up manifest for this source's connector (cached per batch)
+            if !manifest_cache.contains_key(&source_id) {
+                if let Some(m) = self.load_manifest_for_source(&source_id).await {
+                    manifest_cache.insert(source_id.clone(), m);
+                }
+            }
+            let manifest = manifest_cache.get(&source_id);
+
+            let (extra_schema, attributes_schema, search_operators) = match manifest {
+                Some(m) => (
+                    m.extra_schema.as_ref(),
+                    m.attributes_schema.as_ref(),
+                    m.search_operators.as_slice(),
+                ),
+                None => (None, None, &[] as &[shared::models::SearchOperator]),
+            };
+
+            let people = people_extractor::extract_people(
+                extra_schema,
+                attributes_schema,
+                search_operators,
+                &event,
+            );
+
+            for person in people {
+                seen.entry(person.email.clone())
+                    .or_insert_with(|| shared::PersonUpsert {
+                        email: person.email,
+                        display_name: person.display_name,
+                    });
+            }
+        }
+
+        if seen.is_empty() {
+            return;
+        }
+
+        let people: Vec<shared::PersonUpsert> = seen.into_values().collect();
+        let count = people.len();
+
+        match person_repo.upsert_people_batch(&people).await {
+            Ok(_) => {
+                debug!("Upserted {} people from batch", count);
+            }
+            Err(e) => {
+                error!("Failed to upsert people: {}", e);
+            }
+        }
+    }
+
+    async fn load_manifest_for_source(
+        &self,
+        source_id: &str,
+    ) -> Option<shared::models::ConnectorManifest> {
+        // Look up source_type from the sources table
+        let source_type: String =
+            sqlx::query_scalar("SELECT source_type FROM sources WHERE id = $1")
+                .bind(source_id)
+                .fetch_optional(self.state.db_pool.pool())
+                .await
+                .ok()??;
+
+        // Read cached manifest from Redis: connector:manifest:{source_type}
+        let key = format!("connector:manifest:{}", source_type);
+        let mut conn = self
+            .state
+            .redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .ok()?;
+        let json: String = redis::AsyncCommands::get(&mut conn, &key).await.ok()?;
+        serde_json::from_str(&json).ok()
     }
 
     // Helper methods for batch processing
@@ -758,7 +947,7 @@ impl QueueProcessor {
             external_id: document_id,
             title: metadata.title.unwrap_or_else(|| "Untitled".to_string()),
             content_id: Some(content_id),
-            content_type: metadata.mime_type,
+            content_type: metadata.content_type.or(metadata.mime_type),
             file_size,
             file_extension,
             url: metadata.url,
@@ -1173,6 +1362,26 @@ impl ProcessorContext {
             } => {
                 self.handle_document_deleted(source_id, document_id).await?;
             }
+            ConnectorEvent::GroupMembershipSync {
+                source_id,
+                group_email,
+                group_name,
+                member_emails,
+                ..
+            } => {
+                let group_repo = GroupRepository::new(self.state.db_pool.pool());
+                let group = group_repo
+                    .upsert_group(&source_id, &group_email, group_name.as_deref(), None)
+                    .await?;
+                group_repo
+                    .sync_group_members(&group.id, &member_emails)
+                    .await?;
+                info!(
+                    "Synced group {} with {} members",
+                    group_email,
+                    member_emails.len()
+                );
+            }
         }
 
         debug!("Total event processing time: {:?}", start_time.elapsed());
@@ -1218,7 +1427,7 @@ impl ProcessorContext {
             external_id: document_id.clone(),
             title: metadata.title.unwrap_or_else(|| "Untitled".to_string()),
             content_id: Some(content_id.clone()),
-            content_type: metadata.mime_type.clone(),
+            content_type: metadata.content_type.clone().or(metadata.mime_type.clone()),
             file_size,
             file_extension,
             url: metadata.url.clone(),

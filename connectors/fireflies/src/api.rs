@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::SyncRequest;
+use shared::models::{SourceType, SyncRequest};
 use shared::telemetry;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -23,12 +23,7 @@ pub struct ApiState {
     pub sync_manager: Arc<Mutex<SyncManager>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-}
+use shared::models::ConnectorManifest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResponse {
@@ -93,12 +88,29 @@ async fn health() -> impl IntoResponse {
     }))
 }
 
-async fn manifest() -> impl IntoResponse {
-    Json(ConnectorManifest {
+pub fn build_manifest(connector_url: String) -> ConnectorManifest {
+    ConnectorManifest {
         name: "fireflies".to_string(),
+        display_name: "Fireflies".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-    })
+        connector_id: "fireflies".to_string(),
+        connector_url,
+        source_types: vec![SourceType::Fireflies],
+        description: Some("Index meeting transcripts from Fireflies.ai".to_string()),
+        actions: vec![],
+        search_operators: vec![],
+        read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
+        mcp_enabled: false,
+        resources: vec![],
+        prompts: vec![],
+    }
+}
+
+async fn manifest() -> impl IntoResponse {
+    Json(build_manifest(shared::build_connector_url()))
 }
 
 async fn trigger_sync(

@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+
+
 SOURCE_DISPLAY_NAMES = {
     "google_drive": "Google Drive",
     "gmail": "Gmail",
@@ -10,18 +13,21 @@ SOURCE_DISPLAY_NAMES = {
     "local_files": "Files",
     "github": "GitHub",
     "notion": "Notion",
-    "onedrive": "OneDrive",
-    "sharepoint": "SharePoint",
+    "one_drive": "OneDrive",
+    "share_point": "SharePoint",
     "outlook": "Outlook",
     "outlook_calendar": "Outlook Calendar",
 }
 
 SYSTEM_PROMPT_TEMPLATE = """You are Omni AI, a workplace agent that helps employees find information and complete tasks across their connected apps.
 
-Connected apps: {connected_apps}
+Current date and time: {current_datetime} (UTC)
+{user_line}Connected apps: {connected_apps}
 {actions_section}
 # Searching
-- Scope searches to a specific app using the `sources` parameter wherever it makes sense. Name the app before making the call (e.g., "Checking Google Drive...").
+- Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- For time-scoped queries, use date operators or natural language: "after:2024-06 report", "budget last week", "standup yesterday".
+- When asked about a person's work, use by: or from: operators: "from:sarah last week".
 - Use multiple targeted searches rather than one broad search. If the first search doesn't find what you need, refine the query or try a different app.
 - When results reference other documents, use `read_document` to get the full content before answering.
 
@@ -60,14 +66,66 @@ Connected apps: {connected_apps}
 - Prioritize accuracy over helpfulness. If something looks wrong, say so. Do not confirm the user's assumptions without verifying them first."""
 
 
-def build_chat_system_prompt(
-    sources: list[dict],
-    connector_actions: list[dict] | None = None,
+AGENT_SYSTEM_PROMPT_TEMPLATE = """You are an automated agent running on a schedule. Your task:
+{instructions}
+
+Execute this task now using the tools available to you.
+Do not ask questions — use your best judgment.
+When done, provide a brief summary of what you did and the outcomes.
+
+Current date and time: {current_datetime} (UTC)
+{user_line}Connected apps: {connected_apps}
+{actions_section}
+# Searching
+- Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- Use multiple targeted searches rather than one broad search.
+
+# Taking actions
+- Execute actions directly without asking for confirmation.
+- After an action completes, continue with the next step.
+- Never repeat a failed action with the same parameters. Diagnose the issue first.
+
+# Response style
+- Be direct and concise.
+- Focus on completing the task efficiently."""
+
+
+def _format_datetime(dt: datetime | None = None) -> str:
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    return dt.strftime("%A, %B %d, %Y %H:%M UTC")
+
+
+def _format_user_line(
+    user_name: str | None,
+    user_email: str | None,
+    prefix: str = "User",
 ) -> str:
+    if user_name and user_email:
+        identity = f"{user_name} ({user_email})"
+    elif user_email:
+        identity = user_email
+    elif user_name:
+        identity = user_name
+    else:
+        return ""
+    # Escape braces so .format() doesn't choke on user-supplied strings
+    identity = identity.replace("{", "{{").replace("}", "}}")
+    return f"{prefix}: {identity}\n"
+
+
+def build_agent_system_prompt(
+    agent,
+    sources: list,
+    connector_actions: list | None = None,
+    user_name: str | None = None,
+    user_email: str | None = None,
+) -> str:
+    """Build system prompt for a background agent."""
     seen = set()
     display_names = []
     for source in sources:
-        source_type = source["source_type"]
+        source_type = source.source_type
         if source_type not in seen:
             seen.add(source_type)
             name = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
@@ -80,12 +138,9 @@ def build_chat_system_prompt(
         actions_by_source: dict[str, list[str]] = {}
         for action in connector_actions:
             source_display = SOURCE_DISPLAY_NAMES.get(
-                action.get("source_type", ""), action.get("source_type", "")
+                action.source_type, action.source_type
             )
-            mode_label = (
-                "read" if action.get("mode") == "read" else "write — requires approval"
-            )
-            action_desc = f"  - {action['action_name']}: {action.get('description', '')} [{mode_label}]"
+            action_desc = f"  - {action.action_name}: {action.description}"
             actions_by_source.setdefault(source_display, []).append(action_desc)
 
         actions_lines = ["\nAvailable actions:"]
@@ -95,7 +150,69 @@ def build_chat_system_prompt(
 
         actions_section = "\n".join(actions_lines)
 
+    user_line = _format_user_line(user_name, user_email, prefix="Running on behalf of")
+
+    return AGENT_SYSTEM_PROMPT_TEMPLATE.format(
+        instructions=agent.instructions,
+        current_datetime=_format_datetime(),
+        user_line=user_line,
+        connected_apps=connected_apps,
+        actions_section=actions_section,
+    )
+
+
+def build_chat_system_prompt(
+    sources: list,
+    connector_actions: list | None = None,
+    user_name: str | None = None,
+    user_email: str | None = None,
+) -> str:
+    """Build system prompt from active sources and connector actions.
+
+    Args:
+        sources: list of Source dataclass instances (from db.models)
+        connector_actions: list of ConnectorAction dataclass instances (from tools.connector_handler)
+        user_name: display name of the current user
+        user_email: email of the current user
+    """
+    seen = set()
+    display_names = []
+    for source in sources:
+        source_type = source.source_type
+        if source_type not in seen:
+            seen.add(source_type)
+            name = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
+            display_names.append(name)
+
+    connected_apps = ", ".join(display_names) if display_names else "None"
+
+    actions_section = ""
+    if connector_actions:
+        actions_by_source: dict[str, list[str]] = {}
+        for action in connector_actions:
+            source_display = SOURCE_DISPLAY_NAMES.get(
+                action.source_type, action.source_type
+            )
+            mode_label = (
+                "read" if action.mode == "read" else "write — requires approval"
+            )
+            action_desc = (
+                f"  - {action.action_name}: {action.description} [{mode_label}]"
+            )
+            actions_by_source.setdefault(source_display, []).append(action_desc)
+
+        actions_lines = ["\nAvailable actions:"]
+        for source_name, actions in actions_by_source.items():
+            actions_lines.append(f"{source_name}:")
+            actions_lines.extend(actions)
+
+        actions_section = "\n".join(actions_lines)
+
+    user_line = _format_user_line(user_name, user_email)
+
     return SYSTEM_PROMPT_TEMPLATE.format(
+        current_datetime=_format_datetime(),
+        user_line=user_line,
         connected_apps=connected_apps,
         actions_section=actions_section,
     )

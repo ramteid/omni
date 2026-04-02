@@ -1,12 +1,18 @@
 """SharePoint document library syncer using delta queries."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from omni_connector import SyncContext
 
 from ..graph_client import GraphClient, GraphAPIError
-from ..mappers import map_drive_item_to_document, generate_drive_item_content
+from ..mappers import (
+    map_drive_item_to_document,
+    generate_drive_item_content,
+    _parse_iso,
+)
+from .base import DEFAULT_MAX_AGE_DAYS
 from .onedrive import _is_indexable, _get_extension
 
 logger = logging.getLogger(__name__)
@@ -28,7 +34,13 @@ class SharePointSyncer:
         client: GraphClient,
         ctx: SyncContext,
         state: dict[str, Any],
+        source_config: dict[str, Any] | None = None,
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        self._user_cache = user_cache or {}
+        self._group_cache = group_cache or {}
+
         delta_tokens: dict[str, str] = state.get("delta_tokens", {})
         new_tokens: dict[str, str] = {}
 
@@ -86,6 +98,12 @@ class SharePointSyncer:
             )
             return delta_token
 
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=DEFAULT_MAX_AGE_DAYS)
+            if delta_token is None
+            else None
+        )
+
         for item in items:
             if ctx.is_cancelled():
                 return delta_token
@@ -100,6 +118,11 @@ class SharePointSyncer:
 
             if "folder" in item:
                 continue
+
+            if cutoff:
+                modified = _parse_iso(item.get("lastModifiedDateTime"))
+                if modified and modified < cutoff:
+                    continue
 
             try:
                 await self._process_item(client, site, item, ctx)
@@ -122,35 +145,61 @@ class SharePointSyncer:
         file_name = item.get("name", "")
         extension = _get_extension(file_name)
 
+        drive_id = item.get("parentReference", {}).get("driveId", "unknown")
+        item_id = item["id"]
+
         if _is_indexable(mime_type, extension):
-            content = await self._download_content(client, item)
+            content_id = await self._extract_file_content(
+                client, item, mime_type, file_name, ctx
+            )
         else:
             content = generate_drive_item_content(item, {})
+            content_id = await ctx.content_storage.save(content, "text/plain")
 
-        content_id = await ctx.content_storage.save(content, "text/plain")
+        try:
+            graph_permissions = await client.list_item_permissions(drive_id, item_id)
+        except Exception as e:
+            logger.warning(
+                "[sharepoint] Failed to fetch permissions for %s: %s", item_id, e
+            )
+            graph_permissions = []
         doc = map_drive_item_to_document(
             item=item,
             content_id=content_id,
             source_type="share_point",
+            graph_permissions=graph_permissions,
+            user_cache=self._user_cache,
+            group_cache=self._group_cache,
             site_id=site["id"],
         )
         await ctx.emit(doc)
 
-    async def _download_content(
+    async def _extract_file_content(
         self,
         client: GraphClient,
         item: dict[str, Any],
+        mime_type: str,
+        file_name: str,
+        ctx: SyncContext,
     ) -> str:
+        """Download file and extract text via connector manager. Returns content_id."""
         drive_id = item.get("parentReference", {}).get("driveId")
         item_id = item["id"]
 
         if not drive_id:
-            return generate_drive_item_content(item, {})
+            content = generate_drive_item_content(item, {})
+            return await ctx.content_storage.save(content, "text/plain")
 
         try:
             data = await client.get_binary(
                 f"/drives/{drive_id}/items/{item_id}/content"
             )
-            return data.decode("utf-8", errors="replace")
-        except Exception:
-            return generate_drive_item_content(item, {})
+            return await ctx.content_storage.extract_and_store_content(
+                data, mime_type, file_name
+            )
+        except Exception as e:
+            logger.warning(
+                "[sharepoint] Failed to extract content for %s: %s", item_id, e
+            )
+            content = generate_drive_item_content(item, {})
+            return await ctx.content_storage.save(content, "text/plain")

@@ -9,7 +9,14 @@ import { sha256 } from '@oslojs/crypto/sha2'
 import { encodeHexLowerCase } from '@oslojs/encoding'
 import { userRepository } from '$lib/server/db/users'
 import { SystemFlags } from '$lib/server/system-flags'
-import { getGoogleAuthConfig } from '$lib/server/db/auth-providers'
+import {
+    getGoogleAuthConfig,
+    getOktaAuthConfig,
+    getEntraAuthConfig,
+    isPasswordAuthEnabled,
+} from '$lib/server/db/auth-providers'
+import { loadOktaOAuthService } from '$lib/server/oauth/okta'
+import { loadEntraOAuthService } from '$lib/server/oauth/entra'
 import { verify } from '@node-rs/argon2'
 import type { Actions, PageServerLoad } from './$types.js'
 
@@ -29,39 +36,59 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
     const googleConfig = await getGoogleAuthConfig()
     const googleAuthEnabled = googleConfig?.enabled ?? false
 
+    // Check if Okta SSO is available and enabled
+    const oktaConfig = await getOktaAuthConfig()
+    const oktaAuthEnabled =
+        (oktaConfig?.enabled && (await loadOktaOAuthService()) !== null) ?? false
+
+    // Check if Entra SSO is available and enabled
+    const entraConfig = await getEntraAuthConfig()
+    const entraAuthEnabled =
+        (entraConfig?.enabled && (await loadEntraOAuthService()) !== null) ?? false
+    const passwordAuthEnabled = await isPasswordAuthEnabled()
+
     // Handle OAuth error messages from URL parameters
     const error = url.searchParams.get('error')
-    const errorDetails = url.searchParams.get('details')
 
     if (error) {
-        let errorMessage = 'An error occurred during authentication.'
+        let errorMessage =
+            'An error occurred during authentication. Please try again or contact support.'
 
         switch (error) {
             case 'oauth_not_configured':
                 errorMessage =
-                    'Google Sign-in is not configured. Please contact your administrator.'
+                    'Single sign-on is not configured. Please contact your administrator.'
                 break
             case 'oauth_error':
-                errorMessage = errorDetails || 'An error occurred during Google authentication.'
+                errorMessage =
+                    'Something went wrong during authentication. Please try again or contact support.'
                 break
             case 'domain_not_approved':
-                errorMessage = errorDetails || 'Your domain is not approved for registration.'
+                errorMessage =
+                    'Your domain is not approved for registration. Please contact your administrator.'
                 break
             case 'account_already_linked':
                 errorMessage =
-                    errorDetails || 'This Google account is already linked to another user.'
+                    'This account is already linked to another user. Please contact support.'
                 break
             case 'email_mismatch':
-                errorMessage = errorDetails || 'Email addresses do not match.'
+                errorMessage = 'Email addresses do not match. Please contact support.'
                 break
             case 'rate_limit':
                 errorMessage = 'Too many authentication attempts. Please try again later.'
                 break
             case 'invalid_redirect':
-                errorMessage = 'Invalid redirect URL.'
+                errorMessage = 'Something went wrong. Please try signing in again.'
                 break
             case 'invalid_oauth_response':
-                errorMessage = 'Invalid OAuth response from Google.'
+                errorMessage = 'Something went wrong during authentication. Please try again.'
+                break
+            case 'okta_not_available':
+                errorMessage = 'Okta SSO is not available. Please contact your administrator.'
+                break
+            case 'entra_not_available':
+                errorMessage =
+                    'Microsoft Entra ID SSO is not available. Please contact your administrator.'
                 break
             case 'authentication_required':
                 errorMessage = 'Authentication required.'
@@ -74,6 +101,9 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
         return {
             error: errorMessage,
             googleAuthEnabled,
+            oktaAuthEnabled,
+            entraAuthEnabled,
+            passwordAuthEnabled,
         }
     }
 
@@ -85,6 +115,9 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
         return {
             success: 'Welcome to Omni! Your account has been created successfully.',
             googleAuthEnabled,
+            oktaAuthEnabled,
+            entraAuthEnabled,
+            passwordAuthEnabled,
         }
     }
 
@@ -92,14 +125,25 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
         return {
             success: `Your ${linked} account has been successfully linked.`,
             googleAuthEnabled,
+            oktaAuthEnabled,
+            entraAuthEnabled,
+            passwordAuthEnabled,
         }
     }
 
-    return { googleAuthEnabled }
+    return { googleAuthEnabled, oktaAuthEnabled, entraAuthEnabled, passwordAuthEnabled }
 }
 
 export const actions: Actions = {
     default: async ({ request, cookies }) => {
+        const passwordEnabled = await isPasswordAuthEnabled()
+        if (!passwordEnabled) {
+            return fail(403, {
+                error: 'Password authentication is disabled. Please use an alternative sign-in method.',
+                email: '',
+            })
+        }
+
         const formData = await request.formData()
         const email = formData.get('email') as string
         const password = formData.get('password') as string

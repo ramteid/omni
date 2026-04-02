@@ -13,6 +13,7 @@ use axum::{
     Router,
 };
 use config::ConnectorManagerConfig;
+use redis::Client as RedisClient;
 use shared::{
     telemetry::{self, TelemetryConfig},
     DatabasePool, ObjectStorage,
@@ -27,6 +28,7 @@ use tracing::info;
 #[derive(Clone)]
 pub struct AppState {
     pub db_pool: DatabasePool,
+    pub redis_client: RedisClient,
     pub config: ConnectorManagerConfig,
     pub sync_manager: Arc<SyncManager>,
     pub content_storage: Arc<dyn ObjectStorage>,
@@ -41,12 +43,19 @@ pub fn create_app(state: AppState) -> Router {
         .route("/sync/:id/cancel", post(handlers::cancel_sync))
         .route("/sync/:id/progress", get(handlers::get_sync_progress))
         .route("/schedules", get(handlers::list_schedules))
+        .route("/sources", get(handlers::list_sources))
         .route("/connectors", get(handlers::list_connectors))
         .route("/action", post(handlers::execute_action))
         .route("/actions", get(handlers::list_actions))
+        .route("/resource", post(handlers::read_resource))
+        .route("/resources", get(handlers::list_resources))
+        .route("/prompt", post(handlers::get_prompt))
+        .route("/prompts", get(handlers::list_prompts))
         // SDK endpoints - called by connectors
+        .route("/sdk/register", post(handlers::sdk_register))
         .route("/sdk/events", post(handlers::sdk_emit_event))
         .route("/sdk/content", post(handlers::sdk_store_content))
+        .route("/sdk/extract-content", post(handlers::sdk_extract_content))
         .route("/sdk/sync/:id/heartbeat", post(handlers::sdk_heartbeat))
         .route("/sdk/sync/:id/complete", post(handlers::sdk_complete))
         .route("/sdk/sync/:id/fail", post(handlers::sdk_fail))
@@ -105,25 +114,29 @@ pub async fn run_server() -> AnyhowResult<()> {
 
     let config = ConnectorManagerConfig::from_env();
     info!("Configuration loaded");
-    info!(
-        "Registered connectors: {:?}",
-        config.connector_urls.keys().collect::<Vec<_>>()
-    );
 
     let db_pool = DatabasePool::from_config(&config.database)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create database pool: {}", e))?;
     info!("Database pool initialized");
 
+    let redis_client = RedisClient::open(config.redis.redis_url.clone())?;
+    info!("Redis client initialized");
+
     let content_storage = shared::StorageFactory::from_env(db_pool.pool().clone())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create content storage: {}", e))?;
     info!("Content storage initialized");
 
-    let sync_manager = Arc::new(SyncManager::new(&db_pool, config.clone()));
+    let sync_manager = Arc::new(SyncManager::new(
+        &db_pool,
+        config.clone(),
+        redis_client.clone(),
+    ));
 
     let app_state = AppState {
         db_pool: db_pool.clone(),
+        redis_client,
         config: config.clone(),
         sync_manager: sync_manager.clone(),
         content_storage,

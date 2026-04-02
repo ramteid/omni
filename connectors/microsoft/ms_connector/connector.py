@@ -3,7 +3,8 @@
 import logging
 from typing import Any
 
-from omni_connector import Connector, SyncContext
+from omni_connector import Connector, SearchOperator, SyncContext
+from omni_connector.models import ActionDefinition, ActionResponse
 
 from .auth import MSGraphAuth
 from .graph_client import AuthenticationError, GraphAPIError, GraphClient
@@ -11,6 +12,7 @@ from .syncers.calendar import CalendarSyncer
 from .syncers.mail import MailSyncer
 from .syncers.onedrive import OneDriveSyncer
 from .syncers.sharepoint import SharePointSyncer
+from .syncers.teams import TeamsSyncer
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,7 @@ SOURCE_TYPE_TO_SYNCER = {
     "share_point": "sharepoint",
     "outlook": "mail",
     "outlook_calendar": "calendar",
+    "ms_teams": "teams",
 }
 
 
@@ -35,12 +38,74 @@ class MicrosoftConnector(Connector):
         return "microsoft"
 
     @property
+    def display_name(self) -> str:
+        return "Microsoft"
+
+    @property
     def version(self) -> str:
         return "1.0.0"
 
     @property
+    def source_types(self) -> list[str]:
+        return ["one_drive", "share_point", "outlook", "outlook_calendar", "ms_teams"]
+
+    @property
+    def description(self) -> str:
+        return "Connect to OneDrive, SharePoint, Outlook mail, calendar, and Teams"
+
+    @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
+
+    @property
+    def search_operators(self) -> list[SearchOperator]:
+        return [
+            SearchOperator(
+                operator="from", attribute_key="sender", value_type="person"
+            ),
+        ]
+
+    @property
+    def actions(self) -> list[ActionDefinition]:
+        return [
+            ActionDefinition(
+                name="search_users",
+                description="Search Microsoft 365 users by name or email",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                    },
+                    "required": ["query"],
+                },
+            )
+        ]
+
+    async def execute_action(
+        self,
+        action: str,
+        params: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> ActionResponse:
+        if action != "search_users":
+            return ActionResponse.not_supported(action)
+
+        query = params.get("query", "").strip()
+        if not query:
+            return ActionResponse.success({"users": []})
+
+        try:
+            raw_creds = credentials.get("credentials", credentials)
+            auth = MSGraphAuth.from_credentials(raw_creds)
+            client = GraphClient(auth)
+            try:
+                users = await client.search_users(query, limit=20)
+                return ActionResponse.success({"users": users})
+            finally:
+                await client.close()
+        except Exception as e:
+            logger.exception("search_users action failed")
+            return ActionResponse.failure(str(e))
 
     async def sync(
         self,
@@ -76,13 +141,39 @@ class MicrosoftConnector(Connector):
             await ctx.fail(f"Unknown source type: {ctx.source_type}")
             return
 
+        # Sync group memberships and build ID→email caches for permission resolution
+        fetched_groups = await self._sync_groups(client, ctx)
+        group_cache = {
+            g["id"]: (g.get("mail") or "").lower()
+            for g in fetched_groups
+            if g.get("mail")
+        }
+
+        try:
+            all_users = await client.list_users()
+        except Exception as e:
+            logger.warning("Failed to list users for cache: %s", e)
+            all_users = []
+        user_cache = {
+            u["id"]: (u.get("mail") or u.get("userPrincipalName") or "").lower()
+            for u in all_users
+            if u.get("mail") or u.get("userPrincipalName")
+        }
+
         syncer = self._create_syncer(syncer_key, source_config)
         state = state or {}
 
         logger.info("Starting Microsoft sync (syncer=%s)", syncer_key)
 
         try:
-            result_state = await syncer.sync(client, ctx, state)
+            result_state = await syncer.sync(
+                client,
+                ctx,
+                state,
+                source_config=source_config,
+                user_cache=user_cache,
+                group_cache=group_cache,
+            )
             await ctx.complete(new_state=result_state)
             logger.info(
                 "Sync completed: %d scanned, %d emitted",
@@ -98,13 +189,72 @@ class MicrosoftConnector(Connector):
         finally:
             await client.close()
 
+    async def _sync_groups(
+        self, client: GraphClient, ctx: SyncContext
+    ) -> list[dict[str, Any]]:
+        """Sync Entra ID group memberships. Returns fetched groups for cache building."""
+        try:
+            groups = await client.list_groups()
+        except Exception as e:
+            logger.warning("Failed to list groups: %s. Skipping group sync.", e)
+            return []
+
+        logger.info("Found %d groups, syncing memberships", len(groups))
+        total_members = 0
+
+        for group in groups:
+            group_id = group["id"]
+            group_email = (group.get("mail") or "").lower()
+            group_name = group.get("displayName")
+
+            if not group_email:
+                continue
+
+            try:
+                members = await client.list_group_members(group_id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to list members for group %s: %s", group_email, e
+                )
+                continue
+
+            member_emails = [
+                (m.get("mail") or m.get("userPrincipalName") or "").lower()
+                for m in members
+            ]
+            member_emails = [e for e in member_emails if e]
+
+            total_members += len(member_emails)
+
+            try:
+                await ctx.emit_group_membership(
+                    group_email=group_email,
+                    member_emails=member_emails,
+                    group_name=group_name,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to emit group membership event for %s: %s",
+                    group_email,
+                    e,
+                )
+
+        logger.info(
+            "Group sync complete: %d groups, %d total memberships",
+            len(groups),
+            total_members,
+        )
+        return groups
+
     def _create_syncer(self, syncer_key: str, source_config: dict[str, Any]) -> Any:
         if syncer_key == "onedrive":
             return OneDriveSyncer()
         elif syncer_key == "mail":
             return MailSyncer()
         elif syncer_key == "calendar":
-            return CalendarSyncer(source_config)
+            return CalendarSyncer()
         elif syncer_key == "sharepoint":
             return SharePointSyncer()
+        elif syncer_key == "teams":
+            return TeamsSyncer()
         raise ValueError(f"Unknown syncer key: {syncer_key}")

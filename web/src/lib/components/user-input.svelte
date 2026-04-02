@@ -16,6 +16,7 @@
     import * as ButtonGroup from '$lib/components/ui/button-group'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import type { TypeaheadResult } from '$lib/types/search'
+    import { formatProviderName } from '$lib/utils/providers.js'
 
     interface PopoverItem {
         label: string
@@ -80,19 +81,6 @@
 
     let showModelSelector = $derived(models.length >= 2 && inputMode === 'chat')
 
-    const providerDisplayNames: Record<string, string> = {
-        anthropic: 'Anthropic',
-        openai: 'OpenAI',
-        vllm: 'vLLM',
-        bedrock: 'Bedrock',
-    }
-
-    function formatProviderName(provider: string): string {
-        return (
-            providerDisplayNames[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
-        )
-    }
-
     let groupedModels = $derived(
         Object.entries(
             models.reduce<Record<string, ModelOption[]>>((acc, m) => {
@@ -104,6 +92,10 @@
             }, {}),
         ),
     )
+
+    export function focus() {
+        inputRef?.focus()
+    }
 
     let inputRef: HTMLDivElement
     let popoverContainer: HTMLDivElement | undefined = $state()
@@ -135,8 +127,11 @@
     )
 
     $effect(() => {
-        if (inputRef && value !== inputRef.textContent) {
-            inputRef.textContent = value
+        // Use innerText to match what is extracted in handleInputChange.
+        // This prevents the reactivity loop from triggering while the user is actively typing,
+        // which completely avoids disrupting both cursor positions and Korean IME composition.
+        if (inputRef && value !== inputRef.innerText) {
+            inputRef.innerText = value
         }
     })
 

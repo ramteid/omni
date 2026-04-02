@@ -3,14 +3,24 @@ import { db } from './index'
 import { modelProviders, models } from './schema'
 import type { ModelProvider, Model } from './schema'
 import { ulid } from 'ulid'
+import { encryptConfig, decryptConfig } from '$lib/server/crypto/encryption'
 
-export const MODEL_PROVIDER_TYPES = ['vllm', 'anthropic', 'bedrock', 'openai', 'gemini'] as const
+export const MODEL_PROVIDER_TYPES = [
+    'vllm',
+    'anthropic',
+    'bedrock',
+    'openai',
+    'gemini',
+    'azure_foundry',
+    'vertex_ai',
+] as const
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number]
 
 export interface ModelProviderConfig {
     apiKey?: string | null
     apiUrl?: string | null
     regionName?: string | null
+    projectId?: string | null
 }
 
 export interface CreateProviderInput {
@@ -29,6 +39,7 @@ export interface CreateModelInput {
     modelId: string
     displayName: string
     isDefault?: boolean
+    isSecondary?: boolean
 }
 
 export const PREDEFINED_MODELS: Record<
@@ -57,16 +68,23 @@ export const PREDEFINED_MODELS: Record<
         { modelId: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' },
         { modelId: 'gemini-2.5-flash-lite', displayName: 'Gemini 2.5 Flash Lite' },
     ],
+    azure_foundry: [],
+    vertex_ai: [
+        { modelId: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5' },
+        { modelId: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro' },
+        { modelId: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' },
+    ],
 }
 
 // --- Provider CRUD ---
 
 export async function listActiveProviders(): Promise<ModelProvider[]> {
-    return await db
+    const rows = await db
         .select()
         .from(modelProviders)
         .where(eq(modelProviders.isDeleted, false))
         .orderBy(modelProviders.createdAt)
+    return rows.map((row) => ({ ...row, config: decryptConfig(row.config) }))
 }
 
 export async function getProvider(id: string): Promise<ModelProvider | null> {
@@ -75,7 +93,8 @@ export async function getProvider(id: string): Promise<ModelProvider | null> {
         .from(modelProviders)
         .where(eq(modelProviders.id, id))
         .limit(1)
-    return provider || null
+    if (!provider) return null
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function createProvider(input: CreateProviderInput): Promise<ModelProvider> {
@@ -85,11 +104,11 @@ export async function createProvider(input: CreateProviderInput): Promise<ModelP
             id: ulid(),
             name: input.name,
             providerType: input.providerType,
-            config: input.config,
+            config: encryptConfig(input.config as Record<string, unknown>),
         })
         .returning()
 
-    return provider
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function updateProvider(
@@ -98,7 +117,8 @@ export async function updateProvider(
 ): Promise<ModelProvider | null> {
     const values: Record<string, unknown> = { updatedAt: new Date() }
     if (input.name !== undefined) values.name = input.name
-    if (input.config !== undefined) values.config = input.config
+    if (input.config !== undefined)
+        values.config = encryptConfig(input.config as Record<string, unknown>)
 
     const [updated] = await db
         .update(modelProviders)
@@ -106,7 +126,8 @@ export async function updateProvider(
         .where(eq(modelProviders.id, id))
         .returning()
 
-    return updated || null
+    if (!updated) return null
+    return { ...updated, config: decryptConfig(updated.config) }
 }
 
 export async function deleteProvider(id: string): Promise<boolean> {
@@ -166,6 +187,13 @@ export async function createModel(input: CreateModelInput): Promise<Model> {
             .where(eq(models.isDefault, true))
     }
 
+    if (input.isSecondary) {
+        await db
+            .update(models)
+            .set({ isSecondary: false, updatedAt: new Date() })
+            .where(eq(models.isSecondary, true))
+    }
+
     const [model] = await db
         .insert(models)
         .values({
@@ -174,6 +202,7 @@ export async function createModel(input: CreateModelInput): Promise<Model> {
             modelId: input.modelId,
             displayName: input.displayName,
             isDefault: input.isDefault ?? false,
+            isSecondary: input.isSecondary ?? false,
         })
         .returning()
 
@@ -183,7 +212,7 @@ export async function createModel(input: CreateModelInput): Promise<Model> {
 export async function deleteModel(id: string): Promise<boolean> {
     const [updated] = await db
         .update(models)
-        .set({ isDeleted: true, isDefault: false, updatedAt: new Date() })
+        .set({ isDeleted: true, isDefault: false, isSecondary: false, updatedAt: new Date() })
         .where(eq(models.id, id))
         .returning()
 
@@ -199,6 +228,21 @@ export async function setDefaultModel(id: string): Promise<boolean> {
     const [updated] = await db
         .update(models)
         .set({ isDefault: true, updatedAt: new Date() })
+        .where(and(eq(models.id, id), eq(models.isDeleted, false)))
+        .returning()
+
+    return !!updated
+}
+
+export async function setSecondaryModel(id: string): Promise<boolean> {
+    await db
+        .update(models)
+        .set({ isSecondary: false, updatedAt: new Date() })
+        .where(eq(models.isSecondary, true))
+
+    const [updated] = await db
+        .update(models)
+        .set({ isSecondary: true, updatedAt: new Date() })
         .where(and(eq(models.id, id), eq(models.isDeleted, false)))
         .returning()
 

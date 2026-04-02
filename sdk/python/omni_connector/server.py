@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, status
@@ -13,6 +15,8 @@ from .models import (
     ActionResponse,
     CancelRequest,
     CancelResponse,
+    PromptRequest,
+    ResourceRequest,
     SyncRequest,
     SyncResponse,
 )
@@ -21,6 +25,8 @@ if TYPE_CHECKING:
     from .connector import Connector
 
 logger = logging.getLogger(__name__)
+
+REGISTRATION_INTERVAL_SECONDS = 30
 
 
 class ConnectorServer:
@@ -38,14 +44,53 @@ class ConnectorServer:
         return self._sdk_client
 
 
+def _build_connector_url() -> str:
+    hostname = os.environ.get("CONNECTOR_HOST_NAME")
+    if not hostname:
+        raise RuntimeError(
+            "CONNECTOR_HOST_NAME environment variable is required. "
+            "Set it to this connector's hostname (e.g. the Docker service name)."
+        )
+    port = os.environ.get("PORT")
+    if not port:
+        raise RuntimeError("PORT environment variable is required.")
+    return f"http://{hostname}:{port}"
+
+
 def create_app(connector: "Connector") -> FastAPI:
     """Create FastAPI app for a connector."""
+
+    server = ConnectorServer(connector)
+    connector_url = _build_connector_url()
+
+    if not os.environ.get("CONNECTOR_MANAGER_URL"):
+        raise RuntimeError(
+            "CONNECTOR_MANAGER_URL environment variable is required for connector registration."
+        )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):  # noqa: ARG001
+        async def registration_loop() -> None:
+            while True:
+                try:
+                    manifest = await connector.get_manifest(connector_url=connector_url)
+                    await server.sdk_client.register(manifest.model_dump())
+                    logger.info("Registered with connector manager")
+                except Exception as e:
+                    logger.warning("Registration failed: %s", e)
+                await asyncio.sleep(REGISTRATION_INTERVAL_SECONDS)
+
+        registration_task = asyncio.create_task(registration_loop())
+
+        yield
+
+        registration_task.cancel()
 
     app = FastAPI(
         title=f"Omni {connector.name} Connector",
         version=connector.version,
+        lifespan=lifespan,
     )
-    server = ConnectorServer(connector)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -53,7 +98,8 @@ def create_app(connector: "Connector") -> FastAPI:
 
     @app.get("/manifest")
     async def manifest() -> dict[str, Any]:
-        return connector.get_manifest().model_dump()
+        m = await connector.get_manifest(connector_url=connector_url)
+        return m.model_dump()
 
     @app.post("/sync")
     async def trigger_sync(request: SyncRequest) -> JSONResponse:
@@ -104,6 +150,9 @@ def create_app(connector: "Connector") -> FastAPI:
                     f"Failed to fetch source data: {e}"
                 ).model_dump(),
             )
+
+        # Bootstrap MCP subprocess with credentials (populates tool cache for manifest)
+        await connector.bootstrap_mcp(credentials)
 
         ctx = SyncContext(
             sdk_client=server.sdk_client,
@@ -160,5 +209,45 @@ def create_app(connector: "Connector") -> FastAPI:
         except Exception as e:
             logger.error("Action %s failed: %s", request.action, e)
             return ActionResponse.failure(str(e)).model_dump()
+
+    @app.post("/resource")
+    async def read_resource(request: ResourceRequest) -> JSONResponse:
+        adapter = connector.mcp_adapter
+        if adapter is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"error": "MCP not enabled for this connector"},
+            )
+        logger.info("Resource requested: %s", request.uri)
+        try:
+            env = connector.prepare_mcp_env(request.credentials)
+            result = await adapter.read_resource(request.uri, env=env)
+            return JSONResponse(status_code=status.HTTP_200_OK, content=result)
+        except Exception as e:
+            logger.error("Resource read failed for %s: %s", request.uri, e)
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"error": str(e)},
+            )
+
+    @app.post("/prompt")
+    async def get_prompt(request: PromptRequest) -> JSONResponse:
+        adapter = connector.mcp_adapter
+        if adapter is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"error": "MCP not enabled for this connector"},
+            )
+        logger.info("Prompt requested: %s", request.name)
+        try:
+            env = connector.prepare_mcp_env(request.credentials)
+            result = await adapter.get_prompt(request.name, request.arguments, env=env)
+            return JSONResponse(status_code=status.HTTP_200_OK, content=result)
+        except Exception as e:
+            logger.error("Prompt get failed for %s: %s", request.name, e)
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"error": str(e)},
+            )
 
     return app

@@ -3,11 +3,13 @@
     import { Button } from '$lib/components/ui/button'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
+    import { Checkbox } from '$lib/components/ui/checkbox'
+    import { Badge } from '$lib/components/ui/badge'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
-    import { CheckCircle2, Loader2, Info, Pencil, Trash2, Star, Server, Plus } from '@lucide/svelte'
+    import { Loader2, Info, Pencil, Trash2, Server } from '@lucide/svelte'
     import { cn } from '$lib/utils'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
@@ -15,10 +17,19 @@
     import openaiIcon from '$lib/images/icons/openai.svg'
     import awsIcon from '$lib/images/icons/aws.svg'
     import geminiIcon from '$lib/images/icons/gemini.svg'
+    import azureIcon from '$lib/images/icons/azure.svg'
+    import googleIcon from '$lib/images/icons/google.svg'
 
     let { data }: { data: PageData } = $props()
 
-    type ProviderType = 'vllm' | 'anthropic' | 'bedrock' | 'openai' | 'gemini'
+    type ProviderType =
+        | 'vllm'
+        | 'anthropic'
+        | 'bedrock'
+        | 'openai'
+        | 'gemini'
+        | 'azure_foundry'
+        | 'vertex_ai'
 
     interface ProviderFormState {
         id?: string
@@ -27,6 +38,7 @@
         apiKey: string
         apiUrl: string
         regionName: string
+        projectId: string
     }
 
     interface ModelFormState {
@@ -34,6 +46,7 @@
         modelId: string
         displayName: string
         isDefault: boolean
+        isSecondary: boolean
     }
 
     const emptyProviderForm: ProviderFormState = {
@@ -42,6 +55,7 @@
         apiKey: '',
         apiUrl: '',
         regionName: '',
+        projectId: '',
     }
 
     const emptyModelForm: ModelFormState = {
@@ -49,6 +63,7 @@
         modelId: '',
         displayName: '',
         isDefault: false,
+        isSecondary: false,
     }
 
     let dialogOpen = $state(false)
@@ -60,6 +75,9 @@
     let modelDialogOpen = $state(false)
     let modelFormState = $state<ModelFormState>({ ...emptyModelForm })
     let isModelSubmitting = $state(false)
+
+    let manageMode = $state<Record<string, boolean>>({})
+    let roleForms = $state<Record<string, HTMLFormElement>>({})
 
     let confirmDialogOpen = $state(false)
     let confirmTitle = $state('')
@@ -74,8 +92,9 @@
     }
 
     const showApiKey = (p: ProviderType) => p === 'anthropic' || p === 'openai' || p === 'gemini'
-    const showApiUrl = (p: ProviderType) => p === 'vllm'
-    const showRegion = (p: ProviderType) => p === 'bedrock'
+    const showApiUrl = (p: ProviderType) => p === 'vllm' || p === 'azure_foundry'
+    const showRegion = (p: ProviderType) => p === 'bedrock' || p === 'vertex_ai'
+    const showProjectId = (p: ProviderType) => p === 'vertex_ai'
 
     interface ProviderMeta {
         label: string
@@ -109,15 +128,41 @@
             description: 'Gemini models via the Google AI API',
             icon: geminiIcon,
         },
+        azure_foundry: {
+            label: 'Azure AI Foundry',
+            description: 'OpenAI and Claude models via Azure AI Foundry',
+            icon: azureIcon,
+        },
+        vertex_ai: {
+            label: 'Google Cloud Vertex AI',
+            description: 'Claude and Gemini models via Google Cloud Vertex AI',
+            icon: googleIcon,
+        },
     }
 
-    const providerTypes: ProviderType[] = ['anthropic', 'openai', 'gemini', 'bedrock', 'vllm']
+    const providerTypes: ProviderType[] = [
+        'anthropic',
+        'openai',
+        'gemini',
+        'azure_foundry',
+        'bedrock',
+        'vertex_ai',
+        'vllm',
+    ]
 
     let providerByType = $derived(
         Object.fromEntries(
             providerTypes.map((t) => [t, data.providers.find((p) => p.providerType === t) ?? null]),
         ) as Record<ProviderType, (typeof data.providers)[0] | null>,
     )
+
+    let connectedProviders = $derived(
+        providerTypes
+            .filter((t) => providerByType[t] !== null)
+            .map((t) => ({ type: t, provider: providerByType[t]!, meta: providerMeta[t] })),
+    )
+
+    let unconfiguredTypes = $derived(providerTypes.filter((t) => providerByType[t] === null))
 
     function openSetupDialog(type: ProviderType) {
         editMode = false
@@ -140,6 +185,7 @@
             apiKey: '',
             apiUrl: (provider.config as Record<string, string>).apiUrl || '',
             regionName: (provider.config as Record<string, string>).regionName || '',
+            projectId: (provider.config as Record<string, string>).projectId || '',
         }
         dialogOpen = true
     }
@@ -174,155 +220,255 @@
             </p>
         </div>
 
-        <!-- Provider Cards -->
-        <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
-            {#each providerTypes as type}
-                {@const provider = providerByType[type]}
-                {@const meta = providerMeta[type]}
-                <Card.Root>
-                    <Card.Header class="flex flex-row items-start justify-between space-y-0 pb-2">
-                        <div class="flex items-start gap-3">
-                            {#if meta.icon}
-                                <img src={meta.icon} alt={meta.label} class="h-8 w-8" />
-                            {:else}
-                                <Server class="text-muted-foreground h-8 w-8" />
-                            {/if}
-                            <div>
-                                <Card.Title class="text-lg">
-                                    {meta.label}
-                                </Card.Title>
-                                {#if provider}
-                                    <div class="flex items-center gap-1.5 text-sm text-green-600">
-                                        <CheckCircle2 class="h-3.5 w-3.5" />
-                                        Connected
-                                    </div>
+        <!-- Connected Provider Cards -->
+        {#if connectedProviders.length > 0}
+            <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {#each connectedProviders as { type, provider, meta } (provider.id)}
+                    <Card.Root class="group/card">
+                        <Card.Header class="pb-2">
+                            <div class="flex items-center gap-3">
+                                {#if meta.icon}
+                                    <img src={meta.icon} alt={meta.label} class="h-8 w-8" />
                                 {:else}
-                                    <Card.Description>{meta.description}</Card.Description>
+                                    <Server class="text-muted-foreground h-8 w-8" />
+                                {/if}
+                                <div class="flex items-center gap-2">
+                                    <span class="text-base leading-tight font-semibold">
+                                        {provider.name}
+                                    </span>
+                                    <Badge
+                                        variant="secondary"
+                                        class="border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400">
+                                        <span
+                                            class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-green-500"
+                                        ></span>
+                                        Connected
+                                    </Badge>
+                                </div>
+                            </div>
+                            <Card.Action>
+                                <div
+                                    class="flex items-center gap-1 opacity-0 transition-opacity group-hover/card:opacity-100">
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        class="h-8 w-8 cursor-pointer"
+                                        title="Edit provider"
+                                        onclick={() => openEditDialog(provider)}>
+                                        <Pencil class="h-4 w-4" />
+                                    </Button>
+                                    <form
+                                        method="POST"
+                                        action="?/delete"
+                                        use:enhance={enhanceWithToast}>
+                                        <input type="hidden" name="id" value={provider.id} />
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            class="hover:text-destructive h-8 w-8 cursor-pointer"
+                                            title="Remove provider"
+                                            onclick={(e) => {
+                                                const form = (
+                                                    e.currentTarget as HTMLElement
+                                                ).closest('form')!
+                                                requestConfirm(
+                                                    'Remove Provider',
+                                                    `Are you sure you want to remove "${provider.name}" and all its models? This action cannot be undone.`,
+                                                    form as HTMLFormElement,
+                                                )
+                                            }}>
+                                            <Trash2 class="h-4 w-4" />
+                                        </Button>
+                                    </form>
+                                </div>
+                            </Card.Action>
+                        </Card.Header>
+
+                        <Card.Content class="pb-0">
+                            <!-- Models section header -->
+                            <div class="flex items-center justify-between px-1">
+                                <span
+                                    class="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
+                                    Models
+                                </span>
+                                {#if provider.models.length > 0}
+                                    <Button
+                                        variant="link"
+                                        size="sm"
+                                        class={cn(
+                                            'h-auto cursor-pointer px-1.5 py-0.5 text-xs font-medium transition-opacity',
+                                            manageMode[provider.id]
+                                                ? 'text-primary'
+                                                : 'text-muted-foreground opacity-0 group-hover/card:opacity-100',
+                                        )}
+                                        onclick={() =>
+                                            (manageMode[provider.id] = !manageMode[provider.id])}>
+                                        {manageMode[provider.id] ? 'Done' : 'Manage'}
+                                    </Button>
                                 {/if}
                             </div>
-                        </div>
-                    </Card.Header>
-                    <Card.Content>
-                        {#if provider}
-                            <!-- Models list -->
+
+                            <!-- Model list -->
                             {#if provider.models.length > 0}
-                                <div class="mb-3 space-y-1">
-                                    <p class="text-muted-foreground text-xs font-medium uppercase">
-                                        Models
-                                    </p>
-                                    {#each provider.models as model}
+                                <div class="mt-1 space-y-0.5">
+                                    {#each provider.models as model (model.id)}
+                                        <!-- Hidden forms for role cycling -->
+                                        <form
+                                            method="POST"
+                                            action="?/setDefaultModel"
+                                            use:enhance={enhanceWithToast}
+                                            class="hidden"
+                                            bind:this={roleForms[`default-${model.id}`]}>
+                                            <input type="hidden" name="id" value={model.id} />
+                                        </form>
+                                        <form
+                                            method="POST"
+                                            action="?/setSecondaryModel"
+                                            use:enhance={enhanceWithToast}
+                                            class="hidden"
+                                            bind:this={roleForms[`secondary-${model.id}`]}>
+                                            <input type="hidden" name="id" value={model.id} />
+                                        </form>
+
                                         <div
-                                            class="flex items-center justify-between rounded-md px-2 py-1.5 text-sm">
-                                            <div class="flex items-center gap-2">
-                                                {#if model.isDefault}
-                                                    <Star
-                                                        class="h-3.5 w-3.5 fill-yellow-400 text-yellow-400" />
-                                                {:else}
+                                            class="flex min-h-8 items-center justify-between rounded-md px-1">
+                                            <div class="flex items-center gap-2.5">
+                                                <span
+                                                    class={cn(
+                                                        'block h-2.5 w-2.5 shrink-0 rounded-full',
+                                                        model.isDefault
+                                                            ? 'bg-amber-400'
+                                                            : model.isSecondary
+                                                              ? 'bg-blue-500'
+                                                              : 'bg-muted-foreground/40',
+                                                    )}></span>
+
+                                                <div class="flex items-baseline gap-2">
+                                                    <span class="text-sm font-medium">
+                                                        {model.displayName}
+                                                    </span>
+                                                    {#if model.isDefault}
+                                                        <span
+                                                            class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                                                            Default
+                                                        </span>
+                                                    {:else if model.isSecondary}
+                                                        <span
+                                                            class="text-xs font-medium text-blue-600 dark:text-blue-400">
+                                                            Secondary
+                                                        </span>
+                                                    {/if}
+                                                </div>
+                                            </div>
+
+                                            {#if manageMode[provider.id]}
+                                                <div class="flex items-center gap-1">
+                                                    {#if !model.isDefault}
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            class="h-6 cursor-pointer px-2 text-xs"
+                                                            onclick={() =>
+                                                                roleForms[
+                                                                    `default-${model.id}`
+                                                                ]?.requestSubmit()}>
+                                                            Set default
+                                                        </Button>
+                                                    {/if}
+                                                    {#if !model.isSecondary}
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            class="h-6 cursor-pointer px-2 text-xs"
+                                                            onclick={() =>
+                                                                roleForms[
+                                                                    `secondary-${model.id}`
+                                                                ]?.requestSubmit()}>
+                                                            Set secondary
+                                                        </Button>
+                                                    {/if}
                                                     <form
                                                         method="POST"
-                                                        action="?/setDefaultModel"
-                                                        use:enhance={enhanceWithToast}>
+                                                        action="?/deleteModel"
+                                                        use:enhance={enhanceWithToast}
+                                                        class="flex items-center">
                                                         <input
                                                             type="hidden"
                                                             name="id"
                                                             value={model.id} />
-                                                        <button
-                                                            type="submit"
-                                                            class="cursor-pointer"
-                                                            title="Set as default">
-                                                            <Star
-                                                                class="text-muted-foreground h-3.5 w-3.5 hover:text-yellow-400" />
-                                                        </button>
+                                                        <Button
+                                                            variant="outline"
+                                                            size="icon"
+                                                            class="hover:text-destructive h-6 w-6 cursor-pointer"
+                                                            title="Remove model"
+                                                            onclick={(e) => {
+                                                                const form = (
+                                                                    e.currentTarget as HTMLElement
+                                                                ).closest('form')!
+                                                                requestConfirm(
+                                                                    'Remove Model',
+                                                                    `Are you sure you want to remove "${model.displayName}"? Existing chats using this model will fall back to the default.`,
+                                                                    form as HTMLFormElement,
+                                                                )
+                                                            }}>
+                                                            <Trash2 class="h-3.5 w-3.5" />
+                                                        </Button>
                                                     </form>
-                                                {/if}
-                                                <span>{model.displayName}</span>
-                                                {#if model.isDefault}
-                                                    <span
-                                                        class="bg-primary/10 text-primary rounded-full px-1.5 py-0.5 text-xs">
-                                                        Default
-                                                    </span>
-                                                {/if}
-                                            </div>
-                                            <form
-                                                method="POST"
-                                                action="?/deleteModel"
-                                                use:enhance={enhanceWithToast}>
-                                                <input type="hidden" name="id" value={model.id} />
-                                                <button
-                                                    type="button"
-                                                    class="cursor-pointer text-red-400 hover:text-red-600"
-                                                    title="Remove model"
-                                                    onclick={(e) => {
-                                                        const form = (
-                                                            e.currentTarget as HTMLElement
-                                                        ).closest('form')!
-                                                        requestConfirm(
-                                                            'Remove Model',
-                                                            `Are you sure you want to remove "${model.displayName}"? Existing chats using this model will fall back to the default.`,
-                                                            form as HTMLFormElement,
-                                                        )
-                                                    }}>
-                                                    <Trash2 class="h-3.5 w-3.5" />
-                                                </button>
-                                            </form>
+                                                </div>
+                                            {/if}
                                         </div>
                                     {/each}
                                 </div>
                             {/if}
 
-                            <div class="flex flex-wrap gap-2">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    class="cursor-pointer gap-1"
-                                    onclick={() => openAddModelDialog(provider.id)}>
-                                    <Plus class="h-3 w-3" />
-                                    Add Model
-                                </Button>
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    class="cursor-pointer gap-1"
-                                    onclick={() => openEditDialog(provider)}>
-                                    <Pencil class="h-3 w-3" />
-                                    Edit
-                                </Button>
-                                <form
-                                    method="POST"
-                                    action="?/delete"
-                                    use:enhance={enhanceWithToast}>
-                                    <input type="hidden" name="id" value={provider.id} />
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        class="cursor-pointer gap-1 text-red-600 hover:text-red-700"
-                                        onclick={(e) => {
-                                            const form = (e.currentTarget as HTMLElement).closest(
-                                                'form',
-                                            )!
-                                            requestConfirm(
-                                                'Remove Provider',
-                                                `Are you sure you want to remove "${provider.name}" and all its models? This action cannot be undone.`,
-                                                form as HTMLFormElement,
-                                            )
-                                        }}>
-                                        <Trash2 class="h-3 w-3" />
-                                        Remove
-                                    </Button>
-                                </form>
-                            </div>
-                        {:else}
                             <Button
-                                class="mt-1 cursor-pointer gap-2"
-                                onclick={() => openSetupDialog(type)}>
-                                Connect
+                                variant="ghost"
+                                size="sm"
+                                class="text-muted-foreground hover:text-foreground mt-1 cursor-pointer gap-1.5 text-sm font-medium"
+                                onclick={() => openAddModelDialog(provider.id)}>
+                                <span class="text-base leading-none">+</span>
+                                Add model
                             </Button>
-                        {/if}
-                    </Card.Content>
-                </Card.Root>
-            {/each}
-        </div>
+                        </Card.Content>
+                    </Card.Root>
+                {/each}
+            </div>
+        {/if}
+
+        <!-- Connect a Provider -->
+        {#if unconfiguredTypes.length > 0}
+            <div class="space-y-3">
+                <h2 class="text-lg font-semibold">Connect a Provider</h2>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {#each unconfiguredTypes as type}
+                        {@const meta = providerMeta[type]}
+                        <button
+                            type="button"
+                            class="cursor-pointer text-left"
+                            onclick={() => openSetupDialog(type)}>
+                            <Card.Root
+                                class="hover:border-foreground/20 hover:bg-accent/50 h-full transition-colors">
+                                <Card.Header>
+                                    <div class="flex items-start gap-3">
+                                        {#if meta.icon}
+                                            <img src={meta.icon} alt={meta.label} class="h-8 w-8" />
+                                        {:else}
+                                            <Server class="text-muted-foreground h-8 w-8" />
+                                        {/if}
+                                        <div>
+                                            <Card.Title class="text-sm">{meta.label}</Card.Title>
+                                            <Card.Description class="text-xs">
+                                                {meta.description}
+                                            </Card.Description>
+                                        </div>
+                                    </div>
+                                </Card.Header>
+                            </Card.Root>
+                        </button>
+                    {/each}
+                </div>
+            </div>
+        {/if}
 
         <!-- Provider Setup / Edit Dialog (connection fields only) -->
         <Dialog.Root bind:open={dialogOpen}>
@@ -394,25 +540,77 @@
 
                     {#if showApiUrl(formState.providerType)}
                         <div class="space-y-2">
-                            <Label for="apiUrl">API URL *</Label>
+                            <Label for="apiUrl">
+                                {formState.providerType === 'azure_foundry'
+                                    ? 'Endpoint URL'
+                                    : 'API URL'} *
+                            </Label>
                             <Input
                                 id="apiUrl"
                                 name="apiUrl"
                                 bind:value={formState.apiUrl}
-                                placeholder="http://vllm:8000"
-                                required={formState.providerType === 'vllm'} />
+                                placeholder={formState.providerType === 'azure_foundry'
+                                    ? 'https://<project>.services.ai.azure.com'
+                                    : 'http://vllm:8000'}
+                                required={showApiUrl(formState.providerType)} />
                         </div>
+                    {/if}
+
+                    {#if formState.providerType === 'azure_foundry'}
+                        <Alert.Root>
+                            <Info class="h-4 w-4" />
+                            <Alert.Description>
+                                Authentication uses Azure Managed Identity. Ensure the VM or
+                                container has a managed identity with the Cognitive Services User
+                                role assigned.
+                            </Alert.Description>
+                        </Alert.Root>
                     {/if}
 
                     {#if showRegion(formState.providerType)}
                         <div class="space-y-2">
-                            <Label for="regionName">AWS Region</Label>
+                            <Label for="regionName">
+                                {formState.providerType === 'vertex_ai'
+                                    ? 'GCP Region'
+                                    : 'AWS Region'}
+                                {formState.providerType === 'vertex_ai' ? ' *' : ''}
+                            </Label>
                             <Input
                                 id="regionName"
                                 name="regionName"
                                 bind:value={formState.regionName}
-                                placeholder="us-east-1 (auto-detected if empty)" />
+                                placeholder={formState.providerType === 'vertex_ai'
+                                    ? 'us-central1'
+                                    : 'us-east-1 (auto-detected if empty)'}
+                                required={formState.providerType === 'vertex_ai'} />
                         </div>
+                    {/if}
+
+                    {#if showProjectId(formState.providerType)}
+                        <div class="space-y-2">
+                            <Label for="projectId">GCP Project ID *</Label>
+                            <Input
+                                id="projectId"
+                                name="projectId"
+                                bind:value={formState.projectId}
+                                placeholder="my-gcp-project"
+                                required />
+                        </div>
+                    {/if}
+
+                    {#if formState.providerType === 'vertex_ai'}
+                        <Alert.Root>
+                            <Info class="h-4 w-4" />
+                            <Alert.Description>
+                                Authentication uses Application Default Credentials (ADC). Ensure
+                                the VM or container has a service account with Vertex AI
+                                permissions, or set the GOOGLE_APPLICATION_CREDENTIALS environment
+                                variable.
+                            </Alert.Description>
+                        </Alert.Root>
+                    {/if}
+
+                    {#if formState.providerType === 'bedrock'}
                         <Alert.Root>
                             <Info class="h-4 w-4" />
                             <Alert.Description>
@@ -453,7 +651,7 @@
                 <AlertDialog.Footer>
                     <AlertDialog.Cancel class="cursor-pointer">Cancel</AlertDialog.Cancel>
                     <AlertDialog.Action
-                        class="cursor-pointer bg-red-600 text-white hover:bg-red-700"
+                        class="bg-destructive text-destructive-foreground hover:bg-destructive/90 cursor-pointer"
                         onclick={() => {
                             confirmFormRef?.requestSubmit()
                         }}>
@@ -511,16 +709,25 @@
                     </div>
 
                     <div class="flex items-center gap-2">
-                        <input
-                            type="checkbox"
+                        <Checkbox
                             id="isDefaultModel"
                             name="isDefault"
                             value="true"
                             checked={modelFormState.isDefault}
-                            onchange={(e) =>
-                                (modelFormState.isDefault = (e.target as HTMLInputElement).checked)}
-                            class="h-4 w-4" />
+                            onCheckedChange={(v) => (modelFormState.isDefault = v === true)} />
                         <Label for="isDefaultModel" class="font-normal">Set as default model</Label>
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <Checkbox
+                            id="isSecondaryModel"
+                            name="isSecondary"
+                            value="true"
+                            checked={modelFormState.isSecondary}
+                            onCheckedChange={(v) => (modelFormState.isSecondary = v === true)} />
+                        <Label for="isSecondaryModel" class="font-normal">
+                            Set as secondary (lightweight) model
+                        </Label>
                     </div>
 
                     <Dialog.Footer>

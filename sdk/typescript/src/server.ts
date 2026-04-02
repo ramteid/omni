@@ -7,10 +7,32 @@ import {
   SyncRequestSchema,
   CancelRequestSchema,
   ActionRequestSchema,
+  ResourceRequestSchema,
+  PromptRequestSchema,
   createSyncResponseStarted,
   createSyncResponseError,
   createActionResponseFailure,
 } from './models.js';
+import { getLogger } from './logger.js';
+
+const logger = getLogger('sdk:server');
+
+const REGISTRATION_INTERVAL_MS = 30_000;
+
+function buildConnectorUrl(): string {
+  const hostname = process.env.CONNECTOR_HOST_NAME;
+  if (!hostname) {
+    throw new Error(
+      'CONNECTOR_HOST_NAME environment variable is required. ' +
+      'Set it to this connector\'s hostname (e.g. the Docker service name).'
+    );
+  }
+  const port = process.env.PORT;
+  if (!port) {
+    throw new Error('PORT environment variable is required.');
+  }
+  return `http://${hostname}:${port}`;
+}
 
 export function createServer(connector: Connector): Express {
   const app = express();
@@ -26,12 +48,28 @@ export function createServer(connector: Connector): Express {
     return sdkClient;
   }
 
+  // Start registration loop
+  const connectorUrl = buildConnectorUrl();
+  const registerOnce = async () => {
+    try {
+      const manifest = await connector.getManifest(connectorUrl);
+      await getSdkClient().register(manifest as unknown as Record<string, unknown>);
+      logger.info('Registered with connector manager');
+    } catch (err) {
+      logger.warn({ err }, 'Registration failed');
+    }
+  };
+
+  registerOnce();
+  setInterval(registerOnce, REGISTRATION_INTERVAL_MS);
+
   app.get('/health', (_req: Request, res: Response) => {
     res.json({ status: 'healthy', service: connector.name });
   });
 
-  app.get('/manifest', (_req: Request, res: Response) => {
-    res.json(connector.getManifest());
+  app.get('/manifest', async (_req: Request, res: Response) => {
+    const manifest = await connector.getManifest(connectorUrl);
+    res.json(manifest);
   });
 
   app.post('/sync', async (req: Request, res: Response) => {
@@ -43,7 +81,7 @@ export function createServer(connector: Connector): Express {
 
     const { sync_run_id: syncRunId, source_id: sourceId } = parseResult.data;
 
-    console.log(`Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`);
+    logger.info(`Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`);
 
     if (activeSyncs.has(sourceId)) {
       res.status(409).json(
@@ -69,7 +107,7 @@ export function createServer(connector: Connector): Express {
       if (message.includes('404')) {
         res.status(404).json(createSyncResponseError(`Source not found: ${sourceId}`));
       } else {
-        console.error('Failed to fetch source data:', error);
+        logger.error({ err: error }, 'Failed to fetch source data');
         res.status(500).json(
           createSyncResponseError(`Failed to fetch source data: ${message}`)
         );
@@ -95,11 +133,11 @@ export function createServer(connector: Connector): Express {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`Sync ${syncRunId} failed:`, error);
+        logger.error({ err: error }, `Sync ${syncRunId} failed`);
         try {
           await ctx.fail(message);
         } catch (failError) {
-          console.error('Failed to report sync failure:', failError);
+          logger.error({ err: failError }, 'Failed to report sync failure');
         }
       } finally {
         activeSyncs.delete(sourceId);
@@ -119,7 +157,7 @@ export function createServer(connector: Connector): Express {
     }
 
     const { sync_run_id: syncRunId } = parseResult.data;
-    console.log(`Cancel requested for sync ${syncRunId}`);
+    logger.info(`Cancel requested for sync ${syncRunId}`);
 
     for (const [sourceId, ctx] of activeSyncs.entries()) {
       if (ctx.syncRunId === syncRunId) {
@@ -141,15 +179,69 @@ export function createServer(connector: Connector): Express {
     }
 
     const { action, params, credentials } = parseResult.data;
-    console.log(`Action requested: ${action}`);
+    logger.info(`Action requested: ${action}`);
 
     try {
       const response = await connector.executeAction(action, params, credentials);
       res.json(response);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`Action ${action} failed:`, error);
+      logger.error({ err: error }, `Action ${action} failed`);
       res.json(createActionResponseFailure(message));
+    }
+  });
+
+  app.post('/resource', async (req: Request, res: Response) => {
+    const adapter = await connector.getMcpAdapter();
+    if (!adapter) {
+      res.status(404).json({ error: 'MCP not enabled for this connector' });
+      return;
+    }
+
+    const parseResult = ResourceRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid request body' });
+      return;
+    }
+
+    const { uri, credentials } = parseResult.data;
+    logger.info(`Resource requested: ${uri}`);
+
+    try {
+      connector.prepareMcpEnv(credentials as any);
+      const result = await adapter.readResource(uri);
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, `Resource read failed for ${uri}`);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.post('/prompt', async (req: Request, res: Response) => {
+    const adapter = await connector.getMcpAdapter();
+    if (!adapter) {
+      res.status(404).json({ error: 'MCP not enabled for this connector' });
+      return;
+    }
+
+    const parseResult = PromptRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid request body' });
+      return;
+    }
+
+    const { name, arguments: args, credentials } = parseResult.data;
+    logger.info(`Prompt requested: ${name}`);
+
+    try {
+      connector.prepareMcpEnv(credentials as any);
+      const result = await adapter.getPrompt(name, args as Record<string, string> | undefined);
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, `Prompt get failed for ${name}`);
+      res.status(500).json({ error: message });
     }
   });
 

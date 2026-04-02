@@ -5,8 +5,12 @@ import {
   type DocumentMetadata,
   type DocumentPermissions,
   type ConnectorEventPayload,
+  type GroupMembershipEventPayload,
 } from './models.js';
 import { ContentStorage } from './storage.js';
+import { getLogger } from './logger.js';
+
+const logger = getLogger('sdk:context');
 
 export class SyncContext {
   private readonly client: SdkClient;
@@ -99,8 +103,25 @@ export class SyncContext {
     await this.client.emitEvent(this._syncRunId, this._sourceId, event);
   }
 
+  async emitGroupMembership(
+    groupEmail: string,
+    memberEmails: string[],
+    groupName?: string,
+  ): Promise<void> {
+    const event: GroupMembershipEventPayload = {
+      type: EventType.GROUP_MEMBERSHIP_SYNC,
+      sync_run_id: this._syncRunId,
+      source_id: this._sourceId,
+      group_email: groupEmail,
+      group_name: groupName,
+      member_emails: memberEmails,
+    };
+
+    await this.client.emitEvent(this._syncRunId, this._sourceId, event);
+  }
+
   emitError(externalId: string, error: string): void {
-    console.warn(`Document error for ${externalId}: ${error}`);
+    logger.warn(`Document error for ${externalId}: ${error}`);
   }
 
   async incrementScanned(): Promise<void> {

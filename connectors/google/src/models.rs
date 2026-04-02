@@ -79,17 +79,13 @@ impl From<GoogleDriveFile> for FolderMetadata {
     }
 }
 
-/// Structured attributes for Google Drive files, used for filtering and faceting.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GoogleDriveFileAttributes {
-    pub mime_type: String,
-}
-
-impl GoogleDriveFileAttributes {
-    pub fn into_attributes(self) -> DocumentAttributes {
-        let mut attrs = HashMap::new();
-        attrs.insert("mime_type".into(), json!(self.mime_type));
-        attrs
+pub fn mime_type_to_content_type(mime_type: &str) -> Option<String> {
+    match mime_type {
+        "application/vnd.google-apps.document" => Some("document".to_string()),
+        "application/vnd.google-apps.spreadsheet" => Some("spreadsheet".to_string()),
+        "application/vnd.google-apps.presentation" => Some("presentation".to_string()),
+        "application/pdf" => Some("pdf".to_string()),
+        _ => None,
     }
 }
 
@@ -120,12 +116,6 @@ impl GmailThreadAttributes {
 }
 
 impl GoogleDriveFile {
-    pub fn to_attributes(&self) -> GoogleDriveFileAttributes {
-        GoogleDriveFileAttributes {
-            mime_type: self.mime_type.clone(),
-        }
-    }
-
     pub fn to_connector_event(
         &self,
         sync_run_id: &str,
@@ -190,6 +180,7 @@ impl GoogleDriveFile {
                     .ok()
                     .map(|dt| OffsetDateTime::from_unix_timestamp(dt.timestamp()).unwrap())
             }),
+            content_type: mime_type_to_content_type(&self.mime_type),
             mime_type: Some(self.mime_type.clone()),
             size: self.size.clone(),
             url: self.web_view_link.clone(),
@@ -203,7 +194,7 @@ impl GoogleDriveFile {
             groups,
         };
 
-        let attributes = self.to_attributes().into_attributes();
+        let attributes = HashMap::new();
 
         ConnectorEvent::DocumentCreated {
             sync_run_id: sync_run_id.to_string(),
@@ -392,6 +383,7 @@ pub struct GmailThread {
     pub subject: String,
     pub latest_date: String,
     pub total_messages: usize,
+    pub message_id: Option<String>,
 }
 
 impl GmailThread {
@@ -403,10 +395,18 @@ impl GmailThread {
             subject: String::new(),
             latest_date: String::new(),
             total_messages: 0,
+            message_id: None,
         }
     }
 
     pub fn add_message(&mut self, message: GmailMessage) {
+        // Extract Message-ID from first message for permalink URL
+        if self.message_id.is_none() {
+            if let Some(mid) = self.extract_header_value(&message, "Message-ID") {
+                self.message_id = Some(mid);
+            }
+        }
+
         // Update subject from first message if not set
         if self.subject.is_empty() {
             if let Some(subject) = self.extract_header_value(&message, "Subject") {
@@ -439,28 +439,13 @@ impl GmailThread {
     }
 
     fn extract_participants(&mut self, message: &GmailMessage) {
-        let headers_to_check = ["From", "To", "Cc", "Bcc"];
+        // Gmail API does not expose Bcc headers to other recipients
+        let headers_to_check = ["From", "To", "Cc"];
 
         for header_name in &headers_to_check {
             if let Some(header_value) = self.extract_header_value(message, header_name) {
-                // Parse email addresses from header value
-                // Simple parsing - in production might want more sophisticated email parsing
-                for email in header_value.split(',') {
-                    let email = email.trim();
-                    // Extract email from "Name <email@domain.com>" format
-                    if let Some(start) = email.find('<') {
-                        if let Some(end) = email.find('>') {
-                            if start < end {
-                                let extracted_email = email[start + 1..end].trim().to_lowercase();
-                                if !extracted_email.is_empty() {
-                                    self.participants.insert(extracted_email);
-                                }
-                            }
-                        }
-                    } else if email.contains('@') {
-                        // Direct email format
-                        self.participants.insert(email.to_lowercase());
-                    }
+                for email in parse_email_addresses(&header_value) {
+                    self.participants.insert(email);
                 }
             }
         }
@@ -486,14 +471,13 @@ impl GmailThread {
         // Add subject as the first part
         if !self.subject.is_empty() {
             content_parts.push(format!("Subject: {}", self.subject));
-            content_parts.push(String::new()); // Empty line
+            content_parts.push(String::new());
         }
 
-        // Add each message content
+        // Add each message's text content (attachments are indexed as separate documents)
         for (i, message) in self.messages.iter().enumerate() {
             content_parts.push(format!("=== Message {} ===", i + 1));
 
-            // Add basic message info
             if let Some(from) = self.extract_header_value(message, "From") {
                 content_parts.push(format!("From: {}", from));
             }
@@ -501,9 +485,8 @@ impl GmailThread {
                 content_parts.push(format!("Date: {}", date));
             }
 
-            content_parts.push(String::new()); // Empty line
+            content_parts.push(String::new());
 
-            // Add message content
             match gmail_client.extract_message_content(message) {
                 Ok(message_content) => {
                     if !message_content.trim().is_empty() {
@@ -515,7 +498,7 @@ impl GmailThread {
                 }
             }
 
-            content_parts.push(String::new()); // Empty line between messages
+            content_parts.push(String::new());
         }
 
         Ok(content_parts.join("\n"))
@@ -562,7 +545,7 @@ impl GmailThread {
         sync_run_id: &str,
         source_id: &str,
         content_id: &str,
-        _gmail_client: &crate::gmail::GmailClient,
+        known_groups: &HashSet<String>,
     ) -> Result<ConnectorEvent, anyhow::Error> {
         let mut extra = HashMap::new();
         extra.insert("thread_id".to_string(), json!(self.thread_id));
@@ -581,6 +564,27 @@ impl GmailThread {
             None
         };
 
+        // Build URL using rfc822msgid search for reliable Gmail permalinks.
+        // Gmail web UI uses internal IDs that differ from API thread IDs,
+        // so a search-based URL is the most reliable way to link to a thread.
+        let url = self
+            .message_id
+            .as_ref()
+            .map(|mid| {
+                let clean_id = mid.trim_start_matches('<').trim_end_matches('>');
+                let encoded = urlencoding::encode(clean_id);
+                format!(
+                    "https://mail.google.com/mail/#search/rfc822msgid%3A{}",
+                    encoded
+                )
+            })
+            .or_else(|| {
+                Some(format!(
+                    "https://mail.google.com/mail/#all/{}",
+                    self.thread_id
+                ))
+            });
+
         let metadata = DocumentMetadata {
             title: Some(if self.subject.is_empty() {
                 format!("Gmail Thread {}", self.thread_id)
@@ -590,20 +594,29 @@ impl GmailThread {
             author: None,
             created_at: updated_at,
             updated_at,
+            content_type: Some("email_thread".to_string()),
             mime_type: Some("application/x-gmail-thread".to_string()),
             size: None,
-            url: Some(format!(
-                "https://mail.google.com/mail/u/0/#inbox/{}",
-                self.thread_id
-            )),
+            url,
             path: Some(format!("/Gmail/{}", self.subject)),
             extra: Some(extra),
         };
 
+        // Split participants into users and groups based on known org groups
+        let mut users = Vec::new();
+        let mut groups = Vec::new();
+        for participant in &self.participants {
+            if known_groups.contains(participant) {
+                groups.push(participant.clone());
+            } else {
+                users.push(participant.clone());
+            }
+        }
+
         let permissions = DocumentPermissions {
             public: false,
-            users: self.participants.iter().cloned().collect(),
-            groups: vec![],
+            users,
+            groups,
         };
 
         let attributes = self.to_attributes().into_attributes();
@@ -618,6 +631,59 @@ impl GmailThread {
             attributes: Some(attributes),
         })
     }
+}
+
+/// Parse email addresses from a header value, handling quoted display names
+/// that may contain commas (e.g., `"Smith, John" <john@example.com>`).
+fn parse_email_addresses(header_value: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+
+    for ch in header_value.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                current.push(ch);
+            }
+            ',' if !in_quotes => {
+                if let Some(email) = extract_email(&current) {
+                    results.push(email);
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    // Process the last segment
+    if let Some(email) = extract_email(&current) {
+        results.push(email);
+    }
+
+    results
+}
+
+/// Extract a lowercased email address from a string that may be in
+/// `"Display Name" <email@domain.com>` or bare `email@domain.com` format.
+fn extract_email(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(start) = s.find('<') {
+        if let Some(end) = s.find('>') {
+            if start < end {
+                let email = s[start + 1..end].trim().to_lowercase();
+                if !email.is_empty() && email.contains('@') {
+                    return Some(email);
+                }
+            }
+        }
+    } else if s.contains('@') {
+        return Some(s.to_lowercase());
+    }
+    None
 }
 
 #[cfg(test)]
@@ -683,41 +749,38 @@ mod tests {
                 assert_eq!(permissions.users, vec!["user@example.com".to_string()]);
                 assert!(permissions.groups.is_empty());
 
-                // Check attributes
+                // Attributes should be empty (mime_type moved to metadata)
                 let attrs = attributes.unwrap();
-                assert_eq!(
-                    attrs.get("mime_type").unwrap().as_str().unwrap(),
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                );
+                assert!(attrs.is_empty());
             }
             _ => panic!("Expected DocumentCreated event"),
         }
     }
 
     #[test]
-    fn test_google_drive_file_attributes() {
-        let file = GoogleDriveFile {
-            id: "file123".to_string(),
-            name: "test.pdf".to_string(),
-            mime_type: "application/pdf".to_string(),
-            web_view_link: None,
-            created_time: None,
-            modified_time: None,
-            size: None,
-            parents: None,
-            shared: None,
-            permissions: None,
-            owners: None,
-        };
+    fn test_google_drive_file_content_type_mapping() {
+        let cases = vec![
+            ("application/vnd.google-apps.document", Some("document")),
+            (
+                "application/vnd.google-apps.spreadsheet",
+                Some("spreadsheet"),
+            ),
+            (
+                "application/vnd.google-apps.presentation",
+                Some("presentation"),
+            ),
+            ("application/pdf", Some("pdf")),
+            ("text/plain", None),
+        ];
 
-        let attrs = file.to_attributes();
-        assert_eq!(attrs.mime_type, "application/pdf");
-
-        let doc_attrs = attrs.into_attributes();
-        assert_eq!(
-            doc_attrs.get("mime_type").unwrap().as_str().unwrap(),
-            "application/pdf"
-        );
+        for (mime, expected) in cases {
+            assert_eq!(
+                mime_type_to_content_type(mime).as_deref(),
+                expected,
+                "Failed for MIME type: {}",
+                mime
+            );
+        }
     }
 
     #[test]
@@ -923,36 +986,46 @@ mod tests {
             _ => panic!("Expected DocumentCreated event"),
         }
     }
+
+    #[test]
+    fn test_parse_email_addresses_simple() {
+        let result = parse_email_addresses("alice@example.com, bob@example.com");
+        assert_eq!(result, vec!["alice@example.com", "bob@example.com"]);
+    }
+
+    #[test]
+    fn test_parse_email_addresses_with_display_names() {
+        let result = parse_email_addresses("Alice <alice@example.com>, Bob <bob@example.com>");
+        assert_eq!(result, vec!["alice@example.com", "bob@example.com"]);
+    }
+
+    #[test]
+    fn test_parse_email_addresses_quoted_commas() {
+        let result = parse_email_addresses(
+            r#""Smith, John" <john@example.com>, "Doe, Jane" <jane@example.com>"#,
+        );
+        assert_eq!(result, vec!["john@example.com", "jane@example.com"]);
+    }
+
+    #[test]
+    fn test_parse_email_addresses_mixed() {
+        let result =
+            parse_email_addresses(r#"plain@example.com, "Quoted, Name" <quoted@example.com>"#);
+        assert_eq!(result, vec!["plain@example.com", "quoted@example.com"]);
+    }
+
+    #[test]
+    fn test_gmail_thread_new_has_no_message_id() {
+        let thread = GmailThread::new("t1".to_string());
+        assert!(thread.message_id.is_none());
+    }
 }
 
 // ============================================================================
 // Connector Protocol Models
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<ActionDefinition>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-    #[serde(default = "default_action_mode")]
-    pub mode: String,
-}
-
-fn default_action_mode() -> String {
-    "write".to_string()
-}
-
-// Import SyncRequest and SyncResponse from shared crate
-pub use shared::models::{SyncRequest, SyncResponse};
+pub use shared::models::{ActionDefinition, ConnectorManifest, SyncRequest, SyncResponse};
 
 /// Extension trait for SyncResponse helper methods
 pub trait SyncResponseExt {

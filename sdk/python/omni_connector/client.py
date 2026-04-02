@@ -51,7 +51,7 @@ class SdkClient:
         source_id: str,
         event: ConnectorEvent,
     ) -> None:
-        """Emit a document event to the queue."""
+        """Emit a connector event (document or group membership) to the queue."""
         logger.debug("SDK: Emitting event for sync_run=%s", sync_run_id)
 
         payload = {
@@ -70,6 +70,49 @@ class SdkClient:
             raise SdkClientError(
                 f"Failed to emit event: {response.status_code} - {response.text}"
             )
+
+    async def extract_and_store_content(
+        self,
+        sync_run_id: str,
+        data: bytes,
+        mime_type: str,
+        filename: str | None = None,
+    ) -> str:
+        """Extract text from binary file content and store it, returning content_id.
+
+        The connector manager extracts text based on the MIME type (PDF, DOCX,
+        XLSX, PPTX, HTML, etc.) and stores the result.
+        """
+        logger.debug(
+            "SDK: Extracting content for sync_run=%s, mime=%s, size=%d",
+            sync_run_id,
+            mime_type,
+            len(data),
+        )
+
+        files: dict[str, Any] = {
+            "data": ("file", data, "application/octet-stream"),
+        }
+        form_data: dict[str, str] = {
+            "sync_run_id": sync_run_id,
+            "mime_type": mime_type,
+        }
+        if filename is not None:
+            form_data["filename"] = filename
+
+        client = await self._get_client()
+        response = await client.post(
+            f"{self.base_url}/sdk/extract-content",
+            data=form_data,
+            files=files,
+        )
+
+        if not response.is_success:
+            raise SdkClientError(
+                f"Failed to extract content: {response.status_code} - {response.text}"
+            )
+
+        return response.json()["content_id"]
 
     async def store_content(
         self,
@@ -169,6 +212,21 @@ class SdkClient:
         if not response.is_success:
             raise SdkClientError(
                 f"Failed to mark as failed: {response.status_code} - {response.text}"
+            )
+
+    async def register(self, manifest: dict) -> None:
+        """Register this connector with the connector manager."""
+        logger.debug("SDK: Registering connector")
+
+        client = await self._get_client()
+        response = await client.post(
+            f"{self.base_url}/sdk/register",
+            json=manifest,
+        )
+
+        if not response.is_success:
+            raise SdkClientError(
+                f"Failed to register: {response.status_code} - {response.text}"
             )
 
     async def close(self) -> None:

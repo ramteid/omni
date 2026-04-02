@@ -38,11 +38,13 @@ class Document(BaseModel):
     url: str | None
     source_type: str | None = None
     attributes: dict | None = None
+    metadata: dict | None = None
 
 
 class SearchResult(BaseModel):
     document: Document
     highlights: list[str]
+    source_type: str | None = None
 
 
 class SearchResponse(BaseModel):
@@ -55,6 +57,26 @@ class SearcherError(httpx.HTTPStatusError):
     """Custom error for searcher API call failures."""
 
     pass
+
+
+class PeopleSearchRequest(BaseModel):
+    query: str
+    limit: int = 10
+
+
+class PersonResult(BaseModel):
+    id: str
+    email: str
+    display_name: Optional[str] = None
+    given_name: Optional[str] = None
+    surname: Optional[str] = None
+    job_title: Optional[str] = None
+    department: Optional[str] = None
+    score: float
+
+
+class PeopleSearchResponse(BaseModel):
+    people: list[PersonResult]
 
 
 class SearcherClient:
@@ -124,6 +146,55 @@ class SearcherClient:
         except Exception as e:
             logger.error(f"Call to searcher service failed: {e}")
             raise
+
+    async def search_people(self, request: PeopleSearchRequest) -> PeopleSearchResponse:
+        """Search the people directory using omni-searcher service."""
+        try:
+            logger.info(f"People search with query: {request.query}...")
+            response = await self.client.get(
+                f"{self.searcher_url}/people/search",
+                params={"q": request.query, "limit": request.limit},
+            )
+
+            if response.status_code == 200:
+                result = PeopleSearchResponse.model_validate(response.json())
+                logger.info(f"People search completed: {len(result.people)} results")
+                return result
+            else:
+                logger.error(
+                    f"People search error: {response.status_code} - {response.text}"
+                )
+                raise SearcherError(
+                    message=f"People search failed: {response.status_code} {response.text}",
+                    request=response.request,
+                    response=response,
+                )
+        except SearcherError:
+            raise
+        except Exception as e:
+            logger.error(f"People search failed: {e}")
+            raise
+
+    async def get_attribute_values(
+        self, keys: list[str], limit: int = 25
+    ) -> dict[str, list[str]]:
+        """Fetch distinct values for the given attribute keys from the index."""
+        try:
+            response = await self.client.get(
+                f"{self.searcher_url}/attributes/values",
+                params={"keys": ",".join(keys), "limit": limit},
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("attributes", {})
+            else:
+                logger.error(
+                    f"Attribute values fetch error: {response.status_code} - {response.text}"
+                )
+                return {}
+        except Exception as e:
+            logger.error(f"Failed to fetch attribute values: {e}")
+            return {}
 
     async def close(self):
         """Close the HTTP client"""

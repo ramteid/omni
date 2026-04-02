@@ -2,6 +2,10 @@ import { eq } from 'drizzle-orm'
 import { db } from './index'
 import { authProviders } from './schema'
 import type { AuthProvider } from './schema'
+import { encryptConfig, decryptConfig } from '$lib/server/crypto/encryption'
+import { createLogger } from '$lib/server/logger.js'
+
+const logger = createLogger('auth-providers')
 
 export interface GoogleAuthConfig {
     clientId: string
@@ -14,7 +18,8 @@ export async function getAuthProvider(provider: string): Promise<AuthProvider | 
         .from(authProviders)
         .where(eq(authProviders.provider, provider))
         .limit(1)
-    return row || null
+    if (!row) return null
+    return { ...row, config: decryptConfig(row.config) }
 }
 
 export async function getGoogleAuthConfig(): Promise<{
@@ -33,18 +38,63 @@ export async function getGoogleAuthConfig(): Promise<{
     }
 }
 
+export async function getOktaAuthConfig(): Promise<{
+    enabled: boolean
+    oktaDomain: string
+    clientId: string
+    clientSecret: string
+} | null> {
+    const row = await getAuthProvider('okta')
+    if (!row) return null
+    const config = row.config as { oktaDomain: string; clientId: string; clientSecret: string }
+    return {
+        enabled: row.enabled,
+        oktaDomain: config.oktaDomain || '',
+        clientId: config.clientId || '',
+        clientSecret: config.clientSecret || '',
+    }
+}
+
+export async function getEntraAuthConfig(): Promise<{
+    enabled: boolean
+    tenant: string
+    clientId: string
+    clientSecret: string
+} | null> {
+    const row = await getAuthProvider('entra')
+    if (!row) return null
+    const config = row.config as { tenant?: string; clientId?: string; clientSecret?: string }
+    if (!config.tenant || !config.clientId || !config.clientSecret) {
+        logger.warn('Entra auth provider row exists but has incomplete config')
+        return null
+    }
+    return {
+        enabled: row.enabled,
+        tenant: config.tenant,
+        clientId: config.clientId,
+        clientSecret: config.clientSecret,
+    }
+}
+
+export async function isPasswordAuthEnabled(): Promise<boolean> {
+    const row = await getAuthProvider('password')
+    if (!row) return true
+    return row.enabled
+}
+
 export async function updateAuthProvider(
     provider: string,
     enabled: boolean,
     config: Record<string, unknown>,
     updatedBy: string,
 ): Promise<AuthProvider> {
+    const encryptedConfig = encryptConfig(config)
     const [row] = await db
         .insert(authProviders)
         .values({
             provider,
             enabled,
-            config,
+            config: encryptedConfig,
             updatedBy,
             updatedAt: new Date(),
         })
@@ -52,12 +102,12 @@ export async function updateAuthProvider(
             target: authProviders.provider,
             set: {
                 enabled,
-                config,
+                config: encryptedConfig,
                 updatedBy,
                 updatedAt: new Date(),
             },
         })
         .returning()
 
-    return row
+    return { ...row, config: decryptConfig(row.config) }
 }

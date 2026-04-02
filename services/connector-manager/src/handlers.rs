@@ -1,12 +1,13 @@
 use crate::connector_client::ConnectorClient;
 use crate::models::{
-    ActionRequest, ConnectorInfo, ExecuteActionRequest, ScheduleInfo, SyncProgress,
+    ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
+    ExecuteResourceRequest, PromptRequest, ResourceRequest, ScheduleInfo, SyncProgress,
     TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
 use crate::sync_manager::SyncError;
 use crate::AppState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -15,9 +16,10 @@ use axum::{
     Json,
 };
 use futures::stream::Stream;
+use redis::AsyncCommands;
 use serde_json::json;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{SourceType, SyncType};
+use shared::models::{ConnectorManifest, SearchOperator, SourceType, SyncType};
 use shared::queue::EventQueue;
 use shared::utils;
 use shared::{DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepository};
@@ -222,26 +224,40 @@ pub async fn list_schedules(
     Ok(Json(schedules))
 }
 
+pub async fn list_sources(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<shared::models::Source>>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sources = source_repo
+        .find_all_sources()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(sources))
+}
+
 pub async fn list_connectors(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ConnectorInfo>>, ApiError> {
+    let manifests = get_registered_manifests(&state.redis_client).await;
     let client = ConnectorClient::new();
     let mut connectors = Vec::new();
 
-    for (source_type, url) in &state.config.connector_urls {
-        let healthy = client.health_check(url).await;
-        let manifest = if healthy {
-            client.get_manifest(url).await.ok()
+    for manifest in manifests {
+        let url = manifest.connector_url.clone();
+        let healthy = if !url.is_empty() {
+            client.health_check(&url).await
         } else {
-            None
+            false
         };
 
-        connectors.push(ConnectorInfo {
-            source_type: source_type.clone(),
-            url: url.clone(),
-            healthy,
-            manifest,
-        });
+        for source_type in &manifest.source_types {
+            connectors.push(ConnectorInfo {
+                source_type: source_type.clone(),
+                url: url.clone(),
+                healthy,
+                manifest: Some(manifest.clone()),
+            });
+        }
     }
 
     Ok(Json(connectors))
@@ -256,24 +272,53 @@ pub async fn execute_action(
         request.action, request.source_id
     );
 
-    // Get source to determine connector type
-    let source: Option<(SourceType,)> =
-        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
+    // Get source to determine connector type and config
+    let source: Option<(SourceType, serde_json::Value)> =
+        sqlx::query_as("SELECT source_type, config FROM sources WHERE id = $1")
             .bind(&request.source_id)
             .fetch_optional(state.db_pool.pool())
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let source_type = source
-        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
-        .0;
+    let (source_type, source_config) = source
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let connector_url = state.config.get_connector_url(source_type).ok_or_else(|| {
+    // Look up the connector manifest to get connector_url and read_only flag
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let manifest = manifests
+        .iter()
+        .find(|m| m.source_types.contains(&source_type));
+
+    let connector_url = manifest.map(|m| m.connector_url.clone()).ok_or_else(|| {
         ApiError::NotFound(format!(
-            "Connector not configured for type: {:?}",
+            "Connector not registered for type: {:?}",
             source_type
         ))
     })?;
+
+    // Enforce read_only: block write-mode actions if connector or source is read-only
+    let source_read_only = source_config
+        .get("read_only")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if let Some(m) = manifest {
+        if m.read_only || source_read_only {
+            let action_mode = m
+                .actions
+                .iter()
+                .find(|a| a.name == request.action)
+                .map(|a| a.mode.as_str())
+                .unwrap_or("write");
+
+            if action_mode == "write" {
+                return Err(ApiError::BadRequest(format!(
+                    "Action '{}' is not allowed: source is read-only",
+                    request.action
+                )));
+            }
+        }
+    }
 
     // Get credentials
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
@@ -326,7 +371,7 @@ pub async fn execute_action(
 
     // Use raw response to support binary passthrough
     let response = client
-        .execute_action_raw(connector_url, &action_request)
+        .execute_action_raw(&connector_url, &action_request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -380,24 +425,215 @@ pub async fn execute_action(
 
 pub async fn list_actions(
     State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let client = ConnectorClient::new();
+    // If source_id is provided, check source-level read_only
+    let source_read_only = if let Some(source_id) = params.get("source_id") {
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("SELECT config FROM sources WHERE id = $1")
+                .bind(source_id)
+                .fetch_optional(state.db_pool.pool())
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+        row.and_then(|(config,)| config.get("read_only").and_then(|v| v.as_bool()))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    let manifests = get_registered_manifests(&state.redis_client).await;
     let mut all_actions = Vec::new();
 
-    for (source_type, url) in &state.config.connector_urls {
-        if let Ok(manifest) = client.get_manifest(url).await {
-            for action in manifest.actions {
+    for manifest in manifests {
+        for source_type in &manifest.source_types {
+            for action in &manifest.actions {
+                if (manifest.read_only || source_read_only) && action.mode == "write" {
+                    continue;
+                }
                 all_actions.push(json!({
                     "source_type": source_type,
                     "name": action.name,
                     "description": action.description,
-                    "parameters": action.parameters
+                    "input_schema": action.input_schema,
+                    "mode": action.mode
                 }));
             }
         }
     }
 
     Ok(Json(json!({ "actions": all_actions })))
+}
+
+pub async fn list_resources(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let mut all_resources = Vec::new();
+
+    for manifest in manifests {
+        if !manifest.mcp_enabled {
+            continue;
+        }
+        for source_type in &manifest.source_types {
+            for resource in &manifest.resources {
+                all_resources.push(json!({
+                    "source_type": source_type,
+                    "uri_template": resource.uri_template,
+                    "name": resource.name,
+                    "description": resource.description,
+                    "mime_type": resource.mime_type,
+                }));
+            }
+        }
+    }
+
+    Ok(Json(json!({ "resources": all_resources })))
+}
+
+pub async fn list_prompts(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let mut all_prompts = Vec::new();
+
+    for manifest in manifests {
+        if !manifest.mcp_enabled {
+            continue;
+        }
+        for source_type in &manifest.source_types {
+            for prompt in &manifest.prompts {
+                all_prompts.push(json!({
+                    "source_type": source_type,
+                    "name": prompt.name,
+                    "description": prompt.description,
+                    "arguments": prompt.arguments,
+                }));
+            }
+        }
+    }
+
+    Ok(Json(json!({ "prompts": all_prompts })))
+}
+
+pub async fn read_resource(
+    State(state): State<AppState>,
+    Json(request): Json<ExecuteResourceRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    info!(
+        "Reading resource {} for source {}",
+        request.uri, request.source_id
+    );
+
+    let source: Option<(SourceType,)> =
+        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
+            .bind(&request.source_id)
+            .fetch_optional(state.db_pool.pool())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let source_type = source
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
+        .0;
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+        .await
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source_type
+            ))
+        })?;
+
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let creds = creds_repo
+        .get_by_source_id(&request.source_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Credentials not found for source: {}",
+                request.source_id
+            ))
+        })?;
+
+    let client = ConnectorClient::new();
+    let resource_request = ResourceRequest {
+        uri: request.uri,
+        credentials: json!({
+            "credentials": creds.credentials,
+            "config": creds.config,
+            "principal_email": creds.principal_email,
+        }),
+    };
+
+    let result = client
+        .read_resource(&connector_url, &resource_request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(result))
+}
+
+pub async fn get_prompt(
+    State(state): State<AppState>,
+    Json(request): Json<ExecutePromptRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    info!(
+        "Getting prompt {} for source {}",
+        request.name, request.source_id
+    );
+
+    let source: Option<(SourceType,)> =
+        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
+            .bind(&request.source_id)
+            .fetch_optional(state.db_pool.pool())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let source_type = source
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
+        .0;
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+        .await
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source_type
+            ))
+        })?;
+
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let creds = creds_repo
+        .get_by_source_id(&request.source_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Credentials not found for source: {}",
+                request.source_id
+            ))
+        })?;
+
+    let client = ConnectorClient::new();
+    let prompt_request = PromptRequest {
+        name: request.name,
+        arguments: request.arguments,
+        credentials: json!({
+            "credentials": creds.credentials,
+            "config": creds.config,
+            "principal_email": creds.principal_email,
+        }),
+    };
+
+    let result = client
+        .get_prompt(&connector_url, &prompt_request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(result))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -460,14 +696,134 @@ impl IntoResponse for ApiError {
 }
 
 // ============================================================================
+// Connector Registration
+// ============================================================================
+
+const REGISTRATION_TTL_SECONDS: u64 = 90;
+
+pub async fn sdk_register(
+    State(state): State<AppState>,
+    Json(manifest): Json<ConnectorManifest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    if manifest.connector_id.is_empty() {
+        return Err(ApiError::BadRequest(
+            "connector_id is required for registration".to_string(),
+        ));
+    }
+    if manifest.connector_url.is_empty() {
+        return Err(ApiError::BadRequest(
+            "connector_url is required for registration".to_string(),
+        ));
+    }
+
+    // Validate the connector is reachable before accepting registration
+    let client = ConnectorClient::new();
+    if !client.health_check(&manifest.connector_url).await {
+        return Err(ApiError::BadRequest(format!(
+            "Connector health check failed at {}. Registration rejected.",
+            manifest.connector_url
+        )));
+    }
+
+    let connector_id = &manifest.connector_id;
+
+    info!(
+        "SDK: Registered connector '{}' (source_types: {:?}, url: {})",
+        connector_id, manifest.source_types, manifest.connector_url
+    );
+
+    let manifest_json = serde_json::to_string(&manifest)
+        .map_err(|e| ApiError::Internal(format!("Failed to serialize manifest: {}", e)))?;
+
+    let key = format!("connector:manifest:{}", connector_id);
+
+    let mut conn = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+
+    let _: () = conn
+        .set_ex(&key, &manifest_json, REGISTRATION_TTL_SECONDS)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
+
+    // Aggregate search operators from all registered connectors
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg("connector:manifest:*")
+        .query_async(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let mut all_operators: Vec<SearchOperator> = Vec::new();
+    for k in &keys {
+        if let Ok(val) = conn.get::<_, String>(k).await {
+            if let Ok(m) = serde_json::from_str::<ConnectorManifest>(&val) {
+                all_operators.extend(m.search_operators);
+            }
+        }
+    }
+
+    if let Ok(json) = serde_json::to_string(&all_operators) {
+        let _: Result<(), _> = conn.set("search:operators", json).await;
+    }
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+/// Scan Redis for all registered connector manifests.
+pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<ConnectorManifest> {
+    let mut conn = match redis_client.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Redis connection error: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg("connector:manifest:*")
+        .query_async(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let mut manifests = Vec::new();
+    for key in &keys {
+        if let Ok(val) = conn.get::<_, String>(key).await {
+            if let Ok(m) = serde_json::from_str::<ConnectorManifest>(&val) {
+                manifests.push(m);
+            }
+        }
+    }
+    manifests
+}
+
+/// Look up the connector URL for a given source type from the Redis registry.
+pub async fn get_connector_url_for_source(
+    redis_client: &redis::Client,
+    source_type: SourceType,
+) -> Option<String> {
+    let manifests = get_registered_manifests(redis_client).await;
+    for manifest in manifests {
+        if manifest.source_types.contains(&source_type) {
+            return Some(manifest.connector_url);
+        }
+    }
+    None
+}
+
+// ============================================================================
 // SDK Handlers - Called by connectors
 // ============================================================================
 
 use crate::models::{
     SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
-    SdkCreateSyncResponse, SdkEmitEventRequest, SdkFailRequest, SdkIncrementScannedRequest,
-    SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
-    SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
+    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExtractContentResponse, SdkFailRequest,
+    SdkIncrementScannedRequest, SdkSourceSyncConfigResponse, SdkStatusResponse,
+    SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification,
+    SdkWebhookResponse,
 };
 
 pub async fn sdk_emit_event(
@@ -497,6 +853,105 @@ pub async fn sdk_emit_event(
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
     }))
+}
+
+// TODO: Merge this with sdk_store_content into a single unified content API
+// that accepts both text and binary, deciding extraction based on mime type.
+pub async fn sdk_extract_content(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<SdkExtractContentResponse>, ApiError> {
+    let mut sync_run_id: Option<String> = None;
+    let mut mime_type: Option<String> = None;
+    let mut filename: Option<String> = None;
+    let mut data: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        match field.name() {
+            Some("sync_run_id") => {
+                sync_run_id =
+                    Some(field.text().await.map_err(|e| {
+                        ApiError::BadRequest(format!("Invalid sync_run_id: {}", e))
+                    })?);
+            }
+            Some("mime_type") => {
+                mime_type = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| ApiError::BadRequest(format!("Invalid mime_type: {}", e)))?,
+                );
+            }
+            Some("filename") => {
+                filename = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| ApiError::BadRequest(format!("Invalid filename: {}", e)))?,
+                );
+            }
+            Some("data") => {
+                data = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| ApiError::BadRequest(format!("Failed to read data: {}", e)))?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let sync_run_id =
+        sync_run_id.ok_or_else(|| ApiError::BadRequest("Missing sync_run_id".to_string()))?;
+    let mime_type =
+        mime_type.ok_or_else(|| ApiError::BadRequest("Missing mime_type".to_string()))?;
+    let data = data.ok_or_else(|| ApiError::BadRequest("Missing data".to_string()))?;
+
+    debug!(
+        "SDK: Extracting content for sync_run={}, mime={}, filename={:?}, size={}",
+        sync_run_id,
+        mime_type,
+        filename,
+        data.len()
+    );
+
+    let extracted_text =
+        shared::content_extractor::extract_content(&data, &mime_type, filename.as_deref())
+            .unwrap_or_else(|e| {
+                tracing::warn!("Content extraction failed: {}", e);
+                String::new()
+            });
+
+    let today = time::OffsetDateTime::now_utc();
+    let prefix = format!(
+        "{:04}-{:02}-{:02}/{}",
+        today.year(),
+        today.month() as u8,
+        today.day(),
+        sync_run_id
+    );
+
+    let content = utils::normalize_whitespace(&extracted_text);
+    let content_id = state
+        .content_storage
+        .store_text(&content, Some(&prefix))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to store content: {}", e)))?;
+
+    // Update heartbeat
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .update_activity(&sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+
+    Ok(Json(SdkExtractContentResponse { content_id }))
 }
 
 pub async fn sdk_store_content(
@@ -692,6 +1147,9 @@ pub async fn sdk_get_source_sync_config(
         credentials,
         connector_state: source.connector_state,
         source_type: source.source_type,
+        user_filter_mode: source.user_filter_mode,
+        user_whitelist: source.user_whitelist,
+        user_blacklist: source.user_blacklist,
     }))
 }
 

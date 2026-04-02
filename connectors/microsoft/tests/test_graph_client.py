@@ -61,6 +61,91 @@ async def test_401_refreshes_token_then_fails(graph_client, mock_auth, mock_rout
     assert mock_auth.get_token.call_count >= 2
 
 
+async def test_list_groups(graph_client, mock_router):
+    mock_router.get(url__regex=r".*/groups(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "grp-1",
+                        "displayName": "Engineering",
+                        "mail": "engineering@contoso.com",
+                        "mailEnabled": True,
+                        "securityEnabled": True,
+                    },
+                    {
+                        "id": "grp-2",
+                        "displayName": "Sales",
+                        "mail": "sales@contoso.com",
+                        "mailEnabled": True,
+                        "securityEnabled": False,
+                    },
+                ]
+            },
+        )
+    )
+    groups = await graph_client.list_groups()
+    assert len(groups) == 2
+    assert groups[0]["displayName"] == "Engineering"
+    assert groups[1]["mail"] == "sales@contoso.com"
+
+
+async def test_list_group_members(graph_client, mock_router):
+    mock_router.get(url__regex=r".*/groups/grp-1/members(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "u1",
+                        "displayName": "Alice",
+                        "mail": "alice@contoso.com",
+                        "userPrincipalName": "alice@contoso.com",
+                    },
+                    {
+                        "id": "u2",
+                        "displayName": "Bob",
+                        "mail": "bob@contoso.com",
+                        "userPrincipalName": "bob@contoso.com",
+                    },
+                ]
+            },
+        )
+    )
+    members = await graph_client.list_group_members("grp-1")
+    assert len(members) == 2
+    assert members[0]["mail"] == "alice@contoso.com"
+
+
+async def test_list_item_permissions(graph_client, mock_router):
+    mock_router.get(url__regex=r".*/drives/d1/items/i1/permissions(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "perm-1",
+                        "roles": ["write"],
+                        "grantedToV2": {
+                            "user": {"id": "u1", "displayName": "Alice"},
+                        },
+                    },
+                    {
+                        "id": "perm-2",
+                        "roles": ["read"],
+                        "link": {"scope": "organization", "type": "view"},
+                    },
+                ]
+            },
+        )
+    )
+    perms = await graph_client.list_item_permissions("d1", "i1")
+    assert len(perms) == 2
+    assert perms[0]["grantedToV2"]["user"]["id"] == "u1"
+    assert perms[1]["link"]["scope"] == "organization"
+
+
 async def test_delta_query_with_pagination(graph_client, mock_router):
     page2_url = f"{GRAPH_BASE_URL}/delta?page=2"
 
@@ -90,3 +175,114 @@ async def test_delta_query_with_pagination(graph_client, mock_router):
     items, token = await graph_client.get_delta("/users/u1/drive/root/delta")
     assert len(items) == 2
     assert token is not None
+
+
+async def test_list_teams(graph_client, mock_router):
+    mock_router.get(url__regex=r".*/groups(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "team-1",
+                        "displayName": "Engineering",
+                        "mail": "eng@contoso.com",
+                        "description": "Eng team",
+                    },
+                ]
+            },
+        )
+    )
+    teams = await graph_client.list_teams()
+    assert len(teams) == 1
+    assert teams[0]["displayName"] == "Engineering"
+
+
+async def test_list_team_channels(graph_client, mock_router):
+    mock_router.get(url__regex=r".*/teams/team-1/channels(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "ch-1",
+                        "displayName": "General",
+                        "membershipType": "standard",
+                    },
+                    {
+                        "id": "ch-2",
+                        "displayName": "Secret",
+                        "membershipType": "private",
+                    },
+                ]
+            },
+        )
+    )
+    channels = await graph_client.list_team_channels("team-1")
+    assert len(channels) == 2
+    assert channels[1]["membershipType"] == "private"
+
+
+async def test_channel_messages_delta(graph_client, mock_router):
+    mock_router.get(url__regex=r".*/teams/t1/channels/c1/messages/delta(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "messageType": "message",
+                        "body": {"contentType": "text", "content": "Hello"},
+                    }
+                ],
+                "@odata.deltaLink": f"{GRAPH_BASE_URL}/teams/t1/channels/c1/messages/delta?token=abc",
+            },
+        )
+    )
+    messages, token = await graph_client.get_channel_messages_delta("t1", "c1")
+    assert len(messages) == 1
+    assert token is not None
+
+
+async def test_list_message_replies(graph_client, mock_router):
+    mock_router.get(
+        url__regex=r".*/teams/t1/channels/c1/messages/m1/replies(\?.*)?$"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "r1",
+                        "messageType": "message",
+                        "body": {"contentType": "text", "content": "Reply!"},
+                    }
+                ]
+            },
+        )
+    )
+    replies = await graph_client.list_message_replies("t1", "c1", "m1")
+    assert len(replies) == 1
+    assert replies[0]["id"] == "r1"
+
+
+async def test_resolve_share(graph_client, mock_router):
+    mock_router.get(url__regex=r".*/shares/.*/driveItem(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "item-123",
+                "name": "report.pdf",
+                "file": {"mimeType": "application/pdf"},
+                "parentReference": {
+                    "driveId": "drv-1",
+                    "siteId": "site-1",
+                },
+            },
+        )
+    )
+    item = await graph_client.resolve_share(
+        "https://contoso.sharepoint.com/sites/Eng/Shared Documents/report.pdf"
+    )
+    assert item["id"] == "item-123"
+    assert item["parentReference"]["siteId"] == "site-1"

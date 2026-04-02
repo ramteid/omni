@@ -6,6 +6,7 @@ from typing import Optional
 
 from asyncpg import Pool
 
+from crypto import decrypt_config
 from .connection import get_db_pool
 from .models import ModelRecord
 
@@ -27,6 +28,7 @@ class ModelProviderRecord:
         config = row["config"]
         if isinstance(config, str):
             config = json.loads(config)
+        config = decrypt_config(config)
         return cls(
             id=row["id"].strip(),
             name=row["name"],
@@ -86,7 +88,7 @@ class ModelsRepository:
         pool = await self._get_pool()
         query = """
             SELECT m.id, m.model_provider_id, m.model_id, m.display_name,
-                   m.is_default, m.is_deleted, m.created_at, m.updated_at,
+                   m.is_default, m.is_secondary, m.is_deleted, m.created_at, m.updated_at,
                    mp.provider_type, mp.config
             FROM models m
             JOIN model_providers mp ON m.model_provider_id = mp.id
@@ -101,7 +103,7 @@ class ModelsRepository:
         pool = await self._get_pool()
         query = """
             SELECT m.id, m.model_provider_id, m.model_id, m.display_name,
-                   m.is_default, m.is_deleted, m.created_at, m.updated_at,
+                   m.is_default, m.is_secondary, m.is_deleted, m.created_at, m.updated_at,
                    mp.provider_type, mp.config
             FROM models m
             JOIN model_providers mp ON m.model_provider_id = mp.id
@@ -117,7 +119,7 @@ class ModelsRepository:
         pool = await self._get_pool()
         query = """
             SELECT m.id, m.model_provider_id, m.model_id, m.display_name,
-                   m.is_default, m.is_deleted, m.created_at, m.updated_at,
+                   m.is_default, m.is_secondary, m.is_deleted, m.created_at, m.updated_at,
                    mp.provider_type, mp.config
             FROM models m
             JOIN model_providers mp ON m.model_provider_id = mp.id

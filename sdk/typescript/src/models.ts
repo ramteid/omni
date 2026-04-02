@@ -10,6 +10,7 @@ export const EventType = {
   DOCUMENT_CREATED: 'document_created',
   DOCUMENT_UPDATED: 'document_updated',
   DOCUMENT_DELETED: 'document_deleted',
+  GROUP_MEMBERSHIP_SYNC: 'group_membership_sync',
 } as const;
 export type EventType = (typeof EventType)[keyof typeof EventType];
 
@@ -20,6 +21,7 @@ export const DocumentMetadataSchema = z.object({
   updated_at: z.string().datetime().optional(),
   mime_type: z.string().optional(),
   size: z.string().optional(),
+  content_type: z.string().optional(),
   url: z.string().optional(),
   path: z.string().optional(),
   extra: z.record(z.unknown()).optional(),
@@ -55,26 +57,69 @@ export const ConnectorEventSchema = z.object({
 });
 export type ConnectorEvent = z.infer<typeof ConnectorEventSchema>;
 
-export const ActionParameterSchema = z.object({
-  type: z.string(),
-  required: z.boolean().default(false),
-  description: z.string().optional(),
+export const GroupMembershipEventSchema = z.object({
+  type: z.literal('group_membership_sync'),
+  sync_run_id: z.string(),
+  source_id: z.string(),
+  group_email: z.string(),
+  group_name: z.string().optional(),
+  member_emails: z.array(z.string()).default([]),
 });
-export type ActionParameter = z.infer<typeof ActionParameterSchema>;
+export type GroupMembershipEvent = z.infer<typeof GroupMembershipEventSchema>;
 
 export const ActionDefinitionSchema = z.object({
   name: z.string(),
   description: z.string(),
-  parameters: z.record(ActionParameterSchema).default({}),
+  input_schema: z.record(z.any()).default({ type: 'object', properties: {} }),
   mode: z.enum(['read', 'write']).default('write'),
 });
 export type ActionDefinition = z.infer<typeof ActionDefinitionSchema>;
 
+export const SearchOperatorSchema = z.object({
+  operator: z.string(),
+  attribute_key: z.string(),
+  value_type: z.string().default('text'),  // "person", "text", "datetime"
+});
+export type SearchOperator = z.infer<typeof SearchOperatorSchema>;
+
+export const McpResourceDefinitionSchema = z.object({
+  uri_template: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  mime_type: z.string().optional(),
+});
+export type McpResourceDefinition = z.infer<typeof McpResourceDefinitionSchema>;
+
+export const McpPromptArgumentSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  required: z.boolean().default(false),
+});
+export type McpPromptArgument = z.infer<typeof McpPromptArgumentSchema>;
+
+export const McpPromptDefinitionSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  arguments: z.array(McpPromptArgumentSchema).default([]),
+});
+export type McpPromptDefinition = z.infer<typeof McpPromptDefinitionSchema>;
+
 export const ConnectorManifestSchema = z.object({
   name: z.string(),
+  display_name: z.string(),
   version: z.string(),
   sync_modes: z.array(z.string()),
+  connector_id: z.string(),
+  connector_url: z.string(),
+  source_types: z.array(z.string()).default([]),
+  description: z.string().optional(),
   actions: z.array(ActionDefinitionSchema).default([]),
+  search_operators: z.array(SearchOperatorSchema).default([]),
+  extra_schema: z.record(z.unknown()).optional(),
+  attributes_schema: z.record(z.unknown()).optional(),
+  mcp_enabled: z.boolean().default(false),
+  resources: z.array(McpResourceDefinitionSchema).default([]),
+  prompts: z.array(McpPromptDefinitionSchema).default([]),
 });
 export type ConnectorManifest = z.infer<typeof ConnectorManifestSchema>;
 
@@ -137,8 +182,21 @@ export function createActionResponseNotSupported(action: string): ActionResponse
   return { status: 'error', error: `Action not supported: ${action}` };
 }
 
-export interface ConnectorEventPayload {
-  type: EventType;
+export const ResourceRequestSchema = z.object({
+  uri: z.string(),
+  credentials: z.record(z.unknown()).default({}),
+});
+export type ResourceRequest = z.infer<typeof ResourceRequestSchema>;
+
+export const PromptRequestSchema = z.object({
+  name: z.string(),
+  arguments: z.record(z.unknown()).optional(),
+  credentials: z.record(z.unknown()).default({}),
+});
+export type PromptRequest = z.infer<typeof PromptRequestSchema>;
+
+export interface DocumentEventPayload {
+  type: typeof EventType.DOCUMENT_CREATED | typeof EventType.DOCUMENT_UPDATED | typeof EventType.DOCUMENT_DELETED;
   sync_run_id: string;
   source_id: string;
   document_id: string;
@@ -148,7 +206,29 @@ export interface ConnectorEventPayload {
   attributes?: Record<string, unknown>;
 }
 
+export interface GroupMembershipEventPayload {
+  type: typeof EventType.GROUP_MEMBERSHIP_SYNC;
+  sync_run_id: string;
+  source_id: string;
+  group_email: string;
+  group_name?: string;
+  member_emails: string[];
+}
+
+export type ConnectorEventPayload = DocumentEventPayload | GroupMembershipEventPayload;
+
 export function serializeConnectorEvent(event: ConnectorEventPayload): Record<string, unknown> {
+  if (event.type === EventType.GROUP_MEMBERSHIP_SYNC) {
+    return {
+      type: event.type,
+      sync_run_id: event.sync_run_id,
+      source_id: event.source_id,
+      group_email: event.group_email,
+      group_name: event.group_name,
+      member_emails: event.member_emails,
+    };
+  }
+
   const base: Record<string, unknown> = {
     type: event.type,
     sync_run_id: event.sync_run_id,

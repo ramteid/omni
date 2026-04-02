@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from enum import Enum
 
+from crypto import decrypt_config
+
 
 @dataclass
 class User:
@@ -77,6 +79,7 @@ class ModelRecord:
     model_id: str
     display_name: str
     is_default: bool
+    is_secondary: bool
     is_deleted: bool
     provider_type: str
     config: dict
@@ -88,17 +91,38 @@ class ModelRecord:
         config = row["config"]
         if isinstance(config, str):
             config = json.loads(config)
+        config = decrypt_config(config)
         return cls(
             id=row["id"].strip(),
             model_provider_id=row["model_provider_id"].strip(),
             model_id=row["model_id"],
             display_name=row["display_name"],
             is_default=row["is_default"],
+            is_secondary=row["is_secondary"],
             is_deleted=row["is_deleted"],
             provider_type=row["provider_type"],
             config=config,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+
+@dataclass
+class Source:
+    id: str
+    name: str
+    source_type: str
+    is_active: bool
+    is_deleted: bool
+
+    @classmethod
+    def from_row(cls, row: dict) -> "Source":
+        return cls(
+            id=row["id"],
+            name=row["name"],
+            source_type=row["source_type"],
+            is_active=row["is_active"],
+            is_deleted=row["is_deleted"],
         )
 
 

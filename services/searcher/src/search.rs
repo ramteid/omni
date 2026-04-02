@@ -1,11 +1,17 @@
 use crate::models::{
     RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
 };
+use crate::operator_registry::OperatorRegistry;
+use crate::query_parser;
+use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
-use shared::models::{ChunkResult, Document};
+use shared::db::repositories::{
+    DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
+};
+use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
+use shared::SourceType;
 use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
@@ -24,6 +30,8 @@ pub struct SearchEngine {
     ai_client: AIClient,
     content_storage: Arc<dyn ObjectStorage>,
     config: SearcherConfig,
+    person_repo: PersonRepository,
+    operator_registry: Arc<OperatorRegistry>,
 }
 
 impl SearchEngine {
@@ -34,8 +42,10 @@ impl SearchEngine {
         redis_client: RedisClient,
         ai_client: AIClient,
         config: SearcherConfig,
+        operator_registry: Arc<OperatorRegistry>,
     ) -> Result<Self> {
         let content_storage = StorageFactory::from_env(db_pool.pool().clone()).await?;
+        let person_repo = PersonRepository::new(db_pool.pool());
 
         Ok(Self {
             db_pool,
@@ -43,7 +53,30 @@ impl SearchEngine {
             ai_client,
             content_storage,
             config,
+            person_repo,
+            operator_registry,
         })
+    }
+
+    async fn populate_source_types(&self, results: &mut [SearchResult]) {
+        let source_ids: Vec<String> = results
+            .iter()
+            .map(|r| r.document.source_id.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let source_repo = SourceRepository::new(self.db_pool.pool());
+        match source_repo.fetch_source_type_map(&source_ids).await {
+            Ok(type_map) => {
+                for result in results.iter_mut() {
+                    result.source_type = type_map.get(&result.document.source_id).cloned();
+                }
+            }
+            Err(e) => {
+                info!("Failed to fetch source types: {}", e);
+            }
+        }
     }
 
     fn prepare_document_for_response(&self, mut doc: Document) -> Document {
@@ -53,8 +86,6 @@ impl SearchEngine {
         if let Some(url_str) = &doc.url {
             if doc.content_type.is_some() {
                 let mut metadata_parts = Vec::new();
-                // Note: source_type would go here if we had it
-                // For now, we only add content_type
                 if let Some(ref ct) = doc.content_type {
                     metadata_parts.push(ct.clone());
                 }
@@ -84,9 +115,14 @@ impl SearchEngine {
             request.search_mode()
         );
 
+        let mut request = request;
+        request.document_id = request.document_id.filter(|s| !s.trim().is_empty());
+        request.user_email = request.user_email.filter(|s| !s.trim().is_empty());
+        request.user_id = request.user_id.filter(|s| !s.trim().is_empty());
+
         // In case the request contains only user_id, populate user_email for permission filtering
         let user_repo = UserRepository::new(self.db_pool.pool());
-        let request = match (&request.user_id, &request.user_email) {
+        let mut request = match (&request.user_id, &request.user_email) {
             (Some(user_id), None) => {
                 info!("Search request has user_id but no email, fetching email from DB for user ID: {}", user_id);
                 let res = user_repo.find_by_id(user_id.clone()).await;
@@ -107,10 +143,78 @@ impl SearchEngine {
             _ => request,
         };
 
+        // Resolve user's group memberships for permission filtering
+        let user_groups = if let Some(email) = request.user_email() {
+            let group_repo = GroupRepository::new(self.db_pool.pool());
+            group_repo
+                .find_groups_for_user(email.as_str())
+                .await
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+
         // Handle document_id filter for read_document tool
         if let Some(document_id) = &request.document_id {
             info!("Document ID filter detected: {}", document_id);
             return self.read_document_by_id(document_id, &request).await;
+        }
+
+        // Parse query for structured operators (from:, in:, before:, etc.)
+        let parsed = query_parser::parse(
+            &request.query,
+            &self.person_repo as &dyn query_parser::PersonLookup,
+            &self.operator_registry,
+        )
+        .await;
+        info!("Parsed query: {:?}", parsed);
+        let has_parsed_filters = !parsed.attribute_filters.is_empty()
+            || !parsed.source_types.is_empty()
+            || !parsed.boosted_source_types.is_empty()
+            || !parsed.content_types.is_empty()
+            || parsed.date_filter.is_some()
+            || !parsed.person_filters.is_empty()
+            || !parsed.person_boosts.is_empty();
+
+        // Preserve the original query (with operators) for display in the response
+        request
+            .original_user_query
+            .get_or_insert(request.query.clone());
+        request.query = parsed.cleaned_query;
+
+        // Merge parsed attribute filters
+        if !parsed.attribute_filters.is_empty() {
+            let filters = request.attribute_filters.get_or_insert_with(HashMap::new);
+            for (key, filter) in parsed.attribute_filters {
+                filters.entry(key).or_insert(filter);
+            }
+        }
+
+        // Merge parsed content types
+        if !parsed.content_types.is_empty() {
+            let cts = request.content_types.get_or_insert_with(Vec::new);
+            for ct in parsed.content_types {
+                if !cts.contains(&ct) {
+                    cts.push(ct);
+                }
+            }
+        }
+
+        // Merge parsed source types
+        if !parsed.source_types.is_empty() {
+            let sources = request.source_types.get_or_insert_with(Vec::new);
+            for source in parsed.source_types {
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+            }
+        }
+
+        if parsed.date_filter.is_some() {
+            request.date_filter = parsed.date_filter;
+        }
+        if !parsed.person_filters.is_empty() {
+            request.person_filters = Some(parsed.person_filters);
         }
 
         // Generate cache key based on request parameters
@@ -120,71 +224,165 @@ impl SearchEngine {
         if let Ok(mut conn) = self.redis_client.get_multiplexed_async_connection().await {
             if let Ok(cached_response) = conn.get::<_, String>(&cache_key).await {
                 if let Ok(response) = serde_json::from_str::<SearchResponse>(&cached_response) {
-                    info!("Cache hit for query: '{}'", request.query);
+                    info!("Cache hit for request: {:?}", request);
                     return Ok(response);
                 }
             }
         }
 
         let repo = DocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
         let limit = request.limit();
 
-        if request.query.trim().is_empty() {
+        if request.query.trim().is_empty() && !has_parsed_filters {
             return Err(anyhow::anyhow!("Search query cannot be empty"));
         }
 
-        let source_ids = repo
-            .fetch_active_source_ids(request.source_types.as_deref())
-            .await?;
+        let all_sources = repo.fetch_active_sources().await?;
+        let all_source_ids: Vec<String> = all_sources.iter().map(|(id, _)| id.clone()).collect();
+        let filtered_source_ids: Vec<String> = if let Some(ref st) = request.source_types {
+            all_sources
+                .iter()
+                .filter(|(_, source_type)| st.contains(source_type))
+                .map(|(id, _)| id.clone())
+                .collect()
+        } else {
+            all_source_ids.clone()
+        };
 
         let search_future = async {
             let start_ts = Instant::now();
             let res = match request.search_mode() {
-                SearchMode::Fulltext => self.fulltext_search(&repo, &request, &source_ids).await,
+                SearchMode::Fulltext => {
+                    self.fulltext_search(&search_repo, &request, &filtered_source_ids, &user_groups)
+                        .await
+                }
                 SearchMode::Semantic => self.semantic_search(&request).await,
-                SearchMode::Hybrid => self.hybrid_search(&request).await,
+                SearchMode::Hybrid => self.hybrid_search(&request, &user_groups).await,
             };
 
             debug!("Search future completed in: {:?}", start_ts.elapsed());
             res
         };
 
-        let facets_future = async {
+        // Unfiltered facets: query + permissions only, no source_type/date/person/content filters
+        let unfiltered_facets_future = async {
             if request.include_facets() {
                 let start_ts = Instant::now();
-                let content_types = request.content_types.as_deref();
-                let attribute_filters = request.attribute_filters.as_ref();
-                let facets = repo
+                let facets = search_repo
                     .get_facet_counts(
                         &request.query,
-                        &source_ids,
-                        content_types,
-                        attribute_filters,
+                        &all_source_ids,
+                        None,
+                        None,
                         request.user_email().map(|e| e.as_str()),
+                        &user_groups,
+                        None,
+                        None,
                     )
                     .await
                     .unwrap_or_else(|e| {
-                        info!("Failed to get facet counts: {}", e);
+                        info!("Failed to get unfiltered facet counts: {}", e);
                         vec![]
                     });
 
-                debug!("Facets fetched in {:?}", start_ts.elapsed());
+                debug!("Unfiltered facets fetched in {:?}", start_ts.elapsed());
                 facets
             } else {
-                debug!("Facets not requested, returning empty array.");
                 vec![]
             }
         };
 
-        let (search_result, facets) = tokio::join!(search_future, facets_future);
-        let results = search_result?;
-        // TODO: this will need to change once we introduce more facets beyond just source_type
-        let total_count = facets
+        // Filtered facets: used only for total_count (pagination)
+        let filtered_facets_future = async {
+            if request.include_facets() {
+                let start_ts = Instant::now();
+                let facets = search_repo
+                    .get_facet_counts(
+                        &request.query,
+                        &filtered_source_ids,
+                        request.content_types.as_deref(),
+                        request.attribute_filters.as_ref(),
+                        request.user_email().map(|e| e.as_str()),
+                        &user_groups,
+                        request.date_filter.as_ref(),
+                        request.person_filters.as_deref(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        info!("Failed to get filtered facet counts: {}", e);
+                        vec![]
+                    });
+
+                debug!("Filtered facets fetched in {:?}", start_ts.elapsed());
+                facets
+            } else {
+                vec![]
+            }
+        };
+
+        let (search_result, facets, filtered_facets) = tokio::join!(
+            search_future,
+            unfiltered_facets_future,
+            filtered_facets_future
+        );
+        let mut results = search_result?;
+
+        // Apply source boost for implicit source words (e.g. "standup slack")
+        if !parsed.boosted_source_types.is_empty() {
+            let boosted_source_ids: Vec<String> = all_sources
+                .iter()
+                .filter(|(_, st)| parsed.boosted_source_types.contains(st))
+                .map(|(id, _)| id.clone())
+                .collect();
+            if !boosted_source_ids.is_empty() {
+                const SOURCE_BOOST_MULTIPLIER: f32 = 1.5;
+                for result in &mut results {
+                    if boosted_source_ids.contains(&result.document.source_id) {
+                        result.score *= SOURCE_BOOST_MULTIPLIER;
+                    }
+                }
+            }
+        }
+
+        // Apply person boost for natural language patterns (e.g. "emails from john")
+        if !parsed.person_boosts.is_empty() {
+            const PERSON_BOOST_MULTIPLIER: f32 = 2.0;
+            let boosts_lower: Vec<String> = parsed
+                .person_boosts
+                .iter()
+                .map(|p| p.to_lowercase())
+                .collect();
+            for result in &mut results {
+                if let Some(author) = result
+                    .document
+                    .metadata
+                    .get("author")
+                    .and_then(|a| a.as_str())
+                {
+                    let author_lower = author.to_lowercase();
+                    if boosts_lower.iter().any(|p| author_lower.contains(p)) {
+                        result.score *= PERSON_BOOST_MULTIPLIER;
+                    }
+                }
+            }
+        }
+
+        // Re-sort if any boosts were applied
+        if !parsed.boosted_source_types.is_empty() || !parsed.person_boosts.is_empty() {
+            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        }
+        let total_count: i64 = filtered_facets
             .iter()
-            .flat_map(|f| f.values.iter().map(|fv| fv.count))
+            .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
             .sum();
         let has_more = total_count >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
+
+        self.populate_source_types(&mut results).await;
+
+        // Build active_filters from merged request state
+        let active_filters = build_active_filters(&request);
 
         info!(
             "Search completed in {}ms, found {} results",
@@ -197,11 +395,19 @@ impl SearchEngine {
             total_count,
             query_time_ms: query_time,
             has_more,
-            query: request.query.clone(),
+            query: request
+                .original_user_query
+                .clone()
+                .unwrap_or(request.query.clone()),
             facets: if facets.is_empty() {
                 None
             } else {
                 Some(facets)
+            },
+            active_filters: if active_filters.is_empty() {
+                None
+            } else {
+                Some(active_filters)
             },
         };
 
@@ -217,9 +423,10 @@ impl SearchEngine {
 
     async fn fulltext_search(
         &self,
-        repo: &DocumentRepository,
+        repo: &SearchDocumentRepository,
         request: &SearchRequest,
         source_ids: &[String],
+        user_groups: &[String],
     ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
         let content_types = request.content_types.as_deref();
@@ -235,7 +442,10 @@ impl SearchEngine {
                 request.limit(),
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
+                user_groups,
                 request.document_id.as_deref(),
+                request.date_filter.as_ref(),
+                request.person_filters.as_deref(),
                 self.config.recency_boost_weight,
                 self.config.recency_half_life_days,
             )
@@ -264,6 +474,7 @@ impl SearchEngine {
                 highlights,
                 match_type: "fulltext".to_string(),
                 content: None,
+                source_type: None,
             });
         }
 
@@ -355,8 +566,7 @@ impl SearchEngine {
                 }
 
                 // Sort by similarity score (highest first)
-                chunk_highlights
-                    .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                chunk_highlights.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
 
                 // Extract just the snippets in sorted order, limited to top 5
                 let all_highlights: Vec<String> = chunk_highlights
@@ -371,17 +581,14 @@ impl SearchEngine {
                     score: max_score,
                     highlights: all_highlights,
                     match_type: "semantic".to_string(),
-                    content: None, // Using highlights instead of single content snippet
+                    content: None,
+                    source_type: None,
                 });
             }
         }
 
         // Sort results by score in descending order
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
         info!(
             "Semantic search completed in {}ms",
@@ -423,7 +630,7 @@ impl SearchEngine {
             .ok_or_else(|| anyhow::anyhow!("Document not found: {}", document_id))?;
 
         // Get actual content size (extracted text, not original file)
-        let results = if let Some(content_id) = &doc.content_id {
+        let mut results = if let Some(content_id) = &doc.content_id {
             match self.content_storage.get_text(content_id).await {
                 Ok(content) => {
                     let content_size = content.len();
@@ -439,6 +646,7 @@ impl SearchEngine {
                             highlights: vec![content],
                             match_type: "full_content".to_string(),
                             content: None,
+                            source_type: None,
                         }]
                     } else {
                         // Check if specific line range is requested
@@ -500,6 +708,7 @@ impl SearchEngine {
                                     highlights: vec![selected_content],
                                     match_type: "line_range".to_string(),
                                     content: None,
+                                    source_type: None,
                                 }]
                             }
                             _ => {
@@ -527,6 +736,8 @@ impl SearchEngine {
             vec![]
         };
 
+        self.populate_source_types(&mut results).await;
+
         let total_count = results.len() as i64;
         let query_time = start_time.elapsed().as_millis() as u64;
 
@@ -543,6 +754,7 @@ impl SearchEngine {
             has_more: false,
             query: request.query.clone(),
             facets: None,
+            active_filters: None,
         })
     }
 
@@ -553,10 +765,20 @@ impl SearchEngine {
         doc: &shared::models::Document,
         request: &SearchRequest,
     ) -> Result<Vec<SearchResult>> {
+        let user_groups = if let Some(email) = request.user_email() {
+            let group_repo = GroupRepository::new(self.db_pool.pool());
+            group_repo
+                .find_groups_for_user(email.as_str())
+                .await
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+
         let results = if !request.query.trim().is_empty() {
             // Query provided: do hybrid search within document
             info!("Query provided, hybrid search within document");
-            self.hybrid_search(request).await?
+            self.hybrid_search(request, &user_groups).await?
         } else {
             info!(
                 "No query provided, returning first 500 lines from document ID {}",
@@ -586,6 +808,7 @@ impl SearchEngine {
                     highlights: vec![truncated],
                     match_type: "fulltext".to_string(),
                     content: None,
+                    source_type: None,
                 }]
             } else {
                 error!(
@@ -720,16 +943,13 @@ impl SearchEngine {
                     },
                     match_type: "semantic".to_string(),
                     content: None,
+                    source_type: None,
                 });
             }
         }
 
         // Sort results by score in descending order
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
         info!(
             "Enhanced semantic search for RAG completed in {}ms",
@@ -738,15 +958,20 @@ impl SearchEngine {
         Ok(results)
     }
 
-    async fn hybrid_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
+    async fn hybrid_search(
+        &self,
+        request: &SearchRequest,
+        user_groups: &[String],
+    ) -> Result<Vec<SearchResult>> {
         info!("Performing hybrid search for query: '{}'", request.query);
         let start_time = Instant::now();
 
-        let repo = DocumentRepository::new(self.db_pool.pool());
-        let source_ids = repo
+        let doc_repo = DocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
-        let fts_future = self.fulltext_search(&repo, request, &source_ids);
+        let fts_future = self.fulltext_search(&search_repo, request, &source_ids, user_groups);
 
         // Apply timeout to semantic search
         let semantic_future = tokio::time::timeout(
@@ -803,6 +1028,7 @@ impl SearchEngine {
                     highlights: result.highlights,
                     match_type: "fulltext".to_string(),
                     content: result.content,
+                    source_type: None,
                 },
             );
         }
@@ -831,6 +1057,7 @@ impl SearchEngine {
                         highlights: result.highlights,
                         match_type: "semantic".to_string(),
                         content: result.content,
+                        source_type: None,
                     }
                 });
         }
@@ -884,6 +1111,21 @@ impl SearchEngine {
 
         if let Some(user_email) = &request.user_email {
             user_email.hash(&mut hasher);
+        }
+
+        if let Some(date_filter) = &request.date_filter {
+            if let Some(after) = &date_filter.after {
+                after.unix_timestamp().hash(&mut hasher);
+            }
+            if let Some(before) = &date_filter.before {
+                before.unix_timestamp().hash(&mut hasher);
+            }
+        }
+
+        if let Some(person_filters) = &request.person_filters {
+            for person in person_filters {
+                person.hash(&mut hasher);
+            }
         }
 
         format!("search:{:x}", hasher.finish())
@@ -954,11 +1196,24 @@ impl SearchEngine {
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
 
-        let repo = DocumentRepository::new(self.db_pool.pool());
-        let source_ids = repo
+        let user_groups = if let Some(email) = request.user_email() {
+            let group_repo = GroupRepository::new(self.db_pool.pool());
+            group_repo
+                .find_groups_for_user(email.as_str())
+                .await
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+
+        let doc_repo = DocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
-        let fts_results = self.fulltext_search(&repo, request, &source_ids).await?;
+        let fts_results = self
+            .fulltext_search(&search_repo, request, &source_ids, &user_groups)
+            .await?;
 
         // Get semantic search results enhanced with expanded context for RAG
         let semantic_results = self.get_enhanced_semantic_results_for_rag(request).await?;
@@ -978,11 +1233,7 @@ impl SearchEngine {
         }
 
         // Sort by score and take top results
-        combined_results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        combined_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         combined_results.truncate(10);
 
         info!(
@@ -1052,4 +1303,94 @@ impl SearchEngine {
 
         prompt
     }
+}
+
+fn source_type_to_string(st: &SourceType) -> String {
+    serde_json::to_value(st)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
+    let mut filters = Vec::new();
+
+    if let Some(ref source_types) = request.source_types {
+        if !source_types.is_empty() {
+            filters.push(Facet {
+                name: "source_type".to_string(),
+                values: source_types
+                    .iter()
+                    .map(|st| FacetValue {
+                        value: source_type_to_string(st),
+                        count: None,
+                    })
+                    .collect(),
+            });
+        }
+    }
+
+    if let Some(ref date_filter) = request.date_filter {
+        let mut values = Vec::new();
+        if let Some(after) = date_filter.after {
+            values.push(FacetValue {
+                value: format!("after:{}", after.date()),
+                count: None,
+            });
+        }
+        if let Some(before) = date_filter.before {
+            values.push(FacetValue {
+                value: format!("before:{}", before.date()),
+                count: None,
+            });
+        }
+        if !values.is_empty() {
+            filters.push(Facet {
+                name: "date_filter".to_string(),
+                values,
+            });
+        }
+    }
+
+    if let Some(ref person_filters) = request.person_filters {
+        if !person_filters.is_empty() {
+            filters.push(Facet {
+                name: "person_filter".to_string(),
+                values: person_filters
+                    .iter()
+                    .map(|p| FacetValue {
+                        value: p.clone(),
+                        count: None,
+                    })
+                    .collect(),
+            });
+        }
+    }
+
+    if let Some(ref content_types) = request.content_types {
+        if !content_types.is_empty() {
+            filters.push(Facet {
+                name: "content_type".to_string(),
+                values: content_types
+                    .iter()
+                    .map(|ct| FacetValue {
+                        value: ct.clone(),
+                        count: None,
+                    })
+                    .collect(),
+            });
+        }
+    }
+
+    if let Some(ref attribute_filters) = request.attribute_filters {
+        for (key, filter) in attribute_filters {
+            let value = serde_json::to_string(filter).unwrap_or_default();
+            filters.push(Facet {
+                name: format!("attribute:{}", key),
+                values: vec![FacetValue { value, count: None }],
+            });
+        }
+    }
+
+    filters
 }

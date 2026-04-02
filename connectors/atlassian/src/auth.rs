@@ -3,6 +3,7 @@ use base64::Engine;
 use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use shared::models::SourceType;
 use tracing::{debug, info};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -81,6 +82,7 @@ impl AuthManager {
         base_url: &str,
         user_email: &str,
         api_token: &str,
+        source_type: Option<&SourceType>,
     ) -> Result<AtlassianCredentials> {
         info!("Validating Atlassian credentials for user: {}", user_email);
 
@@ -91,83 +93,99 @@ impl AuthManager {
         )
         .get_basic_auth_header();
 
+        let validate_jira = source_type != Some(&SourceType::Confluence);
+        let validate_confluence = source_type != Some(&SourceType::Jira);
+
         // Test JIRA API access
-        let jira_url = format!("{}/rest/api/3/myself", base_url);
-        let jira_response = self
-            .client
-            .get(&jira_url)
-            .header("Authorization", &auth_header)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .send()
-            .await?;
+        let mut jira_account_id = None;
+        if validate_jira {
+            let jira_url = format!("{}/rest/api/3/myself", base_url);
+            let jira_response = self
+                .client
+                .get(&jira_url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .send()
+                .await?;
 
-        if !jira_response.status().is_success() {
-            let status = jira_response.status();
-            let error_text = jira_response.text().await?;
-            return Err(anyhow!(
-                "Failed to validate JIRA credentials: HTTP {} - {}",
-                status,
-                error_text
-            ));
-        }
+            if !jira_response.status().is_success() {
+                let status = jira_response.status();
+                let error_text = jira_response.text().await?;
+                return Err(anyhow!(
+                    "Failed to validate JIRA credentials: HTTP {} - {}",
+                    status,
+                    error_text
+                ));
+            }
 
-        let jira_user: AtlassianUserResponse = jira_response.json().await?;
-        debug!(
-            "JIRA validation successful for user: {}",
-            jira_user.display_name
-        );
+            let jira_user: AtlassianUserResponse = jira_response.json().await?;
+            debug!(
+                "JIRA validation successful for user: {}",
+                jira_user.display_name
+            );
 
-        if !jira_user.active {
-            return Err(anyhow!("User account is not active"));
-        }
+            if !jira_user.active {
+                return Err(anyhow!("User account is not active"));
+            }
 
-        if jira_user.email_address != user_email {
-            return Err(anyhow!(
-                "Email mismatch: expected {}, got {}",
-                user_email,
-                jira_user.email_address
-            ));
+            if jira_user.email_address != user_email {
+                return Err(anyhow!(
+                    "Email mismatch: expected {}, got {}",
+                    user_email,
+                    jira_user.email_address
+                ));
+            }
+
+            info!(
+                "Successfully validated credentials for user: {} (Account ID: {})",
+                jira_user.display_name, jira_user.account_id
+            );
+            jira_account_id = Some(jira_user.account_id);
         }
 
         // Test Confluence API access
-        let confluence_url = format!("{}/wiki/rest/api/user/current", base_url);
-        let confluence_response = self
-            .client
-            .get(&confluence_url)
-            .header("Authorization", &auth_header)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .send()
-            .await?;
+        if validate_confluence {
+            let confluence_url = format!("{}/wiki/rest/api/user/current", base_url);
+            let confluence_response = self
+                .client
+                .get(&confluence_url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .send()
+                .await?;
 
-        if !confluence_response.status().is_success() {
-            let status = confluence_response.status();
-            let error_text = confluence_response.text().await?;
-            return Err(anyhow!(
-                "Failed to validate Confluence credentials: HTTP {} - {}",
-                status,
-                error_text
-            ));
+            if !confluence_response.status().is_success() {
+                let status = confluence_response.status();
+                let error_text = confluence_response.text().await?;
+                return Err(anyhow!(
+                    "Failed to validate Confluence credentials: HTTP {} - {}",
+                    status,
+                    error_text
+                ));
+            }
+
+            let confluence_user: ConfluenceUserInfo = confluence_response.json().await?;
+            debug!(
+                "Confluence validation successful for user: {}",
+                confluence_user.display_name
+            );
+
+            if let Some(jira_id) = &jira_account_id {
+                if confluence_user.account_id != *jira_id {
+                    return Err(anyhow!(
+                        "Account ID mismatch between JIRA and Confluence for user {}",
+                        user_email
+                    ));
+                }
+            }
+
+            info!(
+                "Successfully validated Confluence credentials for user: {}",
+                confluence_user.display_name
+            );
         }
-
-        let confluence_user: ConfluenceUserInfo = confluence_response.json().await?;
-        debug!(
-            "Confluence validation successful for user: {}",
-            confluence_user.display_name
-        );
-
-        if confluence_user.account_id != jira_user.account_id {
-            return Err(anyhow!(
-                "Account ID mismatch between JIRA and Confluence for user {}",
-                user_email
-            ));
-        }
-
-        info!(
-            "Successfully validated credentials for user: {} (Account ID: {})",
-            jira_user.display_name, jira_user.account_id
-        );
 
         Ok(AtlassianCredentials::new(
             base_url.to_string(),
@@ -176,11 +194,20 @@ impl AuthManager {
         ))
     }
 
-    pub async fn ensure_valid_credentials(&self, creds: &mut AtlassianCredentials) -> Result<()> {
+    pub async fn ensure_valid_credentials(
+        &self,
+        creds: &mut AtlassianCredentials,
+        source_type: Option<&SourceType>,
+    ) -> Result<()> {
         if !creds.is_valid() {
             debug!("Re-validating API token");
             let new_creds = self
-                .validate_credentials(&creds.base_url, &creds.user_email, &creds.api_token)
+                .validate_credentials(
+                    &creds.base_url,
+                    &creds.user_email,
+                    &creds.api_token,
+                    source_type,
+                )
                 .await?;
             *creds = new_creds;
         }

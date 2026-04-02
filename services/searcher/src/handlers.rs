@@ -1,8 +1,10 @@
 use crate::models::{
-    RecentSearchesRequest, SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse,
-    TypeaheadQuery, TypeaheadResponse,
+    AttributeValuesResponse, PeopleSearchResponse, PersonResult, RecentSearchesRequest,
+    SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse, TypeaheadQuery,
+    TypeaheadResponse,
 };
 use crate::search::SearchEngine;
+use crate::search_repository::SearchDocumentRepository;
 use crate::suggested_questions::{self, SuggestedQuestionsGenerator};
 use crate::{AppState, Result as SearcherResult, SearcherError};
 use anyhow::anyhow;
@@ -15,7 +17,7 @@ use axum::{
 use futures_util::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
-use shared::{Repository, UserRepository};
+use shared::{PersonRepository, Repository, UserRepository};
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -127,6 +129,7 @@ pub async fn search(
         state.redis_client,
         state.ai_client,
         state.config,
+        state.operator_registry,
     )
     .await?;
 
@@ -175,6 +178,7 @@ pub async fn recent_searches(
         state.redis_client,
         state.ai_client,
         state.config,
+        state.operator_registry,
     )
     .await?;
 
@@ -194,6 +198,7 @@ pub async fn ai_answer(
         state.redis_client.clone(),
         state.ai_client.clone(),
         state.config.clone(),
+        state.operator_registry.clone(),
     )
     .await
     .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -305,4 +310,72 @@ pub async fn suggested_questions(
         .await?;
 
     Ok(Json(response))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct PeopleSearchQuery {
+    pub q: String,
+    pub limit: Option<i64>,
+}
+
+pub async fn people_search(
+    State(state): State<AppState>,
+    Query(query): Query<PeopleSearchQuery>,
+) -> SearcherResult<Json<PeopleSearchResponse>> {
+    let person_repo = PersonRepository::new(state.db_pool.pool());
+    let limit = query.limit.unwrap_or(10).min(50);
+
+    let results = person_repo
+        .search_people(&query.q, limit)
+        .await
+        .map_err(|e| SearcherError::Internal(anyhow!("People search failed: {}", e)))?;
+
+    let people = results
+        .into_iter()
+        .map(|p| PersonResult {
+            id: p.id,
+            email: p.email,
+            display_name: p.display_name,
+            given_name: p.given_name,
+            surname: p.surname,
+            job_title: p.job_title,
+            department: p.department,
+            score: p.score,
+        })
+        .collect();
+
+    Ok(Json(PeopleSearchResponse { people }))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct AttributeValuesQuery {
+    pub keys: String,
+    pub limit: Option<i64>,
+}
+
+pub async fn attribute_values(
+    State(state): State<AppState>,
+    Query(query): Query<AttributeValuesQuery>,
+) -> SearcherResult<Json<AttributeValuesResponse>> {
+    let keys: Vec<String> = query
+        .keys
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect();
+
+    if keys.is_empty() {
+        return Err(SearcherError::BadRequest(
+            "keys parameter is required".to_string(),
+        ));
+    }
+
+    let limit = query.limit.unwrap_or(25).min(100);
+    let repo = SearchDocumentRepository::new(state.db_pool.pool());
+    let attributes = repo
+        .get_distinct_attribute_values(&keys, limit)
+        .await
+        .map_err(|e| SearcherError::Internal(anyhow!("Failed to fetch attribute values: {}", e)))?;
+
+    Ok(Json(AttributeValuesResponse { attributes }))
 }

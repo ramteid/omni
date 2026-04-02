@@ -11,6 +11,7 @@ from .config import MAX_CONTENT_LENGTH
 def map_page_to_document(
     page: dict[str, Any],
     content_id: str,
+    permission_group: str,
     is_database_entry: bool = False,
 ) -> Document:
     """Map a Notion page to an Omni Document."""
@@ -19,12 +20,15 @@ def map_page_to_document(
     created_by = page.get("created_by", {})
     parent = page.get("parent", {})
 
+    content_type_value = "database_entry" if is_database_entry else "page"
+
     attributes: dict[str, Any] = {
         "source_type": "notion",
-        "content_type": "database_entry" if is_database_entry else "page",
     }
     if is_database_entry and parent.get("type") == "database_id":
         attributes["parent_database"] = parent["database_id"]
+
+    is_public = bool(page.get("public_url"))
 
     return Document(
         external_id=f"notion:page:{page_id}",
@@ -35,9 +39,13 @@ def map_page_to_document(
             created_at=_parse_iso(page.get("created_time")),
             updated_at=_parse_iso(page.get("last_edited_time")),
             url=page.get("url"),
+            content_type=content_type_value,
             mime_type="text/plain",
         ),
-        permissions=DocumentPermissions(public=False),
+        permissions=DocumentPermissions(
+            public=is_public,
+            groups=[permission_group],
+        ),
         attributes=attributes,
     )
 
@@ -45,11 +53,14 @@ def map_page_to_document(
 def map_database_to_document(
     database: dict[str, Any],
     content_id: str,
+    permission_group: str,
 ) -> Document:
     """Map a Notion database to an Omni Document."""
     db_id = database["id"]
     title = _extract_rich_text(database.get("title", []))
     created_by = database.get("created_by", {})
+
+    is_public = bool(database.get("public_url"))
 
     return Document(
         external_id=f"notion:database:{db_id}",
@@ -60,12 +71,15 @@ def map_database_to_document(
             created_at=_parse_iso(database.get("created_time")),
             updated_at=_parse_iso(database.get("last_edited_time")),
             url=database.get("url"),
+            content_type="database",
             mime_type="text/plain",
         ),
-        permissions=DocumentPermissions(public=False),
+        permissions=DocumentPermissions(
+            public=is_public,
+            groups=[permission_group],
+        ),
         attributes={
             "source_type": "notion",
-            "content_type": "database",
         },
     )
 

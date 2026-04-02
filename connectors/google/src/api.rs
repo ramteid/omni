@@ -24,6 +24,7 @@ use crate::models::{
     ConnectorManifest, SyncRequest, SyncResponse, SyncResponseExt, WebhookNotification,
 };
 use crate::sync::SyncManager;
+use shared::models::SearchOperator;
 use shared::models::{ServiceProvider, SourceType};
 
 #[derive(Clone)]
@@ -60,25 +61,56 @@ async fn health_check() -> impl IntoResponse {
     }))
 }
 
-async fn manifest() -> impl IntoResponse {
-    let manifest = ConnectorManifest {
+pub fn build_manifest(connector_url: String) -> ConnectorManifest {
+    ConnectorManifest {
         name: "google".to_string(),
+        display_name: "Google Workspace".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        connector_id: "google".to_string(),
+        connector_url,
+        source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
+        description: Some(
+            "Connect to Google Drive, Docs, Gmail, and more".to_string(),
+        ),
         actions: vec![ActionDefinition {
             name: "fetch_file".to_string(),
             description: "Download a file from Google Drive. Exports Google Workspace files to Office format.".to_string(),
             mode: "read".to_string(),
-            parameters: json!({
-                "file_id": {
-                    "type": "string",
-                    "required": true,
-                    "description": "The Google Drive file ID"
-                }
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "file_id": {
+                        "type": "string",
+                        "description": "The Google Drive file ID"
+                    }
+                },
+                "required": ["file_id"]
             }),
         }],
-    };
-    Json(manifest)
+        search_operators: vec![
+            SearchOperator {
+                operator: "from".to_string(),
+                attribute_key: "sender".to_string(),
+                value_type: "person".to_string(),
+            },
+            SearchOperator {
+                operator: "label".to_string(),
+                attribute_key: "labels".to_string(),
+                value_type: "text".to_string(),
+            },
+        ],
+        read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
+        mcp_enabled: false,
+        resources: vec![],
+        prompts: vec![],
+    }
+}
+
+async fn manifest() -> impl IntoResponse {
+    Json(build_manifest(shared::build_connector_url()))
 }
 
 async fn trigger_sync(

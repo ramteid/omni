@@ -11,6 +11,7 @@ import {
     createModel,
     deleteModel,
     setDefaultModel,
+    setSecondaryModel,
     createPredefinedModels,
     MODEL_PROVIDER_TYPES,
     type ModelProviderConfig,
@@ -50,6 +51,7 @@ export const load: PageServerLoad = async ({ locals }) => {
                     modelId: m.modelId,
                     displayName: m.displayName,
                     isDefault: m.isDefault,
+                    isSecondary: m.isSecondary,
                 })),
             }
         }),
@@ -146,6 +148,7 @@ export const actions: Actions = {
         const modelId = (formData.get('modelId') as string)?.trim()
         const displayName = (formData.get('displayName') as string)?.trim()
         const isDefault = formData.get('isDefault') === 'true'
+        const isSecondary = formData.get('isSecondary') === 'true'
 
         if (!providerId) return fail(400, { error: 'Provider ID is required' })
         if (!modelId) return fail(400, { error: 'Model ID is required' })
@@ -157,6 +160,7 @@ export const actions: Actions = {
                 modelId,
                 displayName,
                 isDefault,
+                isSecondary,
             })
             await reloadAIProviders()
             return { success: true, message: 'Model added' }
@@ -192,11 +196,26 @@ export const actions: Actions = {
 
         try {
             await setDefaultModel(id)
-            await reloadAIProviders()
             return { success: true, message: 'Default model updated' }
         } catch (err) {
             console.error('Failed to set default model:', err)
             return fail(500, { error: 'Failed to set default model' })
+        }
+    },
+
+    setSecondaryModel: async ({ request, locals }) => {
+        requireAdmin(locals)
+
+        const formData = await request.formData()
+        const id = formData.get('id') as string
+        if (!id) return fail(400, { error: 'Model ID is required' })
+
+        try {
+            await setSecondaryModel(id)
+            return { success: true, message: 'Secondary model updated' }
+        } catch (err) {
+            console.error('Failed to set secondary model:', err)
+            return fail(500, { error: 'Failed to set secondary model' })
         }
     },
 }
@@ -206,6 +225,7 @@ function parseConfig(formData: FormData, providerType: string): ModelProviderCon
         apiKey: (formData.get('apiKey') as string) || null,
         apiUrl: (formData.get('apiUrl') as string) || null,
         regionName: (formData.get('regionName') as string) || null,
+        projectId: (formData.get('projectId') as string) || null,
     }
 }
 
@@ -214,6 +234,8 @@ function validateConfig(
     config: ModelProviderConfig,
     isEdit = false,
 ): string | null {
+    if (providerType === 'azure_foundry' && !config.apiUrl)
+        return 'Endpoint URL is required for Azure AI Foundry'
     if (providerType === 'vllm' && !config.apiUrl) return 'API URL is required for vLLM'
     if (providerType === 'anthropic' && !config.apiKey && !isEdit)
         return 'API key is required for Anthropic'
@@ -221,6 +243,10 @@ function validateConfig(
         return 'API key is required for OpenAI'
     if (providerType === 'gemini' && !config.apiKey && !isEdit)
         return 'API key is required for Gemini'
+    if (providerType === 'vertex_ai' && !config.regionName)
+        return 'GCP Region is required for Vertex AI'
+    if (providerType === 'vertex_ai' && !config.projectId)
+        return 'GCP Project ID is required for Vertex AI'
 
     return null
 }

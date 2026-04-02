@@ -165,7 +165,11 @@ pub enum SourceType {
     SharePoint,
     Outlook,
     OutlookCalendar,
+    MsTeams,
     Fireflies,
+    Imap,
+    Clickup,
+    Linear,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -180,6 +184,9 @@ pub enum ServiceProvider {
     Notion,
     Hubspot,
     Fireflies,
+    Imap,
+    Clickup,
+    Linear,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -242,10 +249,11 @@ pub struct JiraSourceConfig {
 pub struct DocumentMetadata {
     pub title: Option<String>,
     pub author: Option<String>,
-    #[serde(default, with = "time::serde::iso8601::option")]
+    #[serde(default, with = "time::serde::rfc3339::option")]
     pub created_at: Option<OffsetDateTime>,
-    #[serde(default, with = "time::serde::iso8601::option")]
+    #[serde(default, with = "time::serde::rfc3339::option")]
     pub updated_at: Option<OffsetDateTime>,
+    pub content_type: Option<String>,
     pub mime_type: Option<String>,
     pub size: Option<String>,
     pub url: Option<String>,
@@ -260,6 +268,27 @@ pub struct DocumentPermissions {
     pub groups: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Group {
+    pub id: String,
+    pub source_id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
+    pub synced_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct GroupMembership {
+    pub id: String,
+    pub group_id: String,
+    pub member_email: String,
+    pub role: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
+    pub synced_at: OffsetDateTime,
+}
+
 /// Structured attributes for filtering and faceting.
 /// Stored as JSONB, indexed by ParadeDB for FTS and filtering.
 /// NOT included in embeddings - only textual content is embedded.
@@ -267,7 +296,13 @@ pub type DocumentAttributes = HashMap<String, JsonValue>;
 
 /// Attribute filter for search queries.
 /// Supports exact match, multi-value OR, and range queries.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
+pub struct DateFilter {
+    pub after: Option<OffsetDateTime>,
+    pub before: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum AttributeFilter {
     /// Single value exact match
@@ -281,6 +316,89 @@ pub enum AttributeFilter {
         #[serde(skip_serializing_if = "Option::is_none")]
         lte: Option<JsonValue>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchOperator {
+    pub operator: String,
+    pub attribute_key: String,
+    #[serde(default = "default_search_operator_value_type")]
+    pub value_type: String, // "person", "text", "datetime"
+}
+
+fn default_search_operator_value_type() -> String {
+    "text".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: JsonValue,
+    #[serde(default = "default_action_mode")]
+    pub mode: String,
+}
+
+fn default_action_mode() -> String {
+    "write".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpResourceDefinition {
+    pub uri_template: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpPromptArgument {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpPromptDefinition {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub arguments: Vec<McpPromptArgument>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorManifest {
+    pub name: String,
+    pub display_name: String,
+    pub version: String,
+    pub sync_modes: Vec<String>,
+    pub connector_id: String,
+    pub connector_url: String,
+    #[serde(default)]
+    pub source_types: Vec<SourceType>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub actions: Vec<ActionDefinition>,
+    #[serde(default)]
+    pub search_operators: Vec<SearchOperator>,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub extra_schema: Option<JsonValue>,
+    #[serde(default)]
+    pub attributes_schema: Option<JsonValue>,
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    #[serde(default)]
+    pub resources: Vec<McpResourceDefinition>,
+    #[serde(default)]
+    pub prompts: Vec<McpPromptDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +429,13 @@ pub enum ConnectorEvent {
         source_id: String,
         document_id: String,
     },
+    GroupMembershipSync {
+        sync_run_id: String,
+        source_id: String,
+        group_email: String,
+        group_name: Option<String>,
+        member_emails: Vec<String>,
+    },
 }
 
 impl ConnectorEvent {
@@ -319,6 +444,7 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentCreated { sync_run_id, .. } => sync_run_id,
             ConnectorEvent::DocumentUpdated { sync_run_id, .. } => sync_run_id,
             ConnectorEvent::DocumentDeleted { sync_run_id, .. } => sync_run_id,
+            ConnectorEvent::GroupMembershipSync { sync_run_id, .. } => sync_run_id,
         }
     }
 
@@ -327,6 +453,7 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentCreated { source_id, .. } => source_id,
             ConnectorEvent::DocumentUpdated { source_id, .. } => source_id,
             ConnectorEvent::DocumentDeleted { source_id, .. } => source_id,
+            ConnectorEvent::GroupMembershipSync { source_id, .. } => source_id,
         }
     }
 
@@ -335,6 +462,7 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentCreated { document_id, .. } => document_id,
             ConnectorEvent::DocumentUpdated { document_id, .. } => document_id,
             ConnectorEvent::DocumentDeleted { document_id, .. } => document_id,
+            ConnectorEvent::GroupMembershipSync { group_email, .. } => group_email,
         }
     }
 }
@@ -351,7 +479,8 @@ pub struct DocumentChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FacetValue {
     pub value: String,
-    pub count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -474,6 +603,35 @@ pub struct MagicLink {
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     pub user_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Person {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub given_name: Option<String>,
+    pub surname: Option<String>,
+    pub avatar_url: Option<String>,
+    pub job_title: Option<String>,
+    pub department: Option<String>,
+    pub division: Option<String>,
+    pub company_name: Option<String>,
+    pub office_location: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub country: Option<String>,
+    pub employee_id: Option<String>,
+    pub employee_type: Option<String>,
+    pub cost_center: Option<String>,
+    pub manager_id: Option<String>,
+    pub is_active: bool,
+    pub metadata: JsonValue,
+    pub external_id: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
+    pub updated_at: OffsetDateTime,
 }
 
 #[cfg(test)]

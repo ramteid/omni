@@ -1,20 +1,11 @@
-"""Prompt and PDF extraction endpoints."""
+"""Prompt endpoints."""
 
-import asyncio
 import logging
-import multiprocessing
-from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from schemas import PromptRequest, PromptResponse
-from processing import (
-    PDFExtractionRequest,
-    PDFExtractionResponse,
-    extract_text_from_pdf,
-)
-
 from providers import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -32,10 +23,15 @@ def _get_default_llm_provider(request: Request) -> LLMProvider | None:
     return next(iter(models.values()), None)
 
 
-# Thread pool for async operations - scale based on CPU cores
-# Reserve some cores for the web server and other processes
-max_workers = max(2, min(multiprocessing.cpu_count() - 1, 8))
-_executor = ThreadPoolExecutor(max_workers=max_workers)
+def _get_secondary_llm_provider(request: Request) -> LLMProvider | None:
+    """Return the secondary (lightweight) LLM provider, falling back to default."""
+    models = getattr(request.app.state, "models", None)
+    if not models:
+        return None
+    secondary_id = getattr(request.app.state, "secondary_model_id", None)
+    if secondary_id and secondary_id in models:
+        return models[secondary_id]
+    return _get_default_llm_provider(request)
 
 
 @router.post("/prompt")
@@ -68,7 +64,7 @@ async def generate_response(request: Request, body: PromptRequest):
                         yield event.delta.text
         except Exception as e:
             logger.error(f"Failed to generate streaming response: {str(e)}")
-            yield f"Error: {str(e)}"
+            return
 
     return StreamingResponse(
         stream_generator(),
@@ -80,8 +76,8 @@ async def generate_response(request: Request, body: PromptRequest):
 async def _generate_non_streaming_response(
     request: Request, body: PromptRequest
 ) -> PromptResponse:
-    """Generate non-streaming response for backward compatibility."""
-    llm_provider = _get_default_llm_provider(request)
+    """Generate non-streaming response using the secondary (lightweight) model."""
+    llm_provider = _get_secondary_llm_provider(request)
     if not llm_provider:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
@@ -101,24 +97,3 @@ async def _generate_non_streaming_response(
         raise HTTPException(
             status_code=500, detail=f"Failed to generate response: {str(e)}"
         )
-
-
-@router.post("/extract_pdf", response_model=PDFExtractionResponse)
-async def extract_pdf(body: PDFExtractionRequest):
-    """Extract text from a PDF file."""
-    logger.info(f"Extracting text from PDF ({len(body.pdf_bytes)} bytes)")
-
-    # Run PDF extraction in executor to avoid blocking
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        _executor, extract_text_from_pdf, body.pdf_bytes
-    )
-
-    if result.error:
-        logger.warning(f"PDF extraction completed with error: {result.error}")
-    else:
-        logger.info(
-            f"PDF extraction successful: {result.page_count} pages, {len(result.text)} characters"
-        )
-
-    return result

@@ -79,9 +79,11 @@ describe('Connector Server', () => {
       expect(response.status).toBe(200);
       expect(response.body).toEqual({
         name: 'mock-connector',
+        display_name: 'mock-connector',
         version: '1.0.0',
         sync_modes: ['full', 'incremental'],
         actions: [],
+        search_operators: [],
       });
     });
   });

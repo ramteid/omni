@@ -1,8 +1,8 @@
-"""Integration tests for attribute_filters flowing through the chat SSE stream.
+"""Integration tests for search_documents tool calls flowing through the chat SSE stream.
 
-Validates that when the LLM emits a search_documents tool call with `attributes`,
-the chat handler correctly maps them to `SearchRequest.attribute_filters` and
-passes them to the searcher.
+Validates that the chat handler correctly maps LLM tool calls to SearchRequest
+and passes them to the searcher. Filters are now expressed via inline query
+operators (e.g., "status:done in:jira") rather than separate tool parameters.
 
 Uses real DB (testcontainers ParadeDB) for chat/message storage,
 mock LLM that emits Anthropic SDK event objects, and a mock searcher
@@ -10,29 +10,11 @@ that captures the SearchRequest for assertion.
 """
 
 import json
-from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-
-from anthropic.types import (
-    RawMessageStartEvent,
-    RawContentBlockStartEvent,
-    RawContentBlockDeltaEvent,
-    RawContentBlockStopEvent,
-    RawMessageStopEvent,
-    RawMessageDeltaEvent,
-    Message,
-    Usage,
-    TextBlock,
-    ToolUseBlock,
-    InputJSONDelta,
-    TextDelta,
-    MessageDeltaUsage,
-)
-from anthropic.types.raw_message_delta_event import Delta
 from ulid import ULID
 
 from db import UsersRepository, ChatsRepository, MessagesRepository
@@ -41,103 +23,9 @@ from routers import chat_router
 from state import AppState
 from tools import SearchResponse, SearchResult
 from tools.searcher_client import Document
+from tests.helpers import create_mock_llm
 
 pytestmark = pytest.mark.integration
-
-
-# ---------------------------------------------------------------------------
-# Mock LLM helpers
-# ---------------------------------------------------------------------------
-
-
-def _message_start_event():
-    return RawMessageStartEvent(
-        type="message_start",
-        message=Message(
-            id="msg_test",
-            content=[],
-            model="mock",
-            role="assistant",
-            stop_reason=None,
-            stop_sequence=None,
-            type="message",
-            usage=Usage(input_tokens=10, output_tokens=0),
-        ),
-    )
-
-
-def _tool_call_events(tool_call_json: dict[str, Any]):
-    """Yield Anthropic SDK events simulating a tool_use content block."""
-    yield _message_start_event()
-    yield RawContentBlockStartEvent(
-        type="content_block_start",
-        index=0,
-        content_block=ToolUseBlock(
-            type="tool_use",
-            id="toolu_attr_test",
-            name="search_documents",
-            input={},
-        ),
-    )
-    yield RawContentBlockDeltaEvent(
-        type="content_block_delta",
-        index=0,
-        delta=InputJSONDelta(
-            type="input_json_delta",
-            partial_json=json.dumps(tool_call_json),
-        ),
-    )
-    yield RawContentBlockStopEvent(type="content_block_stop", index=0)
-    yield RawMessageDeltaEvent(
-        type="message_delta",
-        delta=Delta(stop_reason="tool_use", stop_sequence=None),
-        usage=MessageDeltaUsage(output_tokens=30),
-    )
-    yield RawMessageStopEvent(type="message_stop")
-
-
-def _text_response_events(text: str):
-    """Yield Anthropic SDK events simulating a final text response."""
-    yield _message_start_event()
-    yield RawContentBlockStartEvent(
-        type="content_block_start",
-        index=0,
-        content_block=TextBlock(type="text", text=""),
-    )
-    yield RawContentBlockDeltaEvent(
-        type="content_block_delta",
-        index=0,
-        delta=TextDelta(type="text_delta", text=text),
-    )
-    yield RawContentBlockStopEvent(type="content_block_stop", index=0)
-    yield RawMessageDeltaEvent(
-        type="message_delta",
-        delta=Delta(stop_reason="end_turn", stop_sequence=None),
-        usage=MessageDeltaUsage(output_tokens=10),
-    )
-    yield RawMessageStopEvent(type="message_stop")
-
-
-def create_mock_llm(
-    tool_call_json: dict[str, Any], response_text: str = "Here are the results."
-):
-    """Return a mock LLMProvider whose stream_response yields tool call then text."""
-    call_count = 0
-
-    async def stream_response(*_args, **_kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            for evt in _tool_call_events(tool_call_json):
-                yield evt
-        else:
-            for evt in _text_response_events(response_text):
-                yield evt
-
-    provider = AsyncMock()
-    provider.stream_response = stream_response
-    provider.health_check.return_value = True
-    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -288,14 +176,13 @@ def _build_app(llm_provider, searcher_tool, model_id: str) -> FastAPI:
 
 
 @pytest.mark.asyncio
-async def test_attribute_filters_flow_to_searcher(
+async def test_inline_query_operators_flow_to_searcher(
     db_pool, chat_with_message, _patch_db_pool
 ):
-    """attribute_filters from LLM tool call reach SearchRequest."""
+    """Inline query operators are passed through to the searcher as the query string."""
     chat_id, _, model_id = chat_with_message
     tool_call_json = {
-        "query": "high priority bugs",
-        "attributes": {"priority": "High", "issue_type": "Bug"},
+        "query": "status:done in:jira high priority bugs",
     }
     searcher = create_mock_searcher()
     app = _build_app(create_mock_llm(tool_call_json), searcher, model_id)
@@ -304,15 +191,16 @@ async def test_attribute_filters_flow_to_searcher(
 
     searcher.handle.assert_called_once()
     captured_request = searcher.handle.call_args[0][0]
-    assert captured_request.attribute_filters == {
-        "priority": "High",
-        "issue_type": "Bug",
-    }
+    assert captured_request.query == "status:done in:jira high priority bugs"
+    assert captured_request.attribute_filters is None
+    assert captured_request.source_types is None
 
 
 @pytest.mark.asyncio
-async def test_no_attributes_sends_none(db_pool, chat_with_message, _patch_db_pool):
-    """When the LLM omits attributes, attribute_filters should be None."""
+async def test_simple_query_sends_no_filters(
+    db_pool, chat_with_message, _patch_db_pool
+):
+    """A plain query without operators sends no filters."""
     chat_id, _, model_id = chat_with_message
     tool_call_json = {"query": "recent documents"}
     searcher = create_mock_searcher()
@@ -323,24 +211,7 @@ async def test_no_attributes_sends_none(db_pool, chat_with_message, _patch_db_po
     searcher.handle.assert_called_once()
     captured_request = searcher.handle.call_args[0][0]
     assert captured_request.attribute_filters is None
-
-
-@pytest.mark.asyncio
-async def test_array_attribute_filter(db_pool, chat_with_message, _patch_db_pool):
-    """Array-valued attributes pass through for OR matching."""
-    chat_id, _, model_id = chat_with_message
-    tool_call_json = {
-        "query": "critical issues",
-        "attributes": {"priority": ["High", "Critical"]},
-    }
-    searcher = create_mock_searcher()
-    app = _build_app(create_mock_llm(tool_call_json), searcher, model_id)
-
-    await _stream_chat(app, chat_id)
-
-    searcher.handle.assert_called_once()
-    captured_request = searcher.handle.call_args[0][0]
-    assert captured_request.attribute_filters == {"priority": ["High", "Critical"]}
+    assert captured_request.source_types is None
 
 
 @pytest.mark.asyncio
@@ -350,8 +221,7 @@ async def test_stream_completes_with_tool_results(
     """Full SSE stream contains tool call events, save_message, tool_result, text, and end_of_stream."""
     chat_id, _, model_id = chat_with_message
     tool_call_json = {
-        "query": "high priority bugs",
-        "attributes": {"priority": "High"},
+        "query": "status:open in:jira high priority bugs",
     }
     response_text = "I found 2 high-priority bugs."
     searcher = create_mock_searcher()
@@ -361,13 +231,9 @@ async def test_stream_completes_with_tool_results(
     events = parse_sse_events(body)
     event_types = [e[0] for e in events]
 
-    # The stream should follow this pattern:
-    # message (x6 for tool call) -> save_message -> message (tool_result) -> save_message
-    # -> message (x6 for text response) -> save_message -> end_of_stream
     assert "save_message" in event_types
     assert "end_of_stream" in event_types
 
-    # Verify tool_result event contains our canned document data
     tool_result_events = [
         (t, d) for t, d in events if t == "message" and "tool_result" in d
     ]
@@ -376,6 +242,5 @@ async def test_stream_completes_with_tool_results(
     assert tool_result_data["type"] == "tool_result"
     assert tool_result_data["is_error"] is False
 
-    # Verify the final text appears in the stream
     text_deltas = [d for t, d in events if t == "message" and response_text in d]
     assert len(text_deltas) >= 1

@@ -1,21 +1,12 @@
 use crate::{
     db::error::DatabaseError,
-    models::{AttributeFilter, Document, Facet, FacetValue},
+    models::{AttributeFilter, DateFilter, Document},
     SourceType,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
-use std::collections::{HashMap, HashSet};
-use tracing::debug;
-
-#[derive(FromRow)]
-pub struct SearchHit {
-    #[sqlx(flatten)]
-    pub document: Document,
-    pub score: f32,
-    #[sqlx(default)]
-    pub content_snippets: Option<Vec<String>>,
-}
+use std::collections::HashMap;
+use time::{self, OffsetDateTime};
 
 #[derive(FromRow)]
 pub struct TitleEntry {
@@ -34,16 +25,10 @@ impl DocumentRepository {
         Self { pool: pool.clone() }
     }
 
-    /// Generate SQL condition to check if user has permission to access document
-    fn generate_permission_filter(&self, user_email: &str) -> String {
-        format!(
-            r#"(
-                permissions @@@ 'public:true' OR
-                permissions @@@ 'users:{}' OR
-                permissions @@@ 'groups:{}'
-            )"#,
-            user_email, user_email
-        )
+    /// Generate SQL condition to check if user has permission to access document.
+    /// Checks: public access, direct user access, domain-wide access, and group membership.
+    fn generate_permission_filter(&self, user_email: &str, user_groups: &[String]) -> String {
+        generate_permission_filter(user_email, user_groups)
     }
 
     pub async fn find_by_id(&self, id: &str) -> Result<Option<Document>, DatabaseError> {
@@ -128,9 +113,10 @@ impl DocumentRepository {
     pub async fn fetch_random_documents(
         &self,
         user_email: &str,
+        user_groups: &[String],
         count: usize,
     ) -> Result<Vec<Document>, DatabaseError> {
-        let permission_filter = &self.generate_permission_filter(user_email);
+        let permission_filter = &self.generate_permission_filter(user_email, user_groups);
 
         let query = format!(
             r#"
@@ -172,6 +158,36 @@ impl DocumentRepository {
         Ok(source_ids)
     }
 
+    pub async fn fetch_active_sources(&self) -> Result<Vec<(String, SourceType)>, DatabaseError> {
+        let rows: Vec<(String, SourceType)> =
+            sqlx::query_as(r#"SELECT id, source_type FROM sources WHERE NOT is_deleted"#)
+                .fetch_all(&self.pool)
+                .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn fetch_all_permission_users(&self) -> Result<Vec<String>, DatabaseError> {
+        let users: Vec<String> = sqlx::query_scalar(
+            r#"SELECT DISTINCT lower(elem)
+               FROM documents, jsonb_array_elements_text(permissions->'users') AS elem
+               WHERE permissions->'users' IS NOT NULL"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(users)
+    }
+
+    pub async fn fetch_max_last_indexed_at(&self) -> Result<Option<OffsetDateTime>, DatabaseError> {
+        let max_ts: Option<OffsetDateTime> =
+            sqlx::query_scalar(r#"SELECT MAX(last_indexed_at) FROM documents"#)
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(max_ts)
+    }
+
     fn build_common_filters(
         &self,
         filters: &mut Vec<String>,
@@ -180,6 +196,8 @@ impl DocumentRepository {
         content_types: Option<&[String]>,
         attribute_filters: Option<&HashMap<String, AttributeFilter>>,
         user_email: Option<&str>,
+        user_groups: &[String],
+        date_filter: Option<&DateFilter>,
     ) {
         if !source_ids.is_empty() {
             filters.push(format!("source_id = ANY(${})", param_idx));
@@ -241,238 +259,30 @@ impl DocumentRepository {
             }
         }
 
-        if let Some(email) = user_email {
-            filters.push(self.generate_permission_filter(email));
-        }
-    }
-
-    pub async fn search(
-        &self,
-        query: &str,
-        source_ids: &[String],
-        content_types: Option<&[String]>,
-        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
-        limit: i64,
-        offset: i64,
-        user_email: Option<&str>,
-        document_id: Option<&str>,
-        recency_boost_weight: f32,
-        recency_half_life_days: f32,
-    ) -> Result<Vec<SearchHit>, DatabaseError> {
-        if source_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // We use term-centric ranking
-        // Score each query term independently across fields (best-field per term),
-        // then SUM across terms. This rewards docs matching MORE query terms.
-        // Phrase bonus is additive on top.
-
-        // Tokenize query via ParadeDB simple tokenizer: splits on non-alphanumeric
-        // characters, lowercases, ASCII-folds. Matches the index tokenizer exactly.
-        let raw_terms: Vec<String> = sqlx::query_scalar(
-            "SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])"
-        )
-        .bind(query)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut seen = HashSet::new();
-        let terms: Vec<String> = raw_terms
-            .into_iter()
-            .filter(|t| seen.insert(t.clone()))
-            .take(12)
-            .collect();
-
-        // Bind params: $1 = full query, $2..$(1+N) = individual terms, then filters
-        let mut param_idx = 2 + terms.len();
-
-        let mut filters = Vec::new();
-        self.build_common_filters(
-            &mut filters,
-            &mut param_idx,
-            source_ids,
-            content_types,
-            attribute_filters,
-            user_email,
-        );
-
-        if document_id.is_some() {
-            filters.push(format!("id = ${}", param_idx));
-            param_idx += 1;
-        }
-
-        let common_where = if filters.is_empty() {
-            String::new()
-        } else {
-            format!(" AND {}", filters.join(" AND "))
-        };
-
-        // Per-term: best score across all tokenizer paths.
-        //   - title (simple): splits on underscores/dots/hyphens, exact match
-        //   - title_secondary (source_code): CamelCase splitting
-        //   - title_en (simple + English stemmer): English morphological match
-        //   - content (ICU): Unicode word-boundary segmentation for CJK/Thai
-        //   - content_en (ICU + English stemmer): English morphological match
-        let mut term_branches = Vec::new();
-        for (i, _term) in terms.iter().enumerate() {
-            let term_param = format!("${}", 2 + i);
-            term_branches.push(format!(
-                "SELECT id, MAX(score) as score FROM (\
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title::pdb.alias('title_secondary') ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title::pdb.alias('title_en') ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content ||| {term_param}{common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content::pdb.alias('content_en') ||| {term_param}{common_where}\
-                ) t{i} GROUP BY id"
-            ));
-        }
-
-        // Phrase branches: best across simple/ICU + English-stemmed paths (using $1 = full query)
-        let phrase_branch = format!(
-            "SELECT id, MAX(score) as score FROM (\
-                SELECT id, pdb.score(id) as score FROM documents \
-                WHERE title ### $1::pdb.slop(2)::pdb.boost(10){common_where} \
-                UNION ALL \
-                SELECT id, pdb.score(id) as score FROM documents \
-                WHERE title::pdb.alias('title_en') ### $1::pdb.slop(2)::pdb.boost(10){common_where} \
-                UNION ALL \
-                SELECT id, pdb.score(id) as score FROM documents \
-                WHERE content ### $1::pdb.slop(2)::pdb.boost(5){common_where} \
-                UNION ALL \
-                SELECT id, pdb.score(id) as score FROM documents \
-                WHERE content::pdb.alias('content_en') ### $1::pdb.slop(2)::pdb.boost(5){common_where}\
-            ) p GROUP BY id"
-        );
-
-        // When all query terms are stopwords, terms is empty — skip term_scores,
-        // rank by phrase scoring only.
-        let weight_idx = param_idx + 2;
-        let half_life_idx = param_idx + 3;
-
-        let recency_expr = format!(
-            "(1.0 + ${w}::double precision * EXP(-EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(\
-                CASE WHEN d.metadata->>'updated_at' IS NOT NULL \
-                     AND pg_input_is_valid(d.metadata->>'updated_at', 'timestamptz') \
-                THEN (d.metadata->>'updated_at')::timestamptz END, \
-                d.updated_at))) / (86400.0 * ${h}::double precision)))::real",
-            w = weight_idx,
-            h = half_life_idx,
-        );
-
-        let full_query = if terms.is_empty() {
-            format!(
-                r#"
-                WITH phrase_scores AS (
-                    {phrase_branch}
-                ),
-                ranked AS (
-                    SELECT ps.id, (ps.score * {recency_expr}) as score
-                    FROM phrase_scores ps
-                    JOIN documents d ON d.id = ps.id
-                    ORDER BY score DESC
-                    LIMIT ${limit_idx} OFFSET ${offset_idx}
-                )
-                SELECT r.id, r.score,
-                       d.source_id, d.external_id, d.title, d.content_id, d.content_type,
-                       d.file_size, d.file_extension, d.url,
-                       d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
-                       COALESCE(snip.content_snippets, ARRAY[LEFT(d.content, 240)]) as content_snippets
-                FROM ranked r
-                JOIN documents d ON d.id = r.id
-                LEFT JOIN LATERAL (
-                    SELECT pdb.snippets(doc.content, start_tag => '**', end_tag => '**',
-                                        max_num_chars => 200, "limit" => 3, sort_by => 'score') as content_snippets
-                    FROM documents doc
-                    WHERE doc.content ||| $1 AND doc.id = r.id
-                    LIMIT 1
-                ) snip ON true
-                ORDER BY r.score DESC"#,
-                phrase_branch = phrase_branch,
-                recency_expr = recency_expr,
-                limit_idx = param_idx,
-                offset_idx = param_idx + 1,
-            )
-        } else {
-            format!(
-                r#"
-                WITH term_scores AS (
-                    {term_union}
-                ),
-                phrase_scores AS (
-                    {phrase_branch}
-                ),
-                combined AS (
-                    SELECT id, SUM(score) as token_score FROM term_scores GROUP BY id
-                ),
-                ranked AS (
-                    SELECT c.id, ((c.token_score + COALESCE(p.score, 0)) * {recency_expr}) as score
-                    FROM combined c
-                    LEFT JOIN phrase_scores p ON c.id = p.id
-                    JOIN documents d ON d.id = c.id
-                    ORDER BY score DESC
-                    LIMIT ${limit_idx} OFFSET ${offset_idx}
-                )
-                SELECT r.id, r.score,
-                       d.source_id, d.external_id, d.title, d.content_id, d.content_type,
-                       d.file_size, d.file_extension, d.url,
-                       d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
-                       COALESCE(snip.content_snippets, ARRAY[LEFT(d.content, 240)]) as content_snippets
-                FROM ranked r
-                JOIN documents d ON d.id = r.id
-                LEFT JOIN LATERAL (
-                    SELECT pdb.snippets(doc.content, start_tag => '**', end_tag => '**',
-                                        max_num_chars => 200, "limit" => 3, sort_by => 'score') as content_snippets
-                    FROM documents doc
-                    WHERE doc.content ||| $1 AND doc.id = r.id
-                    LIMIT 1
-                ) snip ON true
-                ORDER BY r.score DESC"#,
-                term_union = term_branches.join("\nUNION ALL\n"),
-                phrase_branch = phrase_branch,
-                recency_expr = recency_expr,
-                limit_idx = param_idx,
-                offset_idx = param_idx + 1,
-            )
-        };
-        debug!("Full search query: {}", full_query);
-
-        let mut query_builder = sqlx::query_as::<_, SearchHit>(&full_query).bind(query);
-
-        for term in &terms {
-            query_builder = query_builder.bind(term.as_str());
-        }
-
-        query_builder = query_builder.bind(source_ids);
-
-        if let Some(ct) = content_types {
-            if !ct.is_empty() {
-                query_builder = query_builder.bind(ct);
+        if let Some(df) = date_filter {
+            if let Some(after) = &df.after {
+                let iso = after
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default();
+                filters.push(format!(
+                    "metadata->>'updated_at' >= '{}'",
+                    iso.replace('\'', "''")
+                ));
+            }
+            if let Some(before) = &df.before {
+                let iso = before
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default();
+                filters.push(format!(
+                    "metadata->>'updated_at' <= '{}'",
+                    iso.replace('\'', "''")
+                ));
             }
         }
 
-        if let Some(doc_id) = document_id {
-            query_builder = query_builder.bind(doc_id);
+        if let Some(email) = user_email {
+            filters.push(self.generate_permission_filter(email, user_groups));
         }
-
-        query_builder = query_builder
-            .bind(limit)
-            .bind(offset)
-            .bind(recency_boost_weight as f64)
-            .bind(recency_half_life_days as f64);
-
-        let results = query_builder.fetch_all(&self.pool).await?;
-
-        Ok(results)
     }
 
     pub async fn find_by_source(&self, source_id: &str) -> Result<Vec<Document>, DatabaseError> {
@@ -673,104 +483,6 @@ impl DocumentRepository {
         Ok(upserted_document)
     }
 
-    // TODO: This uses field-centric scoring (full query per field, MAX) while search() uses
-    // term-centric scoring (per-term best-field, SUM). This can produce inconsistent facet counts.
-    // Unify with search() scoring — either via a single combined query or shared scoring CTEs.
-    pub async fn get_facet_counts(
-        &self,
-        query: &str,
-        source_ids: &[String],
-        content_types: Option<&[String]>,
-        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
-        user_email: Option<&str>,
-    ) -> Result<Vec<Facet>, DatabaseError> {
-        if source_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let mut filters = Vec::new();
-        let mut param_idx = 2;
-
-        self.build_common_filters(
-            &mut filters,
-            &mut param_idx,
-            source_ids,
-            content_types,
-            attribute_filters,
-            user_email,
-        );
-
-        let common_where = if filters.is_empty() {
-            String::new()
-        } else {
-            format!(" AND {}", filters.join(" AND "))
-        };
-
-        let union_branches = [
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title ||| $1::pdb.boost(2){common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title::pdb.alias('title_en') ||| $1::pdb.boost(2){common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE content ||| $1{common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE content::pdb.alias('content_en') ||| $1{common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title::pdb.alias('title_secondary') ||| $1::pdb.boost(2){common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title ### $1::pdb.slop(2)::pdb.boost(10){common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title::pdb.alias('title_en') ### $1::pdb.slop(2)::pdb.boost(10){common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE content ### $1::pdb.slop(2)::pdb.boost(5){common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE content::pdb.alias('content_en') ### $1::pdb.slop(2)::pdb.boost(5){common_where}"),
-        ];
-
-        let query_str = format!(
-            r#"
-            WITH field_scores AS (
-                {union_all}
-            ),
-            best AS (
-                SELECT id, MAX(score) as score
-                FROM field_scores
-                GROUP BY id
-            ),
-            thresholded AS (
-                SELECT id FROM best
-                WHERE score >= (SELECT MAX(score) FROM best) * 0.15
-            )
-            SELECT 'source_type' as facet, s.source_type as value, count(*) as count
-            FROM thresholded t
-            JOIN documents d ON d.id = t.id
-            JOIN sources s ON d.source_id = s.id
-            GROUP BY s.source_type
-            ORDER BY count DESC
-            "#,
-            union_all = union_branches.join("\n                UNION ALL\n                "),
-        );
-
-        let mut query_builder = sqlx::query_as::<_, (String, String, i64)>(&query_str)
-            .bind(query)
-            .bind(source_ids);
-
-        if let Some(ct) = content_types {
-            if !ct.is_empty() {
-                query_builder = query_builder.bind(ct);
-            }
-        }
-
-        let facet_rows = query_builder.fetch_all(&self.pool).await?;
-
-        let mut facets_map: std::collections::HashMap<String, Vec<FacetValue>> =
-            std::collections::HashMap::new();
-
-        for (facet_name, value, count) in facet_rows {
-            facets_map
-                .entry(facet_name)
-                .or_insert_with(Vec::new)
-                .push(FacetValue { value, count });
-        }
-
-        let facets: Vec<Facet> = facets_map
-            .into_iter()
-            .map(|(name, values)| Facet { name, values })
-            .collect();
-
-        Ok(facets)
-    }
 
     /// Directly populates the content field since we use the ParadeDB BM25 index now
     pub async fn batch_upsert(
@@ -883,6 +595,29 @@ impl DocumentRepository {
 
         Ok(result.rows_affected() as i64)
     }
+}
+
+/// Generate SQL condition to check if user has permission to access document.
+/// Checks: public access, direct user access, domain-wide access, and group membership.
+pub fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
+    let mut conditions = vec![
+        "permissions @@@ 'public:true'".to_string(),
+        format!("permissions @@@ 'users:{}'", user_email),
+    ];
+
+    // Domain-wide access: match user's email domain against groups array
+    if let Some(domain) = user_email.split('@').nth(1) {
+        if !domain.is_empty() {
+            conditions.push(format!("permissions @@@ 'groups:{}'", domain));
+        }
+    }
+
+    // Group membership: match each group the user belongs to
+    for group_email in user_groups {
+        conditions.push(format!("permissions @@@ 'groups:{}'", group_email));
+    }
+
+    format!("({})", conditions.join(" OR "))
 }
 
 /// Convert a JSON value to a string suitable for ParadeDB term queries

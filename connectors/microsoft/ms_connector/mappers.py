@@ -1,19 +1,42 @@
 """Map Microsoft Graph API responses to Omni Document models."""
 
-from datetime import datetime, timezone
-from typing import Any
+from __future__ import annotations
+
+import re
+from datetime import date, datetime, timezone
+from typing import TYPE_CHECKING, Any
 
 from omni_connector import Document, DocumentMetadata, DocumentPermissions
+
+if TYPE_CHECKING:
+    from .syncers.teams import TeamsMessageGroup
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def strip_html(html: str) -> str:
+    """Naive HTML tag stripping for message/event bodies."""
+    text = _HTML_TAG_RE.sub(" ", html)
+    text = _WHITESPACE_RE.sub(" ", text)
+    return text.strip()
 
 
 def map_drive_item_to_document(
     item: dict[str, Any],
     content_id: str,
     source_type: str = "one_drive",
+    graph_permissions: list[dict[str, Any]] | None = None,
+    user_cache: dict[str, str] | None = None,
+    group_cache: dict[str, str] | None = None,
     owner_email: str | None = None,
     site_id: str | None = None,
 ) -> Document:
-    """Map a OneDrive/SharePoint driveItem to an Omni Document."""
+    """Map a OneDrive/SharePoint driveItem to an Omni Document.
+
+    Resolves Graph API permission entries into Omni's permission model
+    using pre-built user_cache (id→email) and group_cache (id→email).
+    """
     parent_ref = item.get("parentReference", {})
     drive_id = parent_ref.get("driveId", "unknown")
     item_id = item["id"]
@@ -26,6 +49,13 @@ def map_drive_item_to_document(
     file_info = item.get("file", {})
     mime_type = file_info.get("mimeType")
     size = item.get("size")
+
+    doc_perms = _resolve_graph_permissions(
+        graph_permissions or [],
+        user_cache or {},
+        group_cache or {},
+        owner_email,
+    )
 
     return Document(
         external_id=external_id,
@@ -43,28 +73,122 @@ def map_drive_item_to_document(
                 "item_id": item_id,
             },
         ),
-        permissions=DocumentPermissions(
-            public=(source_type == "share_point"),
-            users=[owner_email] if owner_email else [],
-        ),
+        permissions=doc_perms,
         attributes={
             "source_type": source_type,
         },
     )
 
 
+def _resolve_graph_permissions(
+    graph_permissions: list[dict[str, Any]],
+    user_cache: dict[str, str],
+    group_cache: dict[str, str],
+    owner_email: str | None,
+) -> DocumentPermissions:
+    """Map Microsoft Graph permission entries to Omni DocumentPermissions."""
+    is_public = False
+    users: set[str] = set()
+    groups: set[str] = set()
+
+    for perm in graph_permissions:
+        # Sharing link permissions
+        link = perm.get("link")
+        if link:
+            scope = link.get("scope", "")
+            if scope == "anonymous":
+                is_public = True
+            elif scope == "organization":
+                # Org-wide link — everyone in the tenant can access
+                is_public = True
+
+            # Specific-people links have grantedToIdentitiesV2
+            for identity in perm.get("grantedToIdentitiesV2", []):
+                _resolve_identity(identity, user_cache, group_cache, users, groups)
+            # Fallback to deprecated grantedToIdentities
+            for identity in perm.get("grantedToIdentities", []):
+                _resolve_identity(identity, user_cache, group_cache, users, groups)
+
+        # Direct user/group grants
+        granted_to = perm.get("grantedToV2") or perm.get("grantedTo")
+        if granted_to:
+            _resolve_identity(granted_to, user_cache, group_cache, users, groups)
+
+        # Email invitations
+        invitation = perm.get("invitation")
+        if invitation:
+            email = invitation.get("email")
+            if email:
+                users.add(email.lower())
+
+    # Fallback: if no permissions resolved, use the drive owner
+    if not is_public and not users and not groups and owner_email:
+        users.add(owner_email.lower())
+
+    return DocumentPermissions(
+        public=is_public,
+        users=sorted(users),
+        groups=sorted(groups),
+    )
+
+
+def _resolve_identity(
+    identity: dict[str, Any],
+    user_cache: dict[str, str],
+    group_cache: dict[str, str],
+    users: set[str],
+    groups: set[str],
+) -> None:
+    """Resolve a Graph identitySet to user emails or group emails."""
+    # Check for site group
+    site_group = identity.get("siteGroup")
+    if site_group:
+        group_id = site_group.get("id", "")
+        if group_id in group_cache:
+            groups.add(group_cache[group_id].lower())
+        return
+
+    # Check for user
+    user = identity.get("user")
+    if user:
+        user_id = user.get("id", "")
+        if user_id in user_cache:
+            users.add(user_cache[user_id].lower())
+
+
+def _collect_message_participants(message: dict[str, Any]) -> set[str]:
+    """Collect all participant emails (from, to, cc) from a message."""
+    participants: set[str] = set()
+    sender_email = message.get("from", {}).get("emailAddress", {}).get("address")
+    if sender_email:
+        participants.add(sender_email.lower())
+    for recipient in message.get("toRecipients", []):
+        addr = recipient.get("emailAddress", {}).get("address")
+        if addr:
+            participants.add(addr.lower())
+    for recipient in message.get("ccRecipients", []):
+        addr = recipient.get("emailAddress", {}).get("address")
+        if addr:
+            participants.add(addr.lower())
+    return participants
+
+
 def map_message_to_document(
     message: dict[str, Any],
-    user_id: str,
-    user_email: str | None,
     content_id: str,
 ) -> Document:
-    """Map an Outlook message to an Omni Document."""
+    """Map an Outlook message to an Omni Document.
+
+    Uses internetMessageId as external_id to deduplicate the same message
+    across multiple users' mailboxes. Permissions include all participants.
+    """
     msg_id = message["id"]
-    external_id = f"mail:{user_id}:{msg_id}"
+    internet_msg_id = message.get("internetMessageId") or msg_id
+    external_id = f"mail:{internet_msg_id}"
 
     sender = message.get("from", {}).get("emailAddress", {})
     sender_name = sender.get("name") or sender.get("address")
+    participants = _collect_message_participants(message)
 
     return Document(
         external_id=external_id,
@@ -75,6 +199,7 @@ def map_message_to_document(
             created_at=_parse_iso(message.get("sentDateTime")),
             updated_at=_parse_iso(message.get("receivedDateTime")),
             url=message.get("webLink"),
+            content_type="email",
             mime_type="message/rfc822",
             extra={
                 "message_id": msg_id,
@@ -83,7 +208,50 @@ def map_message_to_document(
         ),
         permissions=DocumentPermissions(
             public=False,
-            users=[user_email] if user_email else [],
+            users=sorted(participants),
+        ),
+        attributes={
+            "source_type": "outlook",
+        },
+    )
+
+
+def map_attachment_to_document(
+    attachment: dict[str, Any],
+    message: dict[str, Any],
+    content_id: str,
+) -> Document:
+    """Map an Outlook mail attachment to an Omni Document.
+
+    Each attachment is indexed as a separate document. Permissions
+    are inherited from the parent message participants.
+    """
+    internet_msg_id = message.get("internetMessageId") or message["id"]
+    att_id = attachment["id"]
+    external_id = f"mail:{internet_msg_id}:att:{att_id}"
+
+    filename = attachment.get("name", "Untitled Attachment")
+    participants = _collect_message_participants(message)
+
+    return Document(
+        external_id=external_id,
+        title=filename,
+        content_id=content_id,
+        metadata=DocumentMetadata(
+            created_at=_parse_iso(message.get("receivedDateTime")),
+            updated_at=_parse_iso(message.get("receivedDateTime")),
+            url=message.get("webLink"),
+            content_type=attachment.get("contentType"),
+            mime_type=attachment.get("contentType"),
+            size=str(attachment["size"]) if attachment.get("size") else None,
+            extra={
+                "parent_message_id": internet_msg_id,
+                "attachment_id": att_id,
+            },
+        ),
+        permissions=DocumentPermissions(
+            public=False,
+            users=sorted(participants),
         ),
         attributes={
             "source_type": "outlook",
@@ -124,6 +292,7 @@ def map_event_to_document(
             created_at=start_dt,
             updated_at=start_dt,
             url=event.get("webLink"),
+            content_type="event",
             mime_type="text/calendar",
             extra={
                 "event_id": event_id,
@@ -229,10 +398,7 @@ def generate_event_content(event: dict[str, Any]) -> str:
         lines.append("")
         content = body["content"]
         if body.get("contentType", "").lower() == "html":
-            import re
-
-            content = re.sub(r"<[^>]+>", " ", content)
-            content = re.sub(r"\s+", " ", content).strip()
+            content = strip_html(content)
         lines.append(content)
 
     return "\n".join(lines)
@@ -245,6 +411,69 @@ def _parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
+
+
+def map_teams_messages_to_document(
+    group: TeamsMessageGroup,
+    content_id: str,
+) -> Document:
+    """Map a group of Teams channel messages to an Omni Document."""
+    external_id = group.external_id
+
+    if group.is_thread:
+        title = f"Thread in {group.channel_name} - {group.team_name}"
+    else:
+        title = f"{group.channel_name} - {group.team_name} - {group.date}"
+
+    authors = sorted(set(group.authors))
+
+    return Document(
+        external_id=external_id,
+        title=title,
+        content_id=content_id,
+        metadata=DocumentMetadata(
+            author=authors[0] if len(authors) == 1 else "Multiple authors",
+            created_at=group.first_timestamp,
+            updated_at=group.last_timestamp,
+            content_type="message",
+            mime_type="text/plain",
+            path=f"{group.team_name}/{group.channel_name}",
+            extra={
+                "teams": {
+                    "team_id": group.team_id,
+                    "channel_id": group.channel_id,
+                    "message_count": group.message_count,
+                    "authors": authors,
+                    "date": str(group.date),
+                }
+            },
+        ),
+        permissions=group.permissions,
+        attributes={
+            "source_type": "ms_teams",
+            "team_name": group.team_name,
+            "channel_name": group.channel_name,
+            "is_thread": group.is_thread,
+        },
+    )
+
+
+def generate_teams_message_content(
+    messages: list[tuple[dict[str, Any], str]],
+) -> str:
+    """Generate searchable text content from Teams messages.
+
+    Each entry is (raw_message_dict, sender_display_name).
+    """
+    lines = []
+    for msg, sender_name in messages:
+        timestamp = msg.get("createdDateTime", "")
+        body = msg.get("body", {})
+        content = body.get("content", "")
+        if body.get("contentType", "").lower() == "html":
+            content = strip_html(content)
+        lines.append(f"{sender_name} [{timestamp}]: {content}")
+    return "\n\n".join(lines)
 
 
 def _parse_graph_datetime(dt_obj: dict[str, Any] | None) -> datetime | None:

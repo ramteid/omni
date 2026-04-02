@@ -12,6 +12,15 @@ import confluenceIcon from '$lib/images/icons/confluence.svg'
 import jiraIcon from '$lib/images/icons/jira.svg'
 import firefliesIcon from '$lib/images/icons/fireflies.svg'
 import hubspotIcon from '$lib/images/icons/hubspot.svg'
+import microsoftIcon from '$lib/images/icons/microsoft.svg'
+import oneDriveIcon from '$lib/images/icons/onedrive.svg'
+import outlookIcon from '$lib/images/icons/outlook.svg'
+import sharePointIcon from '$lib/images/icons/sharepoint.svg'
+import teamsIcon from '$lib/images/icons/teams.svg'
+import clickupIcon from '$lib/images/icons/clickup.svg'
+import notionIcon from '$lib/images/icons/notion.svg'
+import linearIcon from '$lib/images/icons/linear.svg'
+import githubIcon from '$lib/images/icons/github.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -35,66 +44,46 @@ const GOOGLE_SLIDES_MIMETYPES = [
     'application/vnd.ms-powerpoint',
 ]
 
-// Get icon based on source type and content type
-export function getDocumentIconPath(sourceType: string, contentType: string): string | null {
-    // For Gmail, always use Gmail icon
-    if (sourceType === SourceType.GMAIL) {
-        return gmailIcon
-    }
-
-    // For Google Drive, check content type to determine specific icon
-    if (sourceType === SourceType.GOOGLE_DRIVE) {
-        if (GOOGLE_DOCS_MIMETYPES.includes(contentType)) {
-            return googleDocsIcon
-        }
-        if (GOOGLE_SHEETS_MIMETYPES.includes(contentType)) {
-            return googleSheetsIcon
-        }
-        if (GOOGLE_SLIDES_MIMETYPES.includes(contentType)) {
-            return googleSlidesIcon
-        }
-        // Default to generic Google Drive icon for other file types
-        return googleDriveIcon
-    } else if (sourceType === SourceType.CONFLUENCE) {
-        return confluenceIcon
-    } else if (sourceType === SourceType.JIRA) {
-        return jiraIcon
-    } else if (sourceType === SourceType.SLACK) {
-        return slackIcon
-    } else if (sourceType === SourceType.FIREFLIES) {
-        return firefliesIcon
-    } else if (sourceType === SourceType.HUBSPOT) {
-        return hubspotIcon
-    }
-
-    // For other source types, return null (will use fallback icon)
-    return null
+const SOURCE_TYPE_ICONS: Record<string, string> = {
+    [SourceType.GOOGLE_DRIVE]: googleDriveIcon,
+    [SourceType.GMAIL]: gmailIcon,
+    [SourceType.SLACK]: slackIcon,
+    [SourceType.CONFLUENCE]: confluenceIcon,
+    [SourceType.JIRA]: jiraIcon,
+    [SourceType.FIREFLIES]: firefliesIcon,
+    [SourceType.HUBSPOT]: hubspotIcon,
+    [SourceType.ONE_DRIVE]: oneDriveIcon,
+    [SourceType.OUTLOOK]: outlookIcon,
+    [SourceType.OUTLOOK_CALENDAR]: outlookIcon,
+    [SourceType.SHARE_POINT]: sharePointIcon,
+    [SourceType.MS_TEAMS]: teamsIcon,
+    [SourceType.LINEAR]: linearIcon,
+    [SourceType.GITHUB]: githubIcon,
+    [SourceType.CLICKUP]: clickupIcon,
+    [SourceType.NOTION]: notionIcon,
 }
 
-// Map source types to icon file paths (legacy function, kept for backward compatibility)
-export function getSourceIconPath(sourceType: string): string | null {
-    switch (sourceType) {
-        case SourceType.GOOGLE_DRIVE:
-            return googleDriveIcon
-        case SourceType.GMAIL:
-            return gmailIcon
-        case SourceType.SLACK:
-            return slackIcon
-        case SourceType.CONFLUENCE:
-            return confluenceIcon
-        case SourceType.JIRA:
-            return jiraIcon
-        case SourceType.FIREFLIES:
-            return firefliesIcon
-        case SourceType.HUBSPOT:
-            return hubspotIcon
-        case SourceType.GITHUB:
-            return null // TODO: Add github icon when available
-        case SourceType.LOCAL_FILES:
-            return null // Use fallback FileText icon
-        default:
-            return null // Use fallback FileText icon
+// Get icon based on source type and content type
+export function getDocumentIconPath(sourceType: string, contentType: string): string | null {
+    // For Google Drive, check content type to determine specific icon
+    if (sourceType === SourceType.GOOGLE_DRIVE) {
+        if (contentType === 'document' || GOOGLE_DOCS_MIMETYPES.includes(contentType)) {
+            return googleDocsIcon
+        }
+        if (contentType === 'spreadsheet' || GOOGLE_SHEETS_MIMETYPES.includes(contentType)) {
+            return googleSheetsIcon
+        }
+        if (contentType === 'presentation' || GOOGLE_SLIDES_MIMETYPES.includes(contentType)) {
+            return googleSlidesIcon
+        }
+        return googleDriveIcon
     }
+
+    return SOURCE_TYPE_ICONS[sourceType] ?? null
+}
+
+export function getSourceIconPath(sourceType: string): string | null {
+    return SOURCE_TYPE_ICONS[sourceType] ?? null
 }
 
 // Get source type from source ID using sources lookup
@@ -151,6 +140,7 @@ export function inferSourceFromUrl(url: string): SourceType | null {
     if (urlLower.includes('atlassian.net/jira')) return SourceType.JIRA
     if (urlLower.includes('github.com')) return SourceType.GITHUB
     if (urlLower.includes('fireflies.ai')) return SourceType.FIREFLIES
+    if (urlLower.includes('linear.app')) return SourceType.LINEAR
 
     return null
 }
@@ -196,7 +186,17 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.GITHUB]: 'GitHub',
         [SourceType.LOCAL_FILES]: 'Files',
         [SourceType.WEB]: 'Web',
+        [SourceType.HUBSPOT]: 'HubSpot',
         [SourceType.FIREFLIES]: 'Fireflies',
+        [SourceType.CLICKUP]: 'ClickUp',
+        [SourceType.NOTION]: 'Notion',
+        [SourceType.LINEAR]: 'Linear',
+        [SourceType.ONE_DRIVE]: 'OneDrive',
+        [SourceType.SHARE_POINT]: 'SharePoint',
+        [SourceType.OUTLOOK]: 'Outlook',
+        [SourceType.OUTLOOK_CALENDAR]: 'Outlook Calendar',
+        [SourceType.MS_TEAMS]: 'Teams',
+        [SourceType.IMAP]: 'IMAP',
     }
 
     return sourceDisplayNames[sourceType]

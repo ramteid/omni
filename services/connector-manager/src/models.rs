@@ -2,30 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use shared::models::SourceType;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<ActionDefinition>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: JsonValue,
-    #[serde(default = "default_action_mode")]
-    pub mode: String, // "read" | "write"
-}
-
-fn default_action_mode() -> String {
-    "write".to_string()
-}
-
-// SyncRequest and SyncResponse are imported from shared crate
-pub use shared::models::{SyncRequest, SyncResponse};
+pub use shared::models::{
+    ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
+    SearchOperator, SyncRequest, SyncResponse,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionRequest {
@@ -125,6 +105,9 @@ pub struct SdkSourceSyncConfigResponse {
     pub credentials: JsonValue,
     pub connector_state: Option<JsonValue>,
     pub source_type: SourceType,
+    pub user_filter_mode: shared::models::UserFilterMode,
+    pub user_whitelist: Option<JsonValue>,
+    pub user_blacklist: Option<JsonValue>,
 }
 
 // ============================================================================
@@ -193,6 +176,15 @@ pub struct SdkCreateSyncResponse {
 }
 
 // ============================================================================
+// SDK Extract Content
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkExtractContentResponse {
+    pub content_id: String,
+}
+
+// ============================================================================
 // SDK Cancel Sync
 // ============================================================================
 
@@ -228,4 +220,38 @@ pub struct SdkWebhookNotification {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkWebhookResponse {
     pub sync_run_id: String,
+}
+
+// ============================================================================
+// MCP Resource & Prompt forwarding
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceRequest {
+    pub uri: String,
+    #[serde(default)]
+    pub credentials: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRequest {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Option<JsonValue>,
+    #[serde(default)]
+    pub credentials: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecuteResourceRequest {
+    pub source_id: String,
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutePromptRequest {
+    pub source_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Option<JsonValue>,
 }

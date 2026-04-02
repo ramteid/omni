@@ -9,21 +9,7 @@ use time::OffsetDateTime;
 // Connector Protocol Models
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<ActionDefinition>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: JsonValue,
-}
+pub use shared::models::{ActionDefinition, ConnectorManifest};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResponse {
@@ -425,6 +411,7 @@ impl MessageGroup {
             }),
             created_at,
             updated_at,
+            content_type: Some("message".to_string()),
             mime_type: Some("text/plain".to_string()),
             size: Some(self.content_size().to_string()),
             url: Some(format!(
@@ -520,6 +507,7 @@ impl SlackFile {
             author: None,
             created_at: None,
             updated_at: None,
+            content_type: None,
             mime_type: self.mimetype.clone(),
             size: Some(self.size.to_string()),
             url: self.permalink.clone(),

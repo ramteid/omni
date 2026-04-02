@@ -19,7 +19,6 @@ dependencies = [
     "boto3>=1.40.0",
     "openai>=1.82.0",
     "transformers>=4.52.0",
-    "pypdf>=5.6.0",
     "asyncpg>=0.30.0",
     "python-ulid>=3.1.0",
     "smart-open>=7.4.0",
@@ -32,6 +31,10 @@ dependencies = [
     "redis>=5.0.0",
     "cohere>=5.20.4",
     "google-genai>=1.0.0",
+    "azure-identity>=1.19.0",
+    "azure-communication-email>=1.0.0",
+    "aiosmtplib>=3.0.0",
+    "croniter>=2.0.0",
 ]
 
 [tool.pytest.ini_options]
@@ -90,6 +93,8 @@ include = [
     "db*",
     "models*",
     "logger*",
+    "agents*",
+    "email_service*",
 ]
 
 [dependency-groups]
@@ -102,5 +107,4 @@ dev = [
     "requests>=2.32.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
-    "fpdf2>=2.8.5",
 ]

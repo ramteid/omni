@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import cast
 
 import httpx
@@ -8,9 +9,10 @@ from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import ValidationError
 
-from db import ChatsRepository, MessagesRepository, SourcesRepository
+from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
-from db.models import Chat
+from db.models import Chat, Source
+from db.users import UsersRepository
 from tools import (
     SearcherTool,
     ToolRegistry,
@@ -18,9 +20,11 @@ from tools import (
     SearchToolHandler,
     ConnectorToolHandler,
     DocumentToolHandler,
+    PeopleSearchHandler,
 )
-from tools.search_handler import SEARCH_TOOLS
+from tools.connector_handler import ConnectorAction, SearchOperator
 from tools.sandbox_handler import SandboxToolHandler
+from tools.search_handler import fetch_operator_values
 from config import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
@@ -82,6 +86,24 @@ def _resolve_llm_provider(state: AppState, chat: Chat) -> LLMProvider:
     return next(iter(models.values()))
 
 
+def _resolve_secondary_provider(state: AppState) -> LLMProvider:
+    """Resolve the secondary (lightweight) model provider.
+    Priority: secondary model -> default model -> first available.
+    Used for title generation, suggested questions, compaction, etc.
+    """
+    models = state.models
+    if not models:
+        raise HTTPException(status_code=503, detail="No models configured")
+
+    if state.secondary_model_id and state.secondary_model_id in models:
+        return models[state.secondary_model_id]
+
+    if state.default_model_id and state.default_model_id in models:
+        return models[state.default_model_id]
+
+    return next(iter(models.values()))
+
+
 def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationParam:
     citation = citation_delta.citation
     if citation.type == "char_location":
@@ -133,19 +155,37 @@ def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationPar
         raise ValueError(f"Unknown citation type: {citation.type}")
 
 
-async def _build_registry(
-    request: Request, chat: Chat
-) -> tuple[ToolRegistry, list[dict] | None]:
-    """Build a ToolRegistry with all available handlers.
+@dataclass
+class RegistryResult:
+    registry: ToolRegistry
+    connector_actions: list[ConnectorAction] | None
+    sources: list[Source] | None
+    search_operators: list[SearchOperator] | None
 
-    Returns the registry and the raw connector actions list (for system prompt).
-    """
+
+async def _fetch_sources_from_connector_manager() -> list[Source] | None:
+    """Fetch all sources from the connector manager. Returns None on failure."""
+    if not CONNECTOR_MANAGER_URL:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
+            resp.raise_for_status()
+            return [Source.from_row(s) for s in resp.json()]
+    except Exception as e:
+        logger.warning(f"Failed to fetch sources from connector manager: {e}")
+        return None
+
+
+async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
+    """Build a ToolRegistry with all available handlers."""
     registry = ToolRegistry()
 
-    # Always register search tools
-    registry.register(SearchToolHandler(searcher_tool=request.app.state.searcher_tool))
+    # Fetch sources from connector manager once, share with all handlers
+    sources = await _fetch_sources_from_connector_manager()
 
-    connector_actions: list[dict] | None = None
+    connector_actions: list[ConnectorAction] | None = None
+    search_operators: list[SearchOperator] | None = None
 
     # Register connector tools if connector-manager is configured
     if CONNECTOR_MANAGER_URL:
@@ -153,21 +193,45 @@ async def _build_registry(
             connector_manager_url=CONNECTOR_MANAGER_URL,
             user_id=chat.user_id,
             redis_client=getattr(request.app.state, "redis_client", None),
+            prefetched_sources=sources,
+            documents_repo=DocumentsRepository(),
         )
         await connector_handler._ensure_initialized()
         registry.register(connector_handler)
 
         # Collect action metadata for system prompt
         if connector_handler._actions:
-            connector_actions = [
-                {
-                    "source_type": a.source_type,
-                    "action_name": a.action_name,
-                    "description": a.description,
-                    "mode": a.mode,
-                }
-                for a in connector_handler._actions.values()
-            ]
+            connector_actions = list(connector_handler._actions.values())
+
+        # Collect search operators for search tool description
+        if connector_handler.search_operators:
+            search_operators = connector_handler.search_operators
+
+    # Fetch dynamic operator values for enriched search tool description
+    active_sources = [s for s in (sources or []) if s.is_active and not s.is_deleted]
+    connected_source_types = list({s.source_type for s in active_sources})
+    operator_values: dict[str, list[str]] = {}
+    if search_operators:
+        operator_values = await fetch_operator_values(
+            request.app.state.searcher_tool.client,
+            search_operators,
+            redis_client=getattr(request.app.state, "redis_client", None),
+        )
+
+    # Register search tools (with dynamic operators from connector manifests)
+    registry.register(
+        SearchToolHandler(
+            searcher_tool=request.app.state.searcher_tool,
+            search_operators=search_operators,
+            connected_source_types=connected_source_types,
+            operator_values=operator_values,
+        )
+    )
+
+    # Register people search tool
+    registry.register(
+        PeopleSearchHandler(searcher_tool=request.app.state.searcher_tool)
+    )
 
     # Register document handler (unified read_document tool)
     content_storage = getattr(request.app.state, "content_storage", None)
@@ -185,7 +249,12 @@ async def _build_registry(
     if SANDBOX_URL:
         registry.register(SandboxToolHandler(sandbox_url=SANDBOX_URL))
 
-    return registry, connector_actions
+    return RegistryResult(
+        registry=registry,
+        connector_actions=connector_actions,
+        sources=sources,
+        search_operators=search_operators,
+    )
 
 
 async def _save_pending_approval(
@@ -254,13 +323,24 @@ async def stream_chat(
 
     llm_provider = _resolve_llm_provider(request.app.state, chat)
 
+    # Resolve user info for permission checks and system prompt
+    user_email: str | None = None
+    user_name: str | None = None
+    if chat.user_id:
+        users_repo = UsersRepository()
+        user = await users_repo.find_by_id(chat.user_id)
+        if user:
+            user_email = user.email
+            user_name = user.full_name
+
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_active_path(chat_id)
     if not chat_messages:
         raise HTTPException(status_code=404, detail="No messages found for chat")
 
     # Build registry and discover connector actions
-    registry, connector_actions = await _build_registry(request, chat)
+    build_result = await _build_registry(request, chat)
+    registry = build_result.registry
     all_tools = registry.get_all_tools()
 
     # Check for pending approval resume flow
@@ -290,9 +370,10 @@ async def stream_chat(
         MessageParam(**msg.message) for msg in chat_messages
     ]
 
-    # Check if conversation needs compaction
+    # Check if conversation needs compaction — use secondary model for summarization
+    secondary_provider = _resolve_secondary_provider(request.app.state)
     compactor = ConversationCompactor(
-        llm_provider=llm_provider,
+        llm_provider=secondary_provider,
         redis_client=redis_client,
     )
     if compactor.needs_compaction(messages, all_tools):
@@ -300,9 +381,15 @@ async def stream_chat(
         messages = await compactor.compact_conversation(chat_id, messages)
 
     # Build system prompt from active sources
-    sources_repo = SourcesRepository()
-    active_sources = await sources_repo.get_active_sources()
-    system_prompt = build_chat_system_prompt(active_sources, connector_actions)
+    active_sources = [
+        s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
+    ]
+    system_prompt = build_chat_system_prompt(
+        active_sources,
+        build_result.connector_actions,
+        user_name=user_name,
+        user_email=user_email,
+    )
 
     # Stream AI response with tool calling
     async def stream_generator():
@@ -322,7 +409,7 @@ async def stream_chat(
                 context = ToolContext(
                     chat_id=chat_id,
                     user_id=chat.user_id,
-                    user_email=None,
+                    user_email=user_email,
                 )
                 result = await registry.execute(
                     tool_call["name"], tool_call["input"], context
@@ -367,7 +454,7 @@ async def stream_chat(
             context = ToolContext(
                 chat_id=chat_id,
                 user_id=chat.user_id,
-                user_email=None,
+                user_email=user_email,
                 original_user_query=original_user_query,
             )
 
@@ -629,7 +716,7 @@ async def generate_chat_title(
         if not chat:
             raise HTTPException(status_code=404, detail="Chat thread not found")
 
-        llm_provider = _resolve_llm_provider(request.app.state, chat)
+        llm_provider = _resolve_secondary_provider(request.app.state)
 
         # Check if title already exists
         if chat.title:

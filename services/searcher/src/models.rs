@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use shared::{
-    models::{AttributeFilter, Document, Facet},
+    models::{AttributeFilter, DateFilter, Document, Facet},
     SourceType,
 };
 use std::collections::HashMap;
@@ -40,6 +40,10 @@ pub struct SearchRequest {
     // Both inclusive.
     pub document_content_start_line: Option<u32>,
     pub document_content_end_line: Option<u32>,
+    #[serde(skip)]
+    pub date_filter: Option<DateFilter>,
+    #[serde(skip)]
+    pub person_filters: Option<Vec<String>>,
 }
 
 impl SearchRequest {
@@ -73,6 +77,8 @@ pub struct SearchResponse {
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub facets: Option<Vec<Facet>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_filters: Option<Vec<Facet>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +89,8 @@ pub struct SearchResult {
     pub match_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +143,33 @@ pub struct TypeaheadResult {
     pub title: String,
     pub url: Option<String>,
     pub source_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PersonResult {
+    pub id: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub given_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department: Option<String>,
+    pub score: f32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PeopleSearchResponse {
+    pub people: Vec<PersonResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AttributeValuesResponse {
+    pub attributes: HashMap<String, Vec<String>>,
 }
 
 #[cfg(test)]
