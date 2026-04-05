@@ -20,7 +20,7 @@ impl PaperlessConfig {
     pub fn from_source_config(config: &serde_json::Value) -> Result<Self> {
         let mut cfg: Self =
             serde_json::from_value(config.clone()).context("Failed to parse paperless config")?;
-        // Normalise trailing slash so URL construction is consistent.
+        // Normalize trailing slash so URL construction is consistent.
         cfg.base_url = cfg.base_url.trim_end_matches('/').to_string();
         Ok(cfg)
     }

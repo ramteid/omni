@@ -95,8 +95,8 @@ impl SyncManager {
             state = PaperlessConnectorState::default();
         }
 
-        // Clone so the borrow of `state.last_sync_at` doesn't conflict with
-        // the later `&mut state` borrow passed to `execute_sync`.
+        // Clone so the borrow of `state.last_sync_at` (immutable) doesn't
+        // conflict with the mutable borrow of `state` passed to `execute_sync`.
         let modified_after: Option<String> = if is_full {
             None
         } else {
