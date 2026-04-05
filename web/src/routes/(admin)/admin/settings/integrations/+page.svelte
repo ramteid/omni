@@ -20,7 +20,7 @@
     import linearLogo from '$lib/images/icons/linear.svg'
     import githubLogo from '$lib/images/icons/github.svg'
     import { getSourceIconPath } from '$lib/utils/icons'
-    import { Globe, HardDrive, Mail } from '@lucide/svelte'
+    import { Globe, HardDrive, Mail, FileText } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
@@ -35,6 +35,7 @@
     import NotionConnectorSetup from '$lib/components/notion-connector-setup.svelte'
     import LinearConnectorSetup from '$lib/components/linear-connector-setup.svelte'
     import GithubConnectorSetup from '$lib/components/github-connector-setup.svelte'
+    import PaperlessConnectorSetup from '$lib/components/paperless-connector-setup.svelte'
     import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { onMount, onDestroy } from 'svelte'
@@ -164,6 +165,7 @@
         [SourceType.CLICKUP]: 'tasks',
         [SourceType.NOTION]: 'pages',
         [SourceType.GITHUB]: 'documents',
+        [SourceType.PAPERLESS_NGX]: 'documents',
     }
 
     function getSourceNoun(sourceType: SourceType): string {
@@ -225,6 +227,8 @@
                                     <HardDrive class="h-6 w-6" />
                                 {:else if source.sourceType === 'imap'}
                                     <Mail class="h-6 w-6" />
+                                {:else if source.sourceType === 'paperless_ngx'}
+                                    <FileText class="h-6 w-6" />
                                 {/if}
                                 <div class="flex flex-col gap-0.5">
                                     <div class="flex items-center gap-2">
@@ -326,6 +330,8 @@
                                     <HardDrive class="h-6 w-6" />
                                 {:else if integration.id === 'imap'}
                                     <Mail class="h-6 w-6" />
+                                {:else if integration.id === 'paperless'}
+                                    <FileText class="h-6 w-6" />
                                 {/if}
                                 <span>{integration.name}</span>
                             </CardTitle>
@@ -410,5 +416,10 @@
 
 <GithubConnectorSetup
     open={activeSetup === 'github'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
+<PaperlessConnectorSetup
+    open={activeSetup === 'paperless'}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />

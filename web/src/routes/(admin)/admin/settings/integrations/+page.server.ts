@@ -26,6 +26,8 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
     'hubspot',
     // Meetings
     'fireflies',
+    // Document management
+    'paperless',
     // Other
     'web',
     'filesystem',
