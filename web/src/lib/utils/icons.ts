@@ -197,6 +197,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.OUTLOOK_CALENDAR]: 'Outlook Calendar',
         [SourceType.MS_TEAMS]: 'Teams',
         [SourceType.IMAP]: 'IMAP',
+        [SourceType.PAPERLESS_NGX]: 'Paperless-ngx',
     }
 
     return sourceDisplayNames[sourceType]
