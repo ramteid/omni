@@ -199,11 +199,13 @@ services:
     build:
       context: ../services/docling
       dockerfile: Dockerfile
+      args:
+        DEVICE: ${DOCLING_DEVICE:-cpu}
 
   vllm:
     profiles:
       - production
-  
+
   embeddings:
     ports:
       - "${LOCAL_EMBEDDINGS_PORT}:${LOCAL_EMBEDDINGS_PORT}"
