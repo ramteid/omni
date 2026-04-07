@@ -284,8 +284,48 @@ jobs:
       free-disk-space: true
     secrets: inherit
 
-  build-migrator:
+  check-migrations:
     needs: detect-changes
+    if: needs.detect-changes.outputs.migrator == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify migration numbering is sequential
+        run: |
+          cd services/migrations
+          # Extract numeric prefixes, sort numerically, and verify no gaps or duplicates
+          numbers=$(ls *.sql 2>/dev/null | grep -oP '^\d+' | sort -n)
+          if [ -z "$numbers" ]; then
+            echo "ERROR: No migration files found"
+            exit 1
+          fi
+
+          prev=0
+          while IFS= read -r num_raw; do
+            # Strip leading zeros for arithmetic
+            num=$((10#$num_raw))
+            expected=$((prev + 1))
+            if [ "$num" -ne "$expected" ]; then
+              echo "ERROR: Migration numbering is not sequential."
+              echo "  Expected migration number: $expected (after $prev)"
+              echo "  Found: $num_raw"
+              echo ""
+              if [ "$num" -eq "$prev" ]; then
+                echo "Duplicate migration number detected."
+              else
+                echo "Gap in migration numbers detected."
+              fi
+              echo "This usually means two PRs used the same migration number."
+              echo "Please renumber your migration and try again."
+              exit 1
+            fi
+            prev=$num
+          done <<< "$numbers"
+
+          echo "All $prev migrations are in sequential order."
+
+  build-migrator:
+    needs: [detect-changes, check-migrations]
     if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.migrator == 'true'
     uses: ./.github/workflows/build-service.yml
     with:
