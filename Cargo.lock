@@ -4279,7 +4279,6 @@ dependencies = [
  "native-tls",
  "serde",
  "serde_json",
- "sha2",
  "shared",
  "time",
  "tokio",
