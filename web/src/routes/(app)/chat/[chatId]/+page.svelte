@@ -65,8 +65,7 @@
     import * as Card from '$lib/components/ui/card'
     import { SourceType } from '$lib/types'
     import MarkdownMessage from '$lib/components/markdown-message.svelte'
-    import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
-    import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
+    import { themeStore } from '$lib/themes/store.svelte'
 
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
@@ -1283,7 +1282,7 @@
                 </div>
             {/if}
             {#if firstText}
-                <div class="text-foreground w-fit rounded-2xl bg-gray-200 px-6 py-4">
+                <div class="bg-secondary text-secondary-foreground w-fit rounded-2xl px-6 py-4">
                     {@html marked.parse(firstText.text)}
                 </div>
             {/if}
@@ -1506,7 +1505,8 @@
                     {:else if message.role === 'assistant'}
                         <!-- Assistant Message -->
                         <div class="group mt-8 flex flex-col gap-1">
-                            <div class="prose prose-p:my-3 max-w-none">
+                            <div
+                                class="prose prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none">
                                 <ToolCallsGroup
                                     content={message.content}
                                     isStreaming={isStreaming && i === processedMessages.length - 1}
@@ -1619,15 +1619,15 @@
                         {:else if isStreaming}
                             <span class="thinking-container mt-2 flex items-center gap-1.5">
                                 <img
-                                    src={omniLogoLight}
+                                    src={themeStore.current.omniLogoLight}
                                     alt="Thinking"
-                                    class="thinking-logo rounded opacity-60 dark:hidden"
+                                    class="omni-logo-light thinking-logo rounded opacity-60"
                                     width="20"
                                     height="20" />
                                 <img
-                                    src={omniLogoDark}
+                                    src={themeStore.current.omniLogoDark}
                                     alt="Thinking"
-                                    class="thinking-logo hidden rounded opacity-60 dark:block"
+                                    class="omni-logo-dark thinking-logo rounded opacity-60"
                                     width="20"
                                     height="20" />
                                 <span class="text-muted-foreground text-sm">{thinkingText}...</span>
