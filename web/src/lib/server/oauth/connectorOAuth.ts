@@ -284,7 +284,10 @@ export async function exchangeCodeAndIdentify(
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
     const tokenResp = await fetch(tokenEndpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
+        },
         body: tokenParams.toString(),
     })
     const tokenData = await tokenResp.json()
@@ -295,18 +298,55 @@ export async function exchangeCodeAndIdentify(
     const tokens = tokenData as OAuthTokens
 
     const userinfoResp = await fetch(config.userinfo_endpoint, {
-        headers: { Authorization: `Bearer ${tokens.access_token}` },
+        headers: {
+            Authorization: `Bearer ${tokens.access_token}`,
+            Accept: 'application/json',
+        },
     })
     if (!userinfoResp.ok) {
         throw new Error(`Failed to fetch userinfo: ${userinfoResp.status}`)
     }
-    const profile = (await userinfoResp.json()) as Record<string, unknown>
-    const email = profile[config.userinfo_email_field]
-    if (typeof email !== 'string') {
+    const profile = (await userinfoResp.json()) as unknown
+    const email = extractEmailFromUserinfo(profile, config.userinfo_email_field)
+    if (!email) {
         throw new Error(`userinfo response missing field "${config.userinfo_email_field}"`)
     }
 
     return { tokens, state, config, principalEmail: email }
+}
+
+function extractEmailFromUserinfo(profile: unknown, emailField: string): string | null {
+    if (Array.isArray(profile)) {
+        const entries = profile.filter(isUserinfoObject)
+        return (
+            getStringField(
+                entries.find((entry) => entry.primary === true && entry.verified === true),
+                emailField,
+            ) ??
+            getStringField(
+                entries.find((entry) => entry.verified === true),
+                emailField,
+            ) ??
+            getStringField(
+                entries.find((entry) => typeof entry[emailField] === 'string'),
+                emailField,
+            )
+        )
+    }
+
+    return getStringField(isUserinfoObject(profile) ? profile : null, emailField)
+}
+
+function isUserinfoObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null
+}
+
+function getStringField(
+    value: Record<string, unknown> | null | undefined,
+    field: string,
+): string | null {
+    const fieldValue = value?.[field]
+    return typeof fieldValue === 'string' && fieldValue ? fieldValue : null
 }
 
 async function manifestForFlow(
