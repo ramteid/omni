@@ -59,14 +59,8 @@ pub fn create_app(state: AppState) -> Router {
         .route("/sdk/events", post(handlers::sdk_emit_event))
         .route("/sdk/events/batch", post(handlers::sdk_emit_batch))
         .route("/sdk/content", post(handlers::sdk_store_content))
-        .route(
-            "/sdk/extract-content",
-            post(handlers::sdk_extract_content).layer(DefaultBodyLimit::max(400 * 1024 * 1024)),
-        ) // 400 MB for binary file extraction
-        .route(
-            "/sdk/extract-text",
-            post(handlers::sdk_extract_text).layer(DefaultBodyLimit::max(400 * 1024 * 1024)),
-        ) // 400 MB for binary file extraction (returns text without storing)
+        .route("/sdk/extract-content", post(handlers::sdk_extract_content))
+        .route("/sdk/extract-text", post(handlers::sdk_extract_text))
         .route("/sdk/sync/:id/heartbeat", post(handlers::sdk_heartbeat))
         .route("/sdk/sync/:id/complete", post(handlers::sdk_complete))
         .route("/sdk/sync/:id/fail", post(handlers::sdk_fail))
@@ -111,6 +105,7 @@ pub fn create_app(state: AppState) -> Router {
             "/sdk/connector-configs/:provider",
             get(handlers::sdk_get_connector_config),
         )
+        .layer(DefaultBodyLimit::disable())
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
