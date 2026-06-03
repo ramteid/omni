@@ -63,6 +63,13 @@ struct BufferEntry {
     oldest_at: Instant,
 }
 
+/// Maximum number of retries when the extraction service responds with 429.
+const MAX_EXTRACT_RETRIES: u32 = 20;
+
+/// Minimum seconds to wait between extraction retries; the server-supplied
+/// Retry-After value is used when it is larger than this.
+const MIN_EXTRACT_RETRY_WAIT_SECS: u64 = 2;
+
 /// Per-`SyncType` buffer thresholds: (size, time). `None` time means flush-on-emit.
 fn thresholds_for(sync_type: SyncType) -> (usize, Option<Duration>) {
     match sync_type {
@@ -200,7 +207,7 @@ impl SdkClient {
     /// Build a multipart form for binary extraction endpoints.
     fn build_extract_form(
         sync_run_id: &str,
-        data: Vec<u8>,
+        data: &[u8],
         mime_type: &str,
         filename: Option<&str>,
     ) -> reqwest::multipart::Form {
@@ -209,7 +216,7 @@ impl SdkClient {
             .text("mime_type", mime_type.to_string())
             .part(
                 "data",
-                reqwest::multipart::Part::bytes(data)
+                reqwest::multipart::Part::bytes(data.to_vec())
                     .file_name("file")
                     .mime_str("application/octet-stream")
                     .expect("valid mime string"),
@@ -242,17 +249,47 @@ impl SdkClient {
             data.len()
         );
 
-        let form = Self::build_extract_form(sync_run_id, data, mime_type, filename);
+        for attempt in 0..MAX_EXTRACT_RETRIES {
+            let form = Self::build_extract_form(sync_run_id, &data, mime_type, filename);
+            let response = self
+                .client
+                .post(format!("{}/sdk/extract-text", self.base_url))
+                .multipart(form)
+                .send()
+                .await?;
 
-        let response = self
-            .client
-            .post(format!("{}/sdk/extract-text", self.base_url))
-            .multipart(form)
-            .send()
-            .await?;
-        let response = ensure_ok(response, "extract_text").await?;
-        let result: ExtractTextResponse = response.json().await?;
-        Ok(result.text)
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(30);
+                if attempt + 1 >= MAX_EXTRACT_RETRIES {
+                    return Err(SdkError::Http {
+                        operation: "extract_text",
+                        status: StatusCode::TOO_MANY_REQUESTS,
+                        body: "extraction service overloaded, max retries exceeded".to_string(),
+                    });
+                }
+                let wait = retry_after.max(MIN_EXTRACT_RETRY_WAIT_SECS);
+                warn!(
+                    "Extraction service overloaded for '{}', retrying in {}s ({}/{})",
+                    filename.unwrap_or("<unnamed>"),
+                    wait,
+                    attempt + 1,
+                    MAX_EXTRACT_RETRIES
+                );
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                continue;
+            }
+
+            let response = ensure_ok(response, "extract_text").await?;
+            let result: ExtractTextResponse = response.json().await?;
+            return Ok(result.text);
+        }
+
+        unreachable!()
     }
 
     /// Emit a document event. Events are buffered in memory and auto-flushed
@@ -383,17 +420,47 @@ impl SdkClient {
             data.len()
         );
 
-        let form = Self::build_extract_form(sync_run_id, data, mime_type, filename);
+        for attempt in 0..MAX_EXTRACT_RETRIES {
+            let form = Self::build_extract_form(sync_run_id, &data, mime_type, filename);
+            let response = self
+                .client
+                .post(format!("{}/sdk/extract-content", self.base_url))
+                .multipart(form)
+                .send()
+                .await?;
 
-        let response = self
-            .client
-            .post(format!("{}/sdk/extract-content", self.base_url))
-            .multipart(form)
-            .send()
-            .await?;
-        let response = ensure_ok(response, "extract_and_store_content").await?;
-        let result: StoreContentResponse = response.json().await?;
-        Ok(result.content_id)
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(30);
+                if attempt + 1 >= MAX_EXTRACT_RETRIES {
+                    return Err(SdkError::Http {
+                        operation: "extract_and_store_content",
+                        status: StatusCode::TOO_MANY_REQUESTS,
+                        body: "extraction service overloaded, max retries exceeded".to_string(),
+                    });
+                }
+                let wait = retry_after.max(MIN_EXTRACT_RETRY_WAIT_SECS);
+                warn!(
+                    "Extraction service overloaded for '{}', retrying in {}s ({}/{})",
+                    filename.unwrap_or("<unnamed>"),
+                    wait,
+                    attempt + 1,
+                    MAX_EXTRACT_RETRIES
+                );
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                continue;
+            }
+
+            let response = ensure_ok(response, "extract_and_store_content").await?;
+            let result: StoreContentResponse = response.json().await?;
+            return Ok(result.content_id);
+        }
+
+        unreachable!()
     }
 
     /// Store content and return content_id
