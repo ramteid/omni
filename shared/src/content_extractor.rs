@@ -161,23 +161,35 @@ fn extract_pdf_text(data: &[u8]) -> Result<String> {
 }
 
 fn extract_docx_text(data: &[u8]) -> Result<String> {
-    let docx = read_docx(data).context("Failed to read DOCX")?;
-    let mut text = String::new();
+    let data_owned = data.to_vec();
+    let result = std::panic::catch_unwind(move || {
+        let docx = read_docx(&data_owned).context("Failed to read DOCX")?;
+        let mut text = String::new();
 
-    for child in &docx.document.children {
-        match child {
-            docx_rs::DocumentChild::Paragraph(paragraph) => {
-                extract_paragraph_text(paragraph, &mut text);
-                text.push('\n');
+        for child in &docx.document.children {
+            match child {
+                docx_rs::DocumentChild::Paragraph(paragraph) => {
+                    extract_paragraph_text(paragraph, &mut text);
+                    text.push('\n');
+                }
+                docx_rs::DocumentChild::Table(table) => {
+                    extract_table_text(table, &mut text);
+                }
+                _ => {}
             }
-            docx_rs::DocumentChild::Table(table) => {
-                extract_table_text(table, &mut text);
-            }
-            _ => {}
+        }
+
+        Ok(text.trim().to_string())
+    });
+
+    match result {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(e)) => Err(e),
+        Err(_) => {
+            warn!("DOCX extraction panicked — likely a malformed or unsupported document");
+            Err(anyhow!("DOCX extraction panicked due to malformed content"))
         }
     }
-
-    Ok(text.trim().to_string())
 }
 
 fn extract_paragraph_text(paragraph: &docx_rs::Paragraph, text: &mut String) {
