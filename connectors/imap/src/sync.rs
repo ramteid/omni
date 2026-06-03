@@ -296,7 +296,22 @@ impl SyncManager {
                 Ok(msgs) => msgs,
                 Err(e) => {
                     warn!("Failed to fetch batch in folder '{}': {}", folder, e);
-                    continue;
+                    // Attempt to retrieve each message individually so a single
+                    // oversized, malformed, or server-rejected message does not
+                    // cause the entire batch to be silently skipped.
+                    let mut recovered = Vec::new();
+                    for &uid in chunk {
+                        match session.fetch_messages(&[uid]).await {
+                            Ok(msgs) => recovered.extend(msgs),
+                            Err(single_err) => {
+                                warn!(
+                                    "Skipping UID {} in '{}': {}",
+                                    uid, folder, single_err
+                                );
+                            }
+                        }
+                    }
+                    recovered
                 }
             };
 
