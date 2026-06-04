@@ -80,6 +80,8 @@ class OpenAIProvider(LLMProvider):
             if system_prompt:
                 request_params["instructions"] = system_prompt
 
+            if temperature is not None:
+                request_params["temperature"] = temperature
             if top_p is not None:
                 request_params["top_p"] = top_p
 
@@ -97,7 +99,7 @@ class OpenAIProvider(LLMProvider):
 
             text_started = False
             current_text_index = 0
-            tool_call_indices: dict[str, int] = {}  # call_id -> content block index
+            tool_call_indices: dict[str, int] = {}  # item_id -> content block index
             next_block_index = 0
 
             async for event in stream:
@@ -144,19 +146,24 @@ class OpenAIProvider(LLMProvider):
                 elif event_type == "response.output_item.added":
                     item = event.item
                     if item.type == "function_call":
-                        block_index = next_block_index
-                        next_block_index += 1
-                        tool_call_indices[item.id] = block_index
-                        yield RawContentBlockStartEvent(
-                            type="content_block_start",
-                            index=block_index,
-                            content_block=ToolUseBlock(
-                                type="tool_use",
-                                id=item.call_id,
-                                name=item.name,
-                                input={},
-                            ),
-                        )
+                        if item.id is None:
+                            logger.warning(
+                                f"Received function_call item with no id (call_id={item.call_id}); skipping tool block"
+                            )
+                        else:
+                            block_index = next_block_index
+                            next_block_index += 1
+                            tool_call_indices[item.id] = block_index
+                            yield RawContentBlockStartEvent(
+                                type="content_block_start",
+                                index=block_index,
+                                content_block=ToolUseBlock(
+                                    type="tool_use",
+                                    id=item.call_id,
+                                    name=item.name,
+                                    input={},
+                                ),
+                            )
 
                 # Handle tool call argument deltas
                 elif event_type == "response.function_call_arguments.delta":
@@ -211,6 +218,40 @@ class OpenAIProvider(LLMProvider):
                             ),
                         )
                     break
+
+                # Handle incomplete response (max_output_tokens exhausted mid-stream)
+                elif event_type == "response.incomplete":
+                    resp_usage = getattr(event.response, "usage", None)
+                    if resp_usage:
+                        input_tokens = getattr(resp_usage, "input_tokens", 0) or 0
+                        output_tokens = getattr(resp_usage, "output_tokens", 0) or 0
+                        details = getattr(resp_usage, "input_tokens_details", None)
+                        cached_tokens = (
+                            (getattr(details, "cached_tokens", 0) or 0)
+                            if details
+                            else 0
+                        )
+                        yield RawMessageDeltaEvent(
+                            type="message_delta",
+                            delta=Delta(stop_reason="max_tokens"),
+                            usage=MessageDeltaUsage(
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                cache_read_input_tokens=cached_tokens,
+                            ),
+                        )
+                    break
+
+                # Handle explicit failure events
+                elif event_type == "response.failed":
+                    error = getattr(event.response, "error", None)
+                    msg = getattr(error, "message", None) or "Response failed"
+                    raise LLMProviderStreamError(msg)
+
+                elif event_type == "error":
+                    raise LLMProviderStreamError(
+                        getattr(event, "message", "Unknown stream error")
+                    )
 
             yield RawMessageStopEvent(type="message_stop")
 
@@ -294,6 +335,8 @@ class OpenAIProvider(LLMProvider):
                 for tc in tool_calls:
                     input_items.append(tc)
             elif role == "user" and tool_results:
+                if text_parts:
+                    input_items.append({"role": role, "content": "\n".join(text_parts)})
                 for tr in tool_results:
                     input_items.append(tr)
             else:
@@ -311,12 +354,22 @@ class OpenAIProvider(LLMProvider):
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from OpenAI Responses API."""
         try:
+            # Reasoning models (gpt-5.x, o-series) consume their internal reasoning
+            # chain against max_output_tokens before producing any visible text.
+            # Enforce a minimum so small caller-supplied limits do not exhaust the
+            # budget before any output is written.
+            effective_max_tokens = max(max_tokens or 4096, 1024)
             params: dict[str, Any] = {
                 "model": self.model,
                 "input": prompt,
-                "max_output_tokens": max_tokens or 4096,
+                "max_output_tokens": effective_max_tokens,
                 "stream": False,
             }
+            if temperature is not None:
+                params["temperature"] = temperature
+            if top_p is not None:
+                params["top_p"] = top_p
+
             response = await self.client.responses.create(**params)
 
             usage = TokenUsage()
@@ -332,6 +385,18 @@ class OpenAIProvider(LLMProvider):
                     cache_read_tokens=cached_tokens,
                 )
 
+            status = getattr(response, "status", None)
+            if status == "incomplete":
+                raise Exception(
+                    f"Response was incomplete (max_output_tokens={effective_max_tokens} exhausted)"
+                )
+            if status == "failed":
+                error = getattr(response, "error", None)
+                msg = getattr(error, "message", None) or "Response failed"
+                raise Exception(msg)
+            if status == "cancelled":
+                raise Exception("Response was cancelled")
+
             content = response.output_text
             if not content:
                 raise Exception("Empty response from OpenAI")
@@ -340,7 +405,7 @@ class OpenAIProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to generate response: {str(e)}")
-            raise Exception(f"Failed to generate response: {str(e)}")
+            raise Exception(f"Failed to generate response: {str(e)}") from e
 
     async def health_check(self) -> bool:
         """Check if OpenAI API is accessible."""
