@@ -152,7 +152,10 @@ fn extract_pdf_text(data: &[u8]) -> Result<String> {
 
     match result {
         Ok(Ok(text)) => Ok(text.trim().to_string()),
-        Ok(Err(e)) => Err(anyhow!("Failed to extract text from PDF: {}", e)),
+        Ok(Err(e)) => {
+            debug!("Skipping PDF with unextractable text: {}", e);
+            Ok(String::new())
+        }
         Err(_) => {
             warn!("PDF extraction panicked — likely a malformed PDF");
             Err(anyhow!("PDF extraction panicked due to malformed content"))
@@ -360,6 +363,22 @@ mod tests {
         let result = extract_content(data, "text/html", None).unwrap();
         assert!(result.contains("Title"));
         assert!(result.contains("Hello world"));
+    }
+
+    #[test]
+    fn test_invalid_pdf_returns_empty() {
+        let data = concat!(
+            "%PDF-1.4\n",
+            "1 0 obj\n",
+            "<< /Type /Catalog >>\n",
+            "endobj\n",
+            "trailer\n",
+            "<< /Root 1 0 R >>\n",
+            "%%EOF"
+        )
+        .as_bytes();
+        let result = extract_content(data, "application/pdf", Some("bad.pdf")).unwrap();
+        assert!(result.is_empty());
     }
 
     #[test]
