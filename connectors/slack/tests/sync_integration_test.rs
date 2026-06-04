@@ -232,7 +232,7 @@ async fn test_full_sync_creates_events() {
         shared::models::SyncStatus::Completed,
         "Sync run should be completed"
     );
-    assert_eq!(sync_run.documents_scanned, 2);
+    assert_eq!(sync_run.documents_scanned, 6);
 
     // Verify connector state
     let state_value = fixture
@@ -648,8 +648,7 @@ async fn test_sync_fetches_thread_replies() {
     };
     let mock_server = MockSlackServer::start(mock_state).await;
 
-    let (_user_id, source_id, _sync_run_id) =
-        setup_full_sync(&fixture, &mock_server.base_url).await;
+    let (_user_id, source_id, sync_run_id) = setup_full_sync(&fixture, &mock_server.base_url).await;
 
     let events = fixture.get_queued_events(&source_id).await.unwrap();
 
@@ -676,6 +675,25 @@ async fn test_sync_fetches_thread_replies() {
         title
     );
 
+    let url = thread_event
+        .get("metadata")
+        .and_then(|m| m.get("url"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        url,
+        format!(
+            "https://test-team.slack.com/archives/C001/p{}",
+            parent_ts.replace('.', "")
+        ),
+        "thread doc should use Slack web permalink"
+    );
+    assert!(
+        !url.starts_with("slack://"),
+        "thread doc should not use synthetic slack:// URL, got {}",
+        url
+    );
+
     // The doc's `slack.message_count` extra should be 3 (parent + 2 replies)
     // even though `conversations.history` only returned the parent.
     let message_count = thread_event
@@ -689,5 +707,11 @@ async fn test_sync_fetches_thread_replies() {
         message_count, 3,
         "thread should contain parent + 2 replies, got {}",
         message_count
+    );
+
+    let sync_run = fixture.get_sync_run(&sync_run_id).await.unwrap().unwrap();
+    assert_eq!(
+        sync_run.documents_scanned, 10,
+        "sync with one thread should scan fetched channel messages plus fetched thread messages"
     );
 }
