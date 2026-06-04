@@ -10,12 +10,21 @@ SOURCE_DISPLAY_NAMES = {
     "fireflies": "Fireflies",
     "web": "Web",
     "local_files": "Files",
+    "file_system": "Files",
+    "filesystem": "Files",
     "github": "GitHub",
     "notion": "Notion",
     "one_drive": "OneDrive",
     "share_point": "SharePoint",
     "outlook": "Outlook",
     "outlook_calendar": "Outlook Calendar",
+    "imap": "Email (IMAP)",
+    "nextcloud": "Nextcloud",
+    "clickup": "ClickUp",
+    "linear": "Linear",
+    "paperless": "Paperless",
+    "google_calendar": "Google Calendar",
+    "microsoft_teams": "Microsoft Teams",
 }
 
 SYSTEM_PROMPT_TEMPLATE = """You are Omni AI, a workplace agent that helps employees find information and complete tasks across their connected apps.
@@ -170,13 +179,14 @@ def _format_datetime(dt: datetime | None = None) -> str:
 
 def _format_user_line(
     user_name: str | None,
-    user_email: str,
+    user_email: str | None,
     prefix: str = "User",
 ) -> str:
+    fallback_email = user_email or "unknown"
     if user_name:
-        identity = f"{user_name} ({user_email})"
+        identity = f"{user_name} ({fallback_email})"
     else:
-        identity = user_email
+        identity = fallback_email
     # Escape braces so .format() doesn't choke on user-supplied strings
     identity = identity.replace("{", "{{").replace("}", "}}")
     return f"{prefix}: {identity}"
