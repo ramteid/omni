@@ -376,12 +376,20 @@
                                         <FileText
                                             class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                                     {/if}
-                                    <a
-                                        href={result.source.split('#')[0]}
-                                        target="_blank"
-                                        class="block max-w-screen-sm overflow-hidden font-normal text-ellipsis whitespace-nowrap no-underline hover:underline">
-                                        {result.title}
-                                    </a>
+                                    {#if result.source?.startsWith('http://') || result.source?.startsWith('https://')}
+                                        <a
+                                            href={result.source.split('#')[0]}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            class="block max-w-screen-sm overflow-hidden font-normal text-ellipsis whitespace-nowrap no-underline hover:underline">
+                                            {result.title}
+                                        </a>
+                                    {:else}
+                                        <span
+                                            class="block max-w-screen-sm overflow-hidden text-ellipsis whitespace-nowrap font-normal">
+                                            {result.title}
+                                        </span>
+                                    {/if}
                                 </div>
                             {/each}
                         </div>
