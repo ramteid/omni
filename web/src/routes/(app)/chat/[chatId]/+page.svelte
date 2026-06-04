@@ -82,6 +82,14 @@
     })
 
     afterNavigate(() => {
+        // Tear down any active stream from the previous chat before loading the new one.
+        if (eventSource) {
+            eventSource.close()
+            eventSource = null
+        }
+        isStreaming = false
+        error = null
+        stopThinkingText()
         chatMessages = [...data.messages]
         branchSelections = {}
         activeStreamingMessageId = null
@@ -381,7 +389,12 @@
             eventSource.close()
             eventSource = null
         }
+        // Reset all stream state so the input is immediately ready for a new message.
         isStreaming = false
+        error = null
+        activeStreamingMessageId = null
+        stopThinkingText()
+        refreshProcessedMessages()
         requestAnimationFrame(() => recalcBottomPadding())
         userInputRef?.focus()
     }
@@ -1470,7 +1483,10 @@
         }
 
         const handleConnectionError = () => {
-            if (streamCompleted) return
+            // Guard against treating an intentional stop() as a connection error.
+            // handleStop() sets isStreaming = false before the EventSource fires its
+            // error event, so we can use that as a signal to skip cleanup here.
+            if (streamCompleted || !isStreaming) return
             error =
                 messageEventsReceived > 0
                     ? 'Response stream disconnected before it finished. Please try again.'
