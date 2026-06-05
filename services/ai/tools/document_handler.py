@@ -159,16 +159,18 @@ class DocumentToolHandler:
             is_binary = doc.content_type in BINARY_CONTENT_TYPES
 
             # For binary types, connectors often extract text at index time and
-            # store it in content_blobs. When that happens, prefer the stored
-            # text over a round-trip binary fetch. We detect "real content" by
-            # blob size: metadata-only blobs (written for images, videos, and
-            # unextractable archives) top out at ~706 bytes in practice; any blob
-            # above this threshold contains actual document text.
+            # store it in content_blobs (with content_type="text/plain"). When
+            # that happens, prefer the stored text over a round-trip binary fetch.
+            # We use the blob's MIME type to distinguish real extracted text
+            # (text/plain) from metadata-only blobs stored for images, videos,
+            # and unextractable archives (which retain their original MIME type).
             has_extracted_text = False
             if is_binary and doc.content_id and self._content_storage:
                 try:
                     meta = await self._content_storage.get_metadata(doc.content_id)
-                    has_extracted_text = meta.size_bytes > 800
+                    has_extracted_text = bool(
+                        meta.content_type and meta.content_type.startswith("text/")
+                    )
                 except Exception:
                     logger.debug(
                         "get_metadata failed for content_id %s, falling back to binary fetch",
