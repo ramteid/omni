@@ -335,29 +335,25 @@ class SearchToolHandler:
                     type="text", text=f"[Document source: {human_source}]"
                 )
             else:
-                doc_id_block = TextBlockParam(
-                    type="text", text=f"[Document ID: {doc.id}]"
-                )
+                doc_id_block = None
 
-            # When the doc_id_block shows a URL/doc_source instead of the ULID, also emit the
-            # ULID in a _ref: block. This allows the LLM to use it for read_document without
-            # displaying the internal ID to the user. Without this, the LLM falls back to
-            # re-searching by filename — which causes umlaut corruption and 0 results.
+            # Always emit a [_ref:ULID] block so the LLM can pass it to read_document.
+            # This is an internal tool reference, not for display to the user.
+            # When human_source is set, the doc_id_block shows a human-readable URL/source
+            # and _ref: is the only way the LLM has to find the ULID.
+            # When human_source is None, _ref: is the only block emitted for the ID,
+            # so the prompt rule "use [_ref:ULID] for read_document" works uniformly.
+            ref_block = TextBlockParam(type="text", text=f"[_ref:{doc.id}]")
+
             metadata_blocks = [
-                doc_id_block,
+                *([] if doc_id_block is None else [doc_id_block]),
+                ref_block,
                 TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
                 TextBlockParam(
                     type="text",
                     text=f"[Source: {source_type or 'unknown'}]",
                 ),
             ]
-            if human_source:
-                # doc_id_block already contains the URL/source; also include the ULID
-                # so the LLM can pass it to read_document. Prefixed with _ref: to signal
-                # this is an internal tool reference, not for display to the user.
-                metadata_blocks.insert(
-                    1, TextBlockParam(type="text", text=f"[_ref:{doc.id}]")
-                )
             if doc.url:
                 metadata_blocks.append(
                     TextBlockParam(type="text", text=f"[URL: {doc.url}]")
