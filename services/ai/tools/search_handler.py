@@ -336,9 +336,9 @@ class SearchToolHandler:
                 )
 
             # When the doc_id_block shows a URL/doc_source instead of the ULID, also emit the
-            # ULID explicitly. Without this, the LLM has no document ID available for
-            # read_document calls and falls back to re-searching by filename — which causes
-            # umlaut corruption in generated queries and returns 0 results.
+            # ULID in a _ref: block. This allows the LLM to use it for read_document without
+            # displaying the internal ID to the user. Without this, the LLM falls back to
+            # re-searching by filename — which causes umlaut corruption and 0 results.
             metadata_blocks = [
                 doc_id_block,
                 TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
@@ -348,9 +348,11 @@ class SearchToolHandler:
                 ),
             ]
             if human_source:
-                # doc_id_block already contains the URL/source; add ULID separately
+                # doc_id_block already contains the URL/source; also include the ULID
+                # so the LLM can pass it to read_document. Prefixed with _ref: to signal
+                # this is an internal tool reference, not for display to the user.
                 metadata_blocks.insert(
-                    1, TextBlockParam(type="text", text=f"[Document ID: {doc.id}]")
+                    1, TextBlockParam(type="text", text=f"[_ref:{doc.id}]")
                 )
             if doc.url:
                 metadata_blocks.append(

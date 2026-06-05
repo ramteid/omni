@@ -60,7 +60,7 @@ DOCUMENT_TOOL = {
         "properties": {
             "id": {
                 "type": "string",
-                "description": "The document ID (from search results)",
+                "description": "The document ID. Use the [_ref:ULID] value from search results. Never pass a filename or URL.",
             },
             "name": {
                 "type": "string",
@@ -117,7 +117,10 @@ class DocumentToolHandler:
                 is_error=True,
             )
 
-        document_id = tool_input.get("id")
+        document_id = tool_input.get("id", "")
+        # Strip the _ref: prefix if the LLM passes the raw search result reference token.
+        if document_id and document_id.startswith("_ref:"):
+            document_id = document_id[len("_ref:"):]
         document_name = tool_input.get("name", document_id)
         start_line = tool_input.get("start_line")
         end_line = tool_input.get("end_line")

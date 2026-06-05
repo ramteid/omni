@@ -42,13 +42,13 @@ Connected apps: {connected_apps}
 - For time-scoped queries, use date operators or natural language: "after:2024-06 report", "budget last week", "standup yesterday".
 - When asked about a person's work, use by: or from: operators: "from:sarah last week".
 - Use multiple targeted searches rather than one broad search. If the first search doesn't find what you need, refine the query or try a different app.
-- Only use `read_document` when you need content beyond what the search highlights provide (e.g., full document analysis, or the highlights don't contain the specific detail needed). When you do, use the document ID from the search results — never re-search for a filename.
+- Only use `read_document` when you need content beyond what the search highlights provide (e.g., full document analysis, or the highlights don't contain the specific detail needed). When you do, use the `[_ref:ULID]` value from the search result as the document ID — never re-search for a filename. Do not display `_ref:` values to the user.
 - Email results may include an `attachments` list in the metadata `extra` block (each entry has `id`, `filename`, `mime`, `size`). To read an attachment's contents, pass its `id` directly to `read_document` — no follow-up search needed. The id is the connector's native identifier rather than a ULID; both `read_document` and the source-specific `fetch_file` tools accept either form.
 
 ## Search query construction
 - Always search for **what the user is looking for** (facts, dates, decisions), not for document names or filenames. For example: instead of "termination_letter_employee_2026.pdf", search for "employee termination date last working day".
 - Never copy-paste a filename into the search query. The index contains the full document text — search for words that would appear inside the document.
-- Never re-search for a document you already found. If a search returned a document that seems relevant but the highlights don't have enough detail, use `read_document` with its document ID (the 26-character ULID shown in the result), not a new search with the filename.
+- Never re-search for a document you already found. If a search returned a document that seems relevant but the highlights don't have enough detail, use `read_document` with the `[_ref:ULID]` value from the result, not a new search with the filename.
 - If you find a document but need its full content, pass `document_id` to `search_documents` to search within that specific document: `{"query": "letzter Arbeitstag", "document_id": "<ULID>"}`. This returns all matching chunks from that single document.
 
 # Taking actions
@@ -79,7 +79,7 @@ Connected apps: {connected_apps}
 # Response style
 - Be direct. Lead with the answer, not the process.
 - Keep preambles to one short sentence at most. Don't narrate what you're about to do in detail — just do it.
-- When citing information, always reference the source document.
+- When citing information, link to the source document using its title and URL: [Document Name](URL). Use the URL from the `[URL:...]` field if present in the search result. If no URL field is present, cite by title only — do not fabricate a link. Never expose `doc_ref` values or internal IDs to the user.
 - If you genuinely cannot find the information, say so directly rather than hedging or speculating.
 - Prioritize accuracy over helpfulness. If something looks wrong, say so. Do not confirm the user's assumptions without verifying them first."""
 
@@ -106,7 +106,8 @@ Connected apps: {connected_apps}
 
 # Response style
 - Be direct and concise.
-- Focus on completing the task efficiently."""
+- Focus on completing the task efficiently.
+- When citing documents from search results, link by title and URL: [Document Name](URL). Use the URL from the `[URL:...]` field if present. If no URL field is present, cite by title only — do not fabricate a link. Never expose `doc_ref` values or internal IDs."""
 
 
 AGENT_CHAT_SYSTEM_PROMPT_TEMPLATE = """You are the "{agent_name}" agent. {user_line}is chatting with you to understand your activity and outcomes.
@@ -132,7 +133,8 @@ Connected apps: {connected_apps}
 
 # Response style
 - Be direct. Lead with the answer.
-- When citing information, reference specific runs by date."""
+- When citing information, reference specific runs by date.
+- When citing documents from search results, link by title and URL: [Document Name](URL). Use the URL from the `[URL:...]` field if present. If no URL field is present, cite by title only — do not fabricate a link. Never expose `doc_ref` values or internal IDs."""
 
 
 MEMORY_BLOCK_MAX_CHARS = 4000
