@@ -99,7 +99,8 @@ Connected apps: {connected_apps}
 
 # Response style
 - Be direct and concise.
-- Focus on completing the task efficiently."""
+- Focus on completing the task efficiently.
+- When citing documents from search results, link by title and URL: [Document Name](URL). Use the URL from the `[URL:...]` field if present. If no URL field is present, cite by title only — do not fabricate a link. Never expose `doc_ref` values or internal IDs."""
 
 
 AGENT_CHAT_SYSTEM_PROMPT_TEMPLATE = """You are the "{agent_name}" agent. {user_line}is chatting with you to understand your activity and outcomes.
@@ -125,7 +126,8 @@ Connected apps: {connected_apps}
 
 # Response style
 - Be direct. Lead with the answer.
-- When citing information, reference specific runs by date."""
+- When citing information, reference specific runs by date.
+- When citing documents from search results, link by title and URL: [Document Name](URL). Use the URL from the `[URL:...]` field if present. If no URL field is present, cite by title only — do not fabricate a link. Never expose `doc_ref` values or internal IDs."""
 
 
 MEMORY_BLOCK_MAX_CHARS = 4000
