@@ -21,9 +21,9 @@
 
             const text = this.parser.parseInline(tokens)
             if (citation) {
-                return `<a href="${href}" class="omni-reflink" title="${citation?.title}" data-snippet="${citation?.cited_text}">${text}</a>`
+                return `<a href="${href}" class="omni-reflink" title="${citation?.title}" data-snippet="${citation?.cited_text}" target="_blank" rel="noopener noreferrer">${text}</a>`
             } else {
-                return `<a href="${href}">${text}</a>`
+                return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`
             }
         },
     }
