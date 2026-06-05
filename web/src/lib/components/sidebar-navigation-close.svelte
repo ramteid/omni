@@ -4,7 +4,9 @@
 
     const sidebar = useSidebar()
 
-    afterNavigate(() => {
-        sidebar.setOpenMobile(false)
+    afterNavigate((navigation) => {
+        if (navigation.from !== null) {
+            sidebar.setOpenMobile(false)
+        }
     })
 </script>
