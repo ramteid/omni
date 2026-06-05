@@ -387,7 +387,7 @@
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
             <div class="flex h-16 w-full items-center justify-between px-3 sm:px-6">
                 <div class="text-foreground flex h-16 min-w-0 flex-1 items-center">
-                    <SidebarTrigger class="md:hidden mr-1 shrink-0 cursor-pointer" />
+                    <SidebarTrigger class="md:hidden mr-1 shrink-0 cursor-pointer size-11" />
                     <div class="min-w-0 flex-1 overflow-hidden px-2 sm:px-4 text-base font-medium">
                         {#if page.url.pathname === '/search'}
                             Search

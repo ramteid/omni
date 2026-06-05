@@ -195,9 +195,9 @@
 
     <!-- Main content area -->
     <div class="flex max-h-[100svh] min-h-screen w-full flex-col">
-        <header class="bg-background sticky top-0 z-50 flex h-14 items-center border-b px-4 md:hidden">
-            <Sidebar.Trigger class="cursor-pointer" />
-            <span class="ml-2 text-sm font-medium">Admin Settings</span>
+        <header class="bg-background sticky top-0 z-50 flex h-14 items-center border-b px-4">
+            <Sidebar.Trigger class="cursor-pointer size-11" />
+            <span class="ml-2 text-sm font-medium md:hidden">Admin Settings</span>
         </header>
         <main class="min-h-0 flex-1">
             {@render children()}
