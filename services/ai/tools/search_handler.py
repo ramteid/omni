@@ -294,8 +294,11 @@ class SearchToolHandler:
                     type="text",
                     text=f"[Source: {source_type or 'unknown'}]",
                 ),
-                TextBlockParam(type="text", text=f"[URL: {doc.url or '<unknown>'}]"),
             ]
+            if doc.url:
+                metadata_blocks.append(
+                    TextBlockParam(type="text", text=f"[URL: {doc.url}]")
+                )
 
             # Extract a human-readable date for the LLM. Prefer metadata updated_at
             # (original content date) over created_at, falling back to a unix timestamp
