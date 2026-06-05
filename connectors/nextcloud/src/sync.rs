@@ -237,10 +237,15 @@ async fn execute_sync(
             current_keys.contains(k)
                 || (v.starts_with("skipped:") && skipped_server_keys.contains(k))
         });
-    }
 
-    // Persist current file key set
-    state.known_files = current_keys.into_iter().collect();
+        // Only update known_files when the scan completed in full. A cancelled
+        // paginated scan produces a partial current_keys (only directories visited
+        // so far), and persisting that would silently drop unvisited files from
+        // known_files. On the next complete sync, any of those files that were
+        // deleted from Nextcloud during the gap would never appear in deleted_keys
+        // and their documents would linger in the RAG index forever.
+        state.known_files = current_keys.into_iter().collect();
+    }
 
     Ok((total_scanned, total_processed))
 }
@@ -282,7 +287,16 @@ async fn process_file_batch(
                     .map(|rest| (true, rest))
                     .unwrap_or((false, stored.as_str()));
 
-                if effective.as_deref() == Some(stored_etag) {
+                // When effective is None (server provides no change metadata) treat it
+                // as matching an empty stored_etag. This is the case when we stored
+                // "skipped:" (no suffix) for a file with no etag/last-modified: without
+                // this special case, None == Some("") is always false and the file is
+                // re-downloaded and re-skipped on every sync.
+                let etags_match = match effective.as_deref() {
+                    None => stored_etag.is_empty(),
+                    Some(e) => e == stored_etag,
+                };
+                if etags_match {
                     if was_skipped {
                         unsupported_keys.push(key.clone());
                     }
