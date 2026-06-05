@@ -167,7 +167,11 @@ class DocumentToolHandler:
                     meta = await self._content_storage.get_metadata(doc.content_id)
                     has_extracted_text = meta.size_bytes > 800
                 except Exception:
-                    pass  # can't determine — fall through to binary fetch
+                    logger.debug(
+                        "get_metadata failed for content_id %s, falling back to binary fetch",
+                        doc.content_id,
+                        exc_info=True,
+                    )
 
             if is_binary and not has_extracted_text and self._connector_manager_url and doc.source_id:
                 return await self._fetch_binary(doc, document_name, context)
