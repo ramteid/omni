@@ -122,7 +122,7 @@ async fn execute_sync(
                 current_keys.insert(entry.file_key());
             }
 
-            let (s, p) = process_file_batch(
+            let (s, p, unsupported) = process_file_batch(
                 &file_entries,
                 &client,
                 config,
@@ -134,6 +134,9 @@ async fn execute_sync(
             .await;
             total_scanned += s;
             total_processed += p;
+            for key in unsupported {
+                current_keys.remove(&key);
+            }
         }
         Err(_) => {
             info!("Depth: infinity not supported, using paginated directory traversal");
@@ -180,7 +183,7 @@ async fn execute_sync(
                     }
                 }
 
-                let (s, p) = process_file_batch(
+                let (s, p, unsupported) = process_file_batch(
                     &page_files,
                     &client,
                     config,
@@ -192,6 +195,9 @@ async fn execute_sync(
                 .await;
                 total_scanned += s;
                 total_processed += p;
+                for key in unsupported {
+                    current_keys.remove(&key);
+                }
             }
         }
     }
@@ -227,7 +233,9 @@ async fn execute_sync(
 }
 
 /// Process a batch of file entries: check etag, download, extract, store, emit.
-/// Returns (scanned, processed) counts.
+/// Returns (scanned, processed, unsupported_keys) where unsupported_keys are file keys
+/// whose content could not be extracted. The caller must remove these from current_keys
+/// so that already-indexed documents for these files get deletion events.
 async fn process_file_batch(
     entries: &[DavEntry],
     client: &NextcloudClient,
@@ -236,9 +244,10 @@ async fn process_file_batch(
     ctx: &SyncContext,
     user_email: Option<&str>,
     state: &mut NextcloudConnectorState,
-) -> (usize, usize) {
+) -> (usize, usize, Vec<String>) {
     let mut scanned = 0usize;
     let mut processed = 0usize;
+    let mut unsupported_keys = Vec::new();
 
     for batch in entries.chunks(BATCH_SIZE) {
         if ctx.is_cancelled() {
@@ -249,15 +258,30 @@ async fn process_file_batch(
             scanned += 1;
             let key = entry.file_key();
 
-            // Skip unchanged files (compare effective etag — real or synthetic)
+            // Skip unchanged files (compare effective etag — real or synthetic).
+            // Etags prefixed with "skipped:" were stored for unsupported-format files;
+            // strip the prefix before comparing, and re-add to unsupported_keys so they
+            // continue to be excluded from current_keys.
             let effective = entry.effective_etag();
             if let Some(stored) = state.etags.get(&key) {
-                if effective.as_deref() == Some(stored.as_str()) {
+                let (was_skipped, stored_etag) = stored
+                    .strip_prefix("skipped:")
+                    .map(|rest| (true, rest))
+                    .unwrap_or((false, stored.as_str()));
+
+                if effective.as_deref() == Some(stored_etag) {
+                    if was_skipped {
+                        unsupported_keys.push(key.clone());
+                    }
                     continue;
                 }
             }
 
-            let is_update = state.etags.contains_key(&key);
+            // is_update is true only when we have previously indexed this file
+            // (etag stored without a "skipped:" prefix).
+            let is_update = state.etags.get(&key)
+                .map(|e| !e.starts_with("skipped:"))
+                .unwrap_or(false);
 
             // Enforce file size limit
             let file_size = entry.content_length.or(entry.oc_size).unwrap_or(0);
@@ -277,9 +301,25 @@ async fn process_file_batch(
                 Ok(text) => text,
                 Err(e) => {
                     warn!("Failed to process file '{}': {}", entry.filename(), e);
+                    // Transient failure (download error): keep in current_keys so we don't
+                    // spuriously emit a deletion event. Do not store an etag — retry next sync.
                     continue;
                 }
             };
+
+            if content_text.is_empty() {
+                // Unsupported format: extraction succeeded but returned no text.
+                // Don't index the file. Store a "skipped:" marker etag so we avoid
+                // re-downloading on every sync until the file actually changes.
+                warn!(
+                    "Skipping '{}': unsupported format, no text content could be extracted",
+                    entry.filename()
+                );
+                let marker = format!("skipped:{}", effective.as_deref().unwrap_or(""));
+                state.etags.insert(key.clone(), marker);
+                unsupported_keys.push(key.clone());
+                continue;
+            }
 
             let markdown = entry.to_markdown(username, &config.server_url, &content_text);
 
@@ -317,7 +357,7 @@ async fn process_file_batch(
         let _ = ctx.increment_scanned(batch.len() as i32).await;
     }
 
-    (scanned, processed)
+    (scanned, processed, unsupported_keys)
 }
 
 /// Try to parse a date string as RFC 3339 first, then RFC 2822.

@@ -1950,10 +1950,10 @@
         </div>
         <div
             bind:this={chatContainerRef}
-            class="flex h-full w-full flex-col overflow-y-auto px-4 pt-6">
+            class="flex h-full w-full flex-col overflow-x-hidden overflow-y-auto px-4 pt-6">
             <div
                 bind:this={chatContentRef}
-                class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-1"
+                class="mx-auto flex w-full min-w-0 max-w-4xl flex-1 flex-col gap-1"
                 style:padding-bottom="{bottomPadding}px">
                 {#if data.agent}
                     <div
@@ -1983,14 +1983,14 @@
                         {#if i === lastUserMessageIndex}
                             <div
                                 data-testid={`chat-message-${message.origMessageId}`}
-                                class="group mt-8 flex flex-col items-end"
+                                class="group mt-8 flex w-full min-w-0 flex-col items-end"
                                 bind:this={lastUserMessageRef}>
                                 {@render userMessageContent(message)}
                             </div>
                         {:else}
                             <div
                                 data-testid={`chat-message-${message.origMessageId}`}
-                                class="group mt-8 flex flex-col items-end">
+                                class="group mt-8 flex w-full min-w-0 flex-col items-end">
                                 {@render userMessageContent(message)}
                             </div>
                         {/if}
@@ -1998,9 +1998,9 @@
                         <!-- Assistant Message -->
                         <div
                             data-testid={`chat-message-${message.origMessageId}`}
-                            class="group mt-8 flex flex-col gap-1">
+                            class="group mt-8 flex w-full min-w-0 flex-col gap-1">
                             <div
-                                class="prose prose-sm prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none">
+                                class="prose prose-sm prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert min-w-0 max-w-none overflow-x-auto">
                                 {#key `${message.renderKey}:${messageContentRenderKey(message.content)}`}
                                     <ToolCallsGroup
                                         content={message.content}

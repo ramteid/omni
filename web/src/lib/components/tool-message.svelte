@@ -184,7 +184,7 @@
 {#if toolName === 'search_people'}
     <div
         class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex min-w-0 flex-1 items-center gap-2">
@@ -198,7 +198,7 @@
 {:else if toolName === 'read_document'}
     <div
         class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex min-w-0 flex-1 items-center gap-2">
@@ -238,7 +238,7 @@
     {:else}
         <div
             class={cn(
-                'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+                'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
             )}>
             <div class="flex w-full items-center justify-between">
                 <div class="flex min-w-0 flex-1 items-center gap-2">
@@ -263,7 +263,7 @@
 {:else if toolName === 'load_skill'}
     <div
         class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex min-w-0 flex-1 items-center gap-2">
@@ -277,7 +277,7 @@
 {:else if isConnectorAction}
     <div
         class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
             message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
             message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
         )}>
