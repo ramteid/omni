@@ -52,15 +52,16 @@ DIRECT_RETURN_THRESHOLD = 32_000
 DOCUMENT_TOOL = {
     "name": "read_document",
     "description": (
-        "Read a document's content. For text documents, returns content directly or saves to sandbox if large. "
-        "For binary files (spreadsheets, PDFs, etc.), fetches the actual file from the source and saves to sandbox workspace."
+        "Read a document's full content. For text documents, returns content directly or saves to sandbox if large. "
+        "For binary files (spreadsheets, PDFs, etc.), fetches the actual file from the source and saves to sandbox workspace. "
+        "Use the doc_ref value from search_documents results as the 'id' argument."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "id": {
                 "type": "string",
-                "description": "The document ID (from search results)",
+                "description": "The document reference ID — use the doc_ref value from search_documents results",
             },
             "name": {
                 "type": "string",
