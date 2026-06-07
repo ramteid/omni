@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use calamine::{open_workbook_auto_from_rs, Reader};
 use docx_rs::read_docx;
+use mail_parser::MessageParser;
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
 use std::io::Cursor;
@@ -63,6 +64,10 @@ pub fn extract_content(data: &[u8], mime_type: &str, filename: Option<&str>) -> 
             Ok(String::new())
         }
 
+        // Email formats — handled natively; Docling does not support these
+        "message/rfc822" => extract_eml_text(data),
+        "application/vnd.ms-outlook" => extract_msg_text(data),
+
         _ => {
             debug!("Unsupported MIME type for extraction: '{}'", effective_mime);
             Ok(String::new())
@@ -85,6 +90,8 @@ fn mime_from_extension(filename: &str) -> Option<String> {
         "html" | "htm" => "text/html",
         "csv" => "text/csv",
         "md" | "markdown" => "text/markdown",
+        "eml" => "message/rfc822",
+        "msg" => "application/vnd.ms-outlook",
         _ => return None,
     };
     Some(mime.to_string())
@@ -431,6 +438,120 @@ fn extract_text_from_pptx_xml(xml_content: &str) -> Result<String> {
     Ok(text.trim().to_string())
 }
 
+/// Format a msg_parser `Person` as "Name <email>" or whichever parts are present.
+fn format_person(p: &msg_parser::Person) -> String {
+    match (!p.name.is_empty(), !p.email.is_empty()) {
+        (true, true) => format!("{} <{}>", p.name, p.email),
+        (false, true) => p.email.clone(),
+        (true, false) => p.name.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Format an address list (name + email) as a human-readable string.
+fn format_mail_parser_address(addr: Option<&mail_parser::Address<'_>>) -> String {
+    match addr {
+        None => String::new(),
+        Some(a) => a
+            .iter()
+            .map(|addr| match (&addr.name, &addr.address) {
+                (Some(name), Some(email)) => format!("{} <{}>", name, email),
+                (None, Some(email)) => email.to_string(),
+                (Some(name), None) => name.to_string(),
+                (None, None) => String::new(),
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+/// Convert an EML (RFC 5322) email to markdown.
+fn extract_eml_text(data: &[u8]) -> Result<String> {
+    let message = MessageParser::default()
+        .parse(data)
+        .ok_or_else(|| anyhow!("Failed to parse EML message"))?;
+
+    let mut md = String::new();
+
+    let subject = message.subject().unwrap_or("(no subject)");
+    md.push_str(&format!("# {}\n\n", subject));
+
+    let from = format_mail_parser_address(message.from());
+    if !from.is_empty() {
+        md.push_str(&format!("**From:** {}\n", from));
+    }
+    let to = format_mail_parser_address(message.to());
+    if !to.is_empty() {
+        md.push_str(&format!("**To:** {}\n", to));
+    }
+    if let Some(cc) = message.cc() {
+        let cc_str = format_mail_parser_address(Some(cc));
+        if !cc_str.is_empty() {
+            md.push_str(&format!("**Cc:** {}\n", cc_str));
+        }
+    }
+    if let Some(date) = message.date() {
+        md.push_str(&format!("**Date:** {}\n", date));
+    }
+
+    md.push_str("\n---\n\n");
+
+    // Prefer plain-text body; fall back to HTML → markdown conversion.
+    if let Some(body) = message.body_text(0) {
+        md.push_str(body.as_ref());
+    } else if let Some(html) = message.body_html(0) {
+        md.push_str(&html_to_markdown(html.as_ref()));
+    }
+
+    Ok(md.trim().to_string())
+}
+
+/// Convert an Outlook MSG file to markdown.
+fn extract_msg_text(data: &[u8]) -> Result<String> {
+    let msg = msg_parser::Outlook::from_slice(data)
+        .map_err(|e| anyhow!("Failed to parse MSG file: {}", e))?;
+
+    let mut md = String::new();
+
+    let subject = if msg.subject.is_empty() {
+        "(no subject)"
+    } else {
+        &msg.subject
+    };
+    md.push_str(&format!("# {}\n\n", subject));
+
+    let sender_str = format_person(&msg.sender);
+    if !sender_str.is_empty() {
+        md.push_str(&format!("**From:** {}\n", sender_str));
+    }
+
+    let to_addrs: Vec<String> = msg.to.iter().map(format_person).filter(|s| !s.is_empty()).collect();
+    if !to_addrs.is_empty() {
+        md.push_str(&format!("**To:** {}\n", to_addrs.join(", ")));
+    }
+
+    let cc_addrs: Vec<String> = msg.cc.iter().map(format_person).filter(|s| !s.is_empty()).collect();
+    if !cc_addrs.is_empty() {
+        md.push_str(&format!("**Cc:** {}\n", cc_addrs.join(", ")));
+    }
+
+    if !msg.message_delivery_time.is_empty() {
+        md.push_str(&format!("**Date:** {}\n", msg.message_delivery_time));
+    }
+
+    md.push_str("\n---\n\n");
+
+    // Prefer plain-text body; fall back to HTML → markdown.
+    if !msg.body.is_empty() {
+        md.push_str(&msg.body);
+    } else if !msg.html.is_empty() {
+        md.push_str(&html_to_markdown(&msg.html));
+    }
+
+    Ok(md.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -775,5 +896,75 @@ mod tests {
             zip.finish().unwrap();
         }
         buf
+    }
+
+    // ── EML tests ──
+
+    static SIMPLE_EML: &[u8] = include_bytes!("testdata/simple.eml");
+
+    #[test]
+    fn test_extract_eml_simple() {
+        let result = extract_content(SIMPLE_EML, "message/rfc822", None).unwrap();
+        assert!(result.contains("test"), "subject missing");
+        assert!(result.contains("andris@kreata.ee"), "from address missing");
+        assert!(result.contains("andris.reinman@gmail.com"), "to address missing");
+        assert!(result.contains("Hello world!"), "body missing");
+        assert!(result.contains("---"), "markdown separator missing");
+    }
+
+    #[test]
+    fn test_extract_eml_via_extension_fallback() {
+        let result = extract_content(SIMPLE_EML, "application/octet-stream", Some("message.eml")).unwrap();
+        assert!(result.contains("Hello world!"));
+    }
+
+    #[test]
+    fn test_extract_eml_markdown_structure() {
+        let result = extract_content(SIMPLE_EML, "message/rfc822", None).unwrap();
+        assert!(result.starts_with("# "), "should start with markdown heading");
+        assert!(result.contains("**From:**"), "From header missing");
+        assert!(result.contains("**To:**"), "To header missing");
+        assert!(result.contains("**Date:**"), "Date header missing");
+    }
+
+    #[test]
+    fn test_extract_eml_html_body_fallback() {
+        let eml = b"From: sender@example.com\r\nTo: rcpt@example.com\r\nSubject: HTML only\r\nContent-Type: text/html\r\n\r\n<p>Hello from <b>HTML</b></p>";
+        let result = extract_content(eml, "message/rfc822", None).unwrap();
+        assert!(result.contains("HTML only"), "subject missing");
+        assert!(result.contains("Hello from"), "html body not converted");
+    }
+
+    #[test]
+    fn test_extract_eml_no_subject() {
+        let eml = b"From: sender@example.com\r\nTo: rcpt@example.com\r\n\r\nBody text";
+        let result = extract_content(eml, "message/rfc822", None).unwrap();
+        assert!(result.contains("(no subject)"));
+        assert!(result.contains("Body text"));
+    }
+
+    // ── MSG tests ──
+
+    static SAMPLE_MSG: &[u8] = include_bytes!("testdata/sample.msg");
+
+    #[test]
+    fn test_extract_msg_parses_without_error() {
+        let result = extract_content(SAMPLE_MSG, "application/vnd.ms-outlook", None);
+        assert!(result.is_ok(), "MSG parsing failed: {:?}", result.err());
+        let text = result.unwrap();
+        assert!(!text.is_empty(), "MSG produced empty output");
+        assert!(text.contains("---"), "markdown separator missing");
+    }
+
+    #[test]
+    fn test_extract_msg_markdown_structure() {
+        let text = extract_content(SAMPLE_MSG, "application/vnd.ms-outlook", None).unwrap();
+        assert!(text.starts_with("# "), "should start with markdown heading");
+    }
+
+    #[test]
+    fn test_extract_msg_via_extension_fallback() {
+        let result = extract_content(SAMPLE_MSG, "application/octet-stream", Some("email.msg")).unwrap();
+        assert!(!result.is_empty(), "extension fallback produced no output");
     }
 }
