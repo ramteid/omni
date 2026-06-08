@@ -244,8 +244,8 @@ use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleConnectorState, UserFile,
-    WebhookChannel, WebhookChannelResponse, WebhookNotification,
+    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleConnectorState,
+    GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
@@ -322,7 +322,7 @@ impl SyncManager {
         &self,
         source: Source,
         credentials: Option<ServiceCredential>,
-        state: Option<GoogleConnectorState>,
+        state: Option<GoogleSyncCheckpoint>,
         ctx: SyncContext,
     ) -> Result<()> {
         let sync_run_id = ctx.sync_run_id().to_string();
@@ -351,14 +351,14 @@ impl SyncManager {
                 // checkpoints mid-sync — the inner pass might have made
                 // additional state mutations after the last checkpoint.
                 let state_json = serde_json::to_value(&final_state)?;
-                ctx.save_connector_state(state_json).await?;
+                ctx.save_checkpoint(state_json).await?;
                 ctx.complete().await?;
                 Ok(())
             }
             // Cancelled mid-sync: tell the SDK so the run is marked
             // `cancelled` rather than `failed`. Returning Ok keeps the
             // SDK's default-fail branch from firing. Per-user state was
-            // already checkpointed mid-sync via `ctx.save_connector_state`.
+            // already checkpointed mid-sync via `ctx.save_checkpoint`.
             Ok(None) => {
                 info!("Sync {} was cancelled", sync_run_id);
                 ctx.cancel().await?;
@@ -376,9 +376,9 @@ impl SyncManager {
         &self,
         source: &Source,
         service_creds: &ServiceCredential,
-        existing_state: Option<GoogleConnectorState>,
+        existing_state: Option<GoogleSyncCheckpoint>,
         ctx: &SyncContext,
-    ) -> Result<Option<GoogleConnectorState>> {
+    ) -> Result<Option<GoogleSyncCheckpoint>> {
         let source_id = ctx.source_id();
         let sync_type = ctx.sync_mode();
 
@@ -1047,7 +1047,7 @@ impl SyncManager {
         }
 
         // Push counts to the manager. Note: counts can over-count on resume
-        // since save_connector_state only fires per-user; an in-flight batch
+        // since save_checkpoint only fires per-user; an in-flight batch
         // re-runs after crash. Counts are advisory progress, not exact.
         if scanned > 0 {
             ctx.increment_scanned(scanned as i32).await?;
@@ -1068,9 +1068,9 @@ impl SyncManager {
         source: &Source,
         service_creds: &ServiceCredential,
         sync_type: SyncType,
-        existing_state: GoogleConnectorState,
+        existing_state: GoogleSyncCheckpoint,
         ctx: &SyncContext,
-    ) -> Result<GoogleConnectorState> {
+    ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
 
         let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
@@ -1113,12 +1113,14 @@ impl SyncManager {
 
         let is_incremental = matches!(sync_type, SyncType::Incremental);
 
-        let webhook_channel_id = existing_state.webhook_channel_id.clone();
-        let webhook_resource_id = existing_state.webhook_resource_id.clone();
-        let webhook_expires_at = existing_state.webhook_expires_at;
         let gmail_history_ids = existing_state.gmail_history_ids.clone();
         let old_page_tokens = existing_state.drive_page_tokens.unwrap_or_default();
-        let mut new_page_tokens: HashMap<String, String> = HashMap::new();
+        let can_resume_full = sync_type == SyncType::Full && ctx.is_resume();
+        let mut new_page_tokens: HashMap<String, String> = if can_resume_full {
+            old_page_tokens.clone()
+        } else {
+            HashMap::new()
+        };
 
         info!(
             "Starting user processing for {} users (Drive, incremental={})",
@@ -1143,6 +1145,14 @@ impl SyncManager {
             let stored_page_token = old_page_tokens.get(cur_user_email.as_str()).cloned();
 
             async move {
+                if can_resume_full && stored_page_token.is_some() {
+                    info!(
+                        "Skipping Drive user {} already checkpointed for sync {}",
+                        cur_user_email, sync_run_id
+                    );
+                    return (cur_user_email, Ok((0, 0, None)));
+                }
+
                 if ctx.is_cancelled() {
                     info!(
                         "Sync {} cancelled, skipping Drive sync for user {}",
@@ -1252,10 +1262,7 @@ impl SyncManager {
                         new_page_tokens.insert(cur_user_email.clone(), token);
                     }
 
-                    let checkpoint_state = GoogleConnectorState {
-                        webhook_channel_id: webhook_channel_id.clone(),
-                        webhook_resource_id: webhook_resource_id.clone(),
-                        webhook_expires_at,
+                    let checkpoint_state = GoogleSyncCheckpoint {
                         gmail_history_ids: gmail_history_ids.clone(),
                         drive_page_tokens: if new_page_tokens.is_empty() {
                             None
@@ -1263,7 +1270,7 @@ impl SyncManager {
                             Some(new_page_tokens.clone())
                         },
                     };
-                    ctx.save_connector_state(serde_json::to_value(&checkpoint_state)?)
+                    ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
                         .await
                         .with_context(|| {
                             format!(
@@ -1294,10 +1301,7 @@ impl SyncManager {
 
         info!("Completed sync for source: {}", source.id);
 
-        Ok(GoogleConnectorState {
-            webhook_channel_id,
-            webhook_resource_id,
-            webhook_expires_at,
+        Ok(GoogleSyncCheckpoint {
             gmail_history_ids,
             drive_page_tokens: if new_page_tokens.is_empty() {
                 None
@@ -1312,10 +1316,10 @@ impl SyncManager {
         source: &Source,
         service_creds: &ServiceCredential,
         sync_type: SyncType,
-        existing_state: GoogleConnectorState,
+        existing_state: GoogleSyncCheckpoint,
         known_groups: HashSet<String>,
         ctx: &SyncContext,
-    ) -> Result<GoogleConnectorState> {
+    ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
 
         let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
@@ -1357,12 +1361,14 @@ impl SyncManager {
 
         let is_incremental = matches!(sync_type, SyncType::Incremental);
 
-        let webhook_channel_id = existing_state.webhook_channel_id.clone();
-        let webhook_resource_id = existing_state.webhook_resource_id.clone();
-        let webhook_expires_at = existing_state.webhook_expires_at;
         let drive_page_tokens = existing_state.drive_page_tokens.clone();
         let old_history_ids = existing_state.gmail_history_ids.unwrap_or_default();
-        let mut new_history_ids: HashMap<String, String> = HashMap::new();
+        let can_resume_full = sync_type == SyncType::Full && ctx.is_resume();
+        let mut new_history_ids: HashMap<String, String> = if can_resume_full {
+            old_history_ids.clone()
+        } else {
+            HashMap::new()
+        };
 
         let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
         let known_groups = Arc::new(known_groups);
@@ -1387,6 +1393,13 @@ impl SyncManager {
                     info!("Processing user: {}", cur_user_email);
 
                     let stored_history_id = old_history_ids.get(cur_user_email.as_str());
+                    if can_resume_full && stored_history_id.is_some() {
+                        info!(
+                            "Skipping Gmail user {} already checkpointed for sync {}",
+                            cur_user_email, sync_run_id
+                        );
+                        continue;
+                    }
                     let use_incremental = is_incremental && stored_history_id.is_some();
 
                     let result = if use_incremental {
@@ -1478,10 +1491,7 @@ impl SyncManager {
                             }
                         }
 
-                        let checkpoint_state = GoogleConnectorState {
-                            webhook_channel_id: webhook_channel_id.clone(),
-                            webhook_resource_id: webhook_resource_id.clone(),
-                            webhook_expires_at,
+                        let checkpoint_state = GoogleSyncCheckpoint {
                             gmail_history_ids: if new_history_ids.is_empty() {
                                 None
                             } else {
@@ -1489,7 +1499,7 @@ impl SyncManager {
                             },
                             drive_page_tokens: drive_page_tokens.clone(),
                         };
-                        ctx.save_connector_state(serde_json::to_value(&checkpoint_state)?)
+                        ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
                             .await
                             .with_context(|| {
                                 format!(
@@ -1512,10 +1522,7 @@ impl SyncManager {
 
         info!("Completed Gmail sync for source: {}", source.id);
 
-        Ok(GoogleConnectorState {
-            webhook_channel_id,
-            webhook_resource_id,
-            webhook_expires_at,
+        Ok(GoogleSyncCheckpoint {
             gmail_history_ids: if new_history_ids.is_empty() {
                 None
             } else {
@@ -1838,22 +1845,19 @@ impl SyncManager {
             .as_ref()
             .and_then(|exp| exp.parse::<i64>().ok());
 
-        // Store new channel info in connector_state, preserving existing gmail_history_ids
-        let existing_state: GoogleConnectorState =
-            if let Ok(Some(raw)) = self.sdk_client.get_connector_state(source_id).await {
-                serde_json::from_value(raw).unwrap_or_default()
-            } else {
-                GoogleConnectorState::default()
-            };
-        let webhook_state = GoogleConnectorState {
-            webhook_channel_id: Some(webhook_response.id.clone()),
-            webhook_resource_id: Some(webhook_response.resource_id.clone()),
-            webhook_expires_at: expires_at,
-            gmail_history_ids: existing_state.gmail_history_ids,
-            drive_page_tokens: existing_state.drive_page_tokens,
-        };
+        let mut webhook_state = self
+            .sdk_client
+            .get_connector_state(source_id)
+            .await
+            .ok()
+            .flatten()
+            .filter(|value| value.is_object())
+            .unwrap_or_else(|| json!({}));
+        webhook_state["webhook_channel_id"] = json!(webhook_response.id.clone());
+        webhook_state["webhook_resource_id"] = json!(webhook_response.resource_id.clone());
+        webhook_state["webhook_expires_at"] = json!(expires_at);
         self.sdk_client
-            .save_connector_state(source_id, serde_json::to_value(&webhook_state)?)
+            .save_connector_state(source_id, webhook_state)
             .await?;
 
         info!(

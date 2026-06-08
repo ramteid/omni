@@ -381,15 +381,14 @@ where
         })?;
     }
 
-    let typed_state =
-        decode_optional::<C::State>(source.connector_state.as_ref(), "connector state").map_err(
-            |error| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(SyncResponse::error(error.to_string())),
-                )
-            },
-        )?;
+    let effective_checkpoint = request.checkpoint.as_ref().or(source.checkpoint.as_ref());
+    let typed_state = decode_optional::<C::State>(effective_checkpoint, "sync checkpoint")
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(SyncResponse::error(error.to_string())),
+            )
+        })?;
 
     state
         .connector
@@ -441,12 +440,13 @@ where
         .register_sync(&sync_run_id, request.sync_mode)
         .await;
 
-    let ctx = SyncContext::new(
+    let ctx = SyncContext::new_with_resume(
         state.sdk_client.clone(),
         sync_run_id.clone(),
         source_id.clone(),
         source.source_type,
         request.sync_mode,
+        request.is_resume,
         cancelled,
     );
     let connector = Arc::clone(&state.connector);
