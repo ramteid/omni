@@ -54,7 +54,7 @@ DOCUMENT_TOOL = {
     "description": (
         "Read a document's full content. For text documents, returns content directly or saves to sandbox if large. "
         "For binary files (spreadsheets, PDFs, etc.), fetches the actual file from the source and saves to sandbox workspace. "
-        "Use the doc_ref value from search_documents results as the 'id' argument."
+        "Use the [_ref:ULID] value from search_documents results as the 'id' argument."
     ),
     "input_schema": {
         "type": "object",
