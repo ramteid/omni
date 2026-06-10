@@ -1,9 +1,10 @@
 """Repository for embeddings table database operations."""
 
 import logging
-from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from asyncpg import Pool
 
 from .connection import get_db_pool
@@ -121,6 +122,136 @@ class EmbeddingsRepository:
             ],
         )
         logger.info(f"Bulk inserted {len(embeddings)} embeddings")
+
+    async def bulk_clone_for_documents(
+        self, clone_requests: list[tuple[str, str, str]], model_name: str
+    ) -> dict[str, int]:
+        """Clone current-model embeddings and complete queue items atomically.
+
+        clone_requests contains (source_document_id, target_document_id, queue_item_id).
+        Returns target_document_id -> cloned row count. Existing embeddings are replaced
+        for targets that successfully clone rows.
+        """
+        if not clone_requests:
+            return {}
+
+        source_document_ids = [source_id for source_id, _, _ in clone_requests]
+        target_document_ids = [target_id for _, target_id, _ in clone_requests]
+        queue_item_ids = [queue_item_id for _, _, queue_item_id in clone_requests]
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                count_rows = await conn.fetch(
+                    """
+                    WITH raw_pairs AS (
+                        SELECT source_document_id, target_document_id, queue_item_id
+                        FROM UNNEST($1::text[], $2::text[], $3::text[])
+                            AS p(source_document_id, target_document_id, queue_item_id)
+                    ),
+                    clone_pairs AS (
+                        SELECT DISTINCT ON (target_document_id)
+                               source_document_id, target_document_id, queue_item_id
+                        FROM raw_pairs
+                        ORDER BY target_document_id, source_document_id
+                    )
+                    SELECT
+                        p.target_document_id AS document_id,
+                        p.queue_item_id,
+                        count(*) AS cloned_count
+                    FROM clone_pairs p
+                    JOIN embeddings e
+                      ON e.document_id = p.source_document_id
+                     AND e.model_name = $4
+                    GROUP BY p.target_document_id, p.queue_item_id
+                    """,
+                    source_document_ids,
+                    target_document_ids,
+                    queue_item_ids,
+                    model_name,
+                )
+                clone_counts = {
+                    row["document_id"]: int(row["cloned_count"]) for row in count_rows
+                }
+                cloned_queue_item_ids = [row["queue_item_id"] for row in count_rows]
+                if not clone_counts:
+                    return {}
+
+                await conn.execute(
+                    """
+                    DELETE FROM embeddings
+                    WHERE document_id = ANY($1)
+                    """,
+                    list(clone_counts.keys()),
+                )
+
+                await conn.execute(
+                    """
+                    WITH raw_pairs AS (
+                        SELECT source_document_id, target_document_id
+                        FROM UNNEST($1::text[], $2::text[])
+                            AS p(source_document_id, target_document_id)
+                    ),
+                    clone_pairs AS (
+                        SELECT DISTINCT ON (target_document_id)
+                               source_document_id, target_document_id
+                        FROM raw_pairs
+                        WHERE target_document_id = ANY($4)
+                        ORDER BY target_document_id, source_document_id
+                    )
+                    INSERT INTO embeddings (
+                        id,
+                        document_id,
+                        chunk_index,
+                        chunk_start_offset,
+                        chunk_end_offset,
+                        embedding,
+                        model_name,
+                        dimensions
+                    )
+                    SELECT
+                        substring(
+                            md5(
+                                p.target_document_id || ':' || e.chunk_index || ':' || e.model_name
+                                || ':' || e.chunk_start_offset || ':' || e.chunk_end_offset
+                            ),
+                            1,
+                            26
+                        ) AS id,
+                        p.target_document_id,
+                        e.chunk_index,
+                        e.chunk_start_offset,
+                        e.chunk_end_offset,
+                        e.embedding,
+                        e.model_name,
+                        e.dimensions
+                    FROM clone_pairs p
+                    JOIN embeddings e
+                      ON e.document_id = p.source_document_id
+                     AND e.model_name = $3
+                    """,
+                    source_document_ids,
+                    target_document_ids,
+                    model_name,
+                    list(clone_counts.keys()),
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE embedding_queue
+                    SET status = 'completed',
+                        processed_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ANY($1)
+                      AND status = 'processing'
+                    """,
+                    cloned_queue_item_ids,
+                )
+
+        logger.info(
+            f"Cloned {sum(clone_counts.values())} embeddings for {len(clone_counts)} documents"
+        )
+        return clone_counts
 
     async def clone_for_document(
         self, source_document_id: str, target_document_id: str

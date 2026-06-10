@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use ulid::Ulid;
 
-use crate::db::repositories::EmbeddingProviderRepository;
+use crate::{db::repositories::EmbeddingProviderRepository, utils::generate_ulid};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -154,6 +154,59 @@ impl EmbeddingQueue {
 
         tx.commit().await?;
         Ok(ids)
+    }
+
+    pub async fn enqueue_batch_missing_current_embeddings(
+        &self,
+        document_ids: Vec<String>,
+    ) -> Result<Vec<String>> {
+        if document_ids.is_empty() || !self.provider_repo.has_active_provider().await? {
+            return Ok(vec![]);
+        }
+
+        let ids: Vec<String> = document_ids.iter().map(|_| generate_ulid()).collect();
+        let rows = sqlx::query(
+            r#"
+            WITH active_provider AS (
+                SELECT config->>'model' AS model_name
+                FROM embedding_providers
+                WHERE is_current = TRUE AND is_deleted = FALSE
+                LIMIT 1
+            ),
+            input_rows AS (
+                SELECT id, document_id, ordinality
+                FROM UNNEST($1::text[], $2::text[]) WITH ORDINALITY AS t(id, document_id, ordinality)
+            ),
+            deduped_input AS (
+                SELECT DISTINCT ON (document_id) id, document_id
+                FROM input_rows
+                ORDER BY document_id, ordinality
+            )
+            INSERT INTO embedding_queue (id, document_id)
+            SELECT input.id, input.document_id
+            FROM deduped_input input
+            CROSS JOIN active_provider provider
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM embedding_queue q
+                WHERE q.document_id = input.document_id
+                  AND q.status IN ('pending', 'processing')
+            )
+            AND NOT EXISTS (
+                SELECT 1
+                FROM embeddings e
+                WHERE e.document_id = input.document_id
+                  AND e.model_name = provider.model_name
+            )
+            RETURNING id
+            "#,
+        )
+        .bind(&ids)
+        .bind(&document_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|row| row.get("id")).collect())
     }
 
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<EmbeddingQueueItem>> {
