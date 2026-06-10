@@ -1952,12 +1952,14 @@
             <div class="flex flex-wrap gap-1">
                 {#each citations as citation, idx}
                     {#if citation.type === 'search_result_location'}
+                        {@const hasUrl = citation.source?.startsWith('http://') || citation.source?.startsWith('https://')}
                         {@const isImap = citation.source?.startsWith('imap:')}
-                        <a
-                            href={isImap ? undefined : citation.source}
+                        <svelte:element
+                            this={hasUrl ? 'a' : 'div'}
+                            href={hasUrl ? citation.source : undefined}
                             class="border-primary/10 hover:border-primary/20 hover:bg-muted/40 rounded-lg border p-2 px-2.5 text-xs font-normal no-underline transition-colors"
-                            target="_blank"
-                            rel="noopener noreferrer">
+                            target={hasUrl ? '_blank' : undefined}
+                            rel={hasUrl ? 'noopener noreferrer' : undefined}>
                             <div class="flex items-center gap-1">
                                 <div class="text-muted-foreground text-sm">[{idx}]</div>
                                 {#if isImap}
@@ -1977,7 +1979,7 @@
                                     <ImapCitationSource source={citation.source} />
                                 </div>
                             </div>
-                        </a>
+                        </svelte:element>
                     {/if}
                 {/each}
             </div>

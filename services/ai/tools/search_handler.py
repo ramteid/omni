@@ -202,7 +202,7 @@ def _build_search_tools(
                     },
                     "document_id": {
                         "type": "string",
-                        "description": "Optional: restrict search to a specific document by ID. Use this to search within a single document for relevant sections.",
+                        "description": "Optional: restrict search to a specific document by its doc_ref ID. Use this to search within a single document for relevant sections.",
                     },
                     "limit": {
                         "type": "integer",
