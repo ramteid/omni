@@ -9,6 +9,8 @@ from typing import Optional, List
 from pydantic import BaseModel
 import httpx
 
+from db.models import UserConfiguration
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +23,7 @@ class SearchRequest(BaseModel):
     mode: str = "hybrid"
     user_id: Optional[str] = None
     user_email: Optional[str] = None
+    user_configuration: UserConfiguration | None = None
     is_generated_query: Optional[bool] = None
     original_user_query: Optional[str] = None
     document_id: Optional[str] = None
@@ -105,24 +108,7 @@ class SearcherClient:
             dict: Search results with 'success' boolean and either 'results'/'total_count' or 'error'
         """
         try:
-            search_payload = {
-                "query": request.query,
-                "source_types": request.source_types,
-                "content_types": request.content_types,
-                "limit": request.limit,
-                "offset": request.offset,
-                "mode": request.mode,
-                "user_id": request.user_id,
-                "user_email": request.user_email,
-                "is_generated_query": request.is_generated_query,
-                "original_user_query": request.original_user_query,
-                "document_id": request.document_id,
-                "document_content_start_line": request.document_content_start_line,
-                "document_content_end_line": request.document_content_end_line,
-                "include_facets": request.include_facets,
-                "ignore_typos": request.ignore_typos,
-                "attribute_filters": request.attribute_filters,
-            }
+            search_payload = request.model_dump(mode="json")
 
             logger.info(f"Calling searcher service with query: {request.query}...")
 

@@ -15,6 +15,8 @@ from anthropic.types import (
     ToolParam,
 )
 
+from datetime_utils import format_search_date
+from db.models import UserConfiguration
 from models.chat import SearchToolParams
 from tools.searcher_tool import SearcherTool
 from tools.searcher_client import (
@@ -48,6 +50,7 @@ TYPE_VALID_VALUES = [
 _MAX_DISPLAYED_VALUES = 20
 _OPERATOR_VALUES_CACHE_KEY = "search:operator_values"
 _OPERATOR_VALUES_CACHE_TTL = 300  # 5 minutes
+
 
 # In-memory cache so the hot path (every LLM call) is a timestamp check, not a Redis round-trip.
 _operator_values_mem: dict[str, list[str]] = {}
@@ -280,6 +283,7 @@ class SearchToolHandler:
             search_user_id,
             search_user_email,
             context.original_user_query,
+            context.user_configuration,
         )
 
         content_blocks: list = []
@@ -306,9 +310,7 @@ class SearchToolHandler:
                 if raw_date and isinstance(raw_date, str):
                     try:
                         dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-                        # Normalize to UTC so the label is always correct
-                        dt = dt.astimezone(timezone.utc)
-                        date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+                        date_str = format_search_date(dt, context.user_configuration)
                     except (ValueError, AttributeError):
                         date_str = raw_date
             if not date_str and doc.attributes:
@@ -318,7 +320,7 @@ class SearchToolHandler:
                 if raw_ts and isinstance(raw_ts, (int, float)):
                     try:
                         dt = datetime.fromtimestamp(raw_ts, tz=timezone.utc)
-                        date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+                        date_str = format_search_date(dt, context.user_configuration)
                     except (OSError, OverflowError, ValueError):
                         pass
 
@@ -399,9 +401,10 @@ class SearchToolHandler:
 async def _execute_search_tool(
     searcher_tool: SearcherTool,
     tool_input: SearchToolParams,
-    user_id: str,
+    user_id: str | None,
     user_email: str | None = None,
     original_user_query: str | None = None,
+    user_configuration: UserConfiguration | None = None,
 ) -> list[SearchResult]:
     """Execute search_documents tool by calling omni-searcher."""
     search_request = SearchRequest(
@@ -414,6 +417,7 @@ async def _execute_search_tool(
         user_email=user_email,
         is_generated_query=True,
         original_user_query=original_user_query,
+        user_configuration=user_configuration,
         include_facets=False,
         ignore_typos=True,
     )

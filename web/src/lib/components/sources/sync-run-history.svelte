@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { page } from '$app/state'
     import * as Card from '$lib/components/ui/card'
     import * as Accordion from '$lib/components/ui/accordion'
     import { Badge } from '$lib/components/ui/badge'
@@ -83,7 +84,10 @@
                                                 </Badge>
                                             </td>
                                             <td class="py-2 pr-4 whitespace-nowrap">
-                                                {formatSyncRunDate(run.startedAt)}
+                                                {formatSyncRunDate(
+                                                    run.startedAt,
+                                                    page.data.user?.configuration,
+                                                )}
                                             </td>
                                             <td class="py-2 pr-4 whitespace-nowrap">
                                                 {formatSyncRunDuration(

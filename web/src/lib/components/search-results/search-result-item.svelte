@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { page } from '$app/state'
     import { SourceType } from '$lib/types'
     import type { SearchResult } from '$lib/types/search'
     import { getDocumentIconPath } from '$lib/utils/icons'
@@ -8,6 +9,7 @@
     import SlackMetadata from './slack-metadata.svelte'
     import JiraMetadata from './jira-metadata.svelte'
     import ImapCitationSource from './imap-citation-source.svelte'
+    import { formatDate } from '$lib/utils/datetime'
 
     let { result, sourcesLookup }: { result: SearchResult; sourcesLookup: Map<string, string> } =
         $props()
@@ -23,17 +25,9 @@
         return { iconPath, useFileText: !iconPath }
     })
 
-    function formatDate(dateStr: string) {
-        const d = new Date(dateStr)
-        const day = d.getDate()
-        const month = d.toLocaleString('en-US', { month: 'short' })
-        const year = d.getFullYear()
-        return `${day} ${month} ${year}`
-    }
-
     function getDisplayDate(): string {
         const metadataDate = metadata?.updated_at || metadata?.created_at
-        return formatDate(metadataDate || result.document.updated_at)
+        return formatDate(metadataDate || result.document.updated_at, page.data.user?.configuration)
     }
 
     function truncateContent(content: string, maxLength: number = 200) {
@@ -115,7 +109,7 @@
     }
 
     function renderHighlight(text: string): string {
-        return marked.parseInline(text.replaceAll('\n', ' '))
+        return marked.parseInline(text.replaceAll('\n', ' '), { async: false }) as string
     }
 </script>
 

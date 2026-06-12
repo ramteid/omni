@@ -1,7 +1,7 @@
 use crate::models::{
     AttributeValuesResponse, PeopleSearchResponse, PersonResult, RecentSearchesRequest,
     SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse, TypeaheadQuery,
-    TypeaheadResponse,
+    TypeaheadResponse, UserConfiguration,
 };
 use crate::search::SearchEngine;
 use crate::search_repository::SearchDocumentRepository;
@@ -17,7 +17,7 @@ use axum::{
 use futures_util::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
-use shared::{PersonRepository, Repository, UserRepository};
+use shared::{ConfigurationRepository, PersonRepository, Repository, UserRepository};
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -96,6 +96,30 @@ where
     }
 }
 
+async fn hydrate_user_configuration(
+    state: &AppState,
+    request: &mut SearchRequest,
+) -> SearcherResult<()> {
+    let Some(user_id) = request
+        .user_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+
+    let configuration_repo = ConfigurationRepository::new(state.db_pool.pool());
+    let configuration_rows = configuration_repo
+        .get_user_config(user_id)
+        .await
+        .map_err(|error| SearcherError::Internal(anyhow!(error)))?;
+
+    request.user_configuration =
+        UserConfiguration::from_rows(configuration_rows).map_err(SearcherError::BadRequest)?;
+
+    Ok(())
+}
+
 pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<Value>> {
     sqlx::query("SELECT 1")
         .execute(state.db_pool.pool())
@@ -120,9 +144,10 @@ pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<
 
 pub async fn search(
     State(state): State<AppState>,
-    Json(request): Json<SearchRequest>,
+    Json(mut request): Json<SearchRequest>,
 ) -> SearcherResult<Json<Value>> {
     info!("Received search request: {:?}", request);
+    hydrate_user_configuration(&state, &mut request).await?;
 
     let search_engine = SearchEngine::new(
         state.db_pool,
@@ -189,9 +214,12 @@ pub async fn recent_searches(
 
 pub async fn ai_answer(
     State(state): State<AppState>,
-    Json(request): Json<SearchRequest>,
+    Json(mut request): Json<SearchRequest>,
 ) -> Result<axum::response::Response<Body>, axum::http::StatusCode> {
     info!("Received AI answer request: {:?}", request);
+    hydrate_user_configuration(&state, &mut request)
+        .await
+        .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
 
     let search_engine = SearchEngine::new(
         state.db_pool.clone(),
@@ -204,7 +232,7 @@ pub async fn ai_answer(
     .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Generate cache key for AI answer
-    let cache_key = search_engine.generate_ai_cache_key(&request.query);
+    let cache_key = search_engine.generate_ai_cache_key(&request);
 
     // Try to get cached AI response first
     if let Ok(mut conn) = state.redis_client.get_multiplexed_async_connection().await {

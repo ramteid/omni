@@ -38,6 +38,7 @@ export const load = async ({ url, fetch, locals }) => {
                     mode: 'hybrid',
                     user_id: locals.user?.id,
                     user_email: locals.user?.email,
+                    user_configuration: locals.user?.configuration,
                     source_types: sourceTypes.length > 0 ? sourceTypes : undefined,
                 } as SearchRequest),
             }),

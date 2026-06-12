@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from anthropic.types import ToolParam
 
+from db.models import UserConfiguration
 from tools.omni_tool_result import OAuthRequiredPayload
 
 logger = logging.getLogger(__name__)
@@ -18,8 +19,9 @@ class ToolContext:
     """Shared context passed to all tool handlers during execution."""
 
     chat_id: str
-    user_id: str
+    user_id: str | None
     user_email: str | None = None
+    user_configuration: UserConfiguration | None = None
     original_user_query: str | None = None
     skip_permission_check: bool = False
 

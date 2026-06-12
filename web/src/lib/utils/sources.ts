@@ -1,12 +1,13 @@
 import { SourceType } from '$lib/types'
+import { formatDateTime, type TimeZoneInput } from '$lib/utils/datetime'
 
-export function formatDate(date: Date | null) {
+export function formatDate(date: Date | null, timeZone?: TimeZoneInput) {
     if (!date) return 'Never'
-    return new Date(date).toLocaleString()
+    return formatDateTime(date, timeZone)
 }
 
-export function formatSyncRunDate(value: Date | string | null) {
-    return value ? new Date(value).toLocaleString() : '-'
+export function formatSyncRunDate(value: Date | string | null, timeZone?: TimeZoneInput) {
+    return value ? formatDateTime(value, timeZone) : '-'
 }
 
 export function formatSyncRunDuration(

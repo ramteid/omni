@@ -1,3 +1,5 @@
+import type { UserConfiguration } from '$lib/types/userConfiguration'
+
 export interface DocumentMetadata {
     title?: string
     author?: string
@@ -107,6 +109,7 @@ export interface SearchRequest {
     offset?: number
     mode?: 'fulltext' | 'semantic' | 'hybrid'
     user_id?: string
+    user_configuration?: UserConfiguration
 }
 
 export interface RecentSearchesResponse {
