@@ -3,8 +3,11 @@
     import { enhance } from '$app/forms'
     import { invalidateAll } from '$app/navigation'
     import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
+    import Monitor from '@lucide/svelte/icons/monitor'
+    import Moon from '@lucide/svelte/icons/moon'
+    import Sun from '@lucide/svelte/icons/sun'
     import { tick } from 'svelte'
-    import ThemePicker from '$lib/components/theme-picker.svelte'
+    import { toast } from 'svelte-sonner'
     import { Badge } from '$lib/components/ui/badge'
     import { Button } from '$lib/components/ui/button'
     import * as Card from '$lib/components/ui/card'
@@ -12,8 +15,10 @@
     import { Label } from '$lib/components/ui/label'
     import * as Popover from '$lib/components/ui/popover/index.js'
     import * as Select from '$lib/components/ui/select/index.js'
+    import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js'
     import { userPreferences } from '$lib/preferences'
     import type { InputMode } from '$lib/components/user-input.svelte'
+    import type { ThemePreference } from '$lib/preferences/user-preferences'
     import { themeStore } from '$lib/themes/store.svelte'
     import { formatProviderName } from '$lib/utils/providers.js'
     import type { PageProps } from './$types'
@@ -61,7 +66,22 @@
     const selectedModelLabel = $derived(
         preferredModel?.displayName ?? defaultModel?.displayName ?? 'System default',
     )
-    const currentThemeLabel = $derived(themeStore.current.colorScheme === 'dark' ? 'Dark' : 'Light')
+    const themeOptions: Array<{
+        value: ThemePreference
+        label: string
+        icon: typeof Sun
+    }> = [
+        { value: 'light', label: 'Light', icon: Sun },
+        { value: 'dark', label: 'Dark', icon: Moon },
+        { value: 'system', label: 'System', icon: Monitor },
+    ]
+    const currentThemeLabel = $derived(
+        themeStore.preference === 'system'
+            ? `System (${themeStore.current.colorScheme === 'dark' ? 'Dark' : 'Light'})`
+            : themeStore.current.colorScheme === 'dark'
+              ? 'Dark'
+              : 'Light',
+    )
 
     function closeTimezoneAndFocusTrigger() {
         timezoneOpen = false
@@ -129,10 +149,18 @@
                     class="space-y-4"
                     use:enhance={() => {
                         isSubmitting = true
-                        return async ({ update }) => {
+                        return async ({ result, update }) => {
                             isSubmitting = false
                             await update()
-                            await invalidateAll()
+                            if (result.type === 'success') {
+                                toast.success('Timezone saved')
+                                await invalidateAll()
+                            } else if (result.type === 'failure') {
+                                const error = result.data?.error
+                                toast.error(
+                                    typeof error === 'string' ? error : 'Failed to save timezone',
+                                )
+                            }
                         }
                     }}>
                     <div class="space-y-2">
@@ -187,10 +215,6 @@
                         <p class="text-sm text-red-500">{form.error}</p>
                     {/if}
 
-                    {#if form?.success}
-                        <p class="text-muted-foreground text-sm">Timezone saved.</p>
-                    {/if}
-
                     <Button type="submit" disabled={isSubmitting} class="cursor-pointer">
                         {isSubmitting ? 'Saving...' : 'Save timezone'}
                     </Button>
@@ -241,12 +265,12 @@
                                     <Select.Item value="system-default" class="cursor-pointer">
                                         System default
                                     </Select.Item>
-                                    {#each groupedModels as [provider, providerModels]}
+                                    {#each groupedModels as [provider, providerModels] (provider)}
                                         <Select.Group>
                                             <Select.GroupHeading>
                                                 {formatProviderName(provider)}
                                             </Select.GroupHeading>
-                                            {#each providerModels as model}
+                                            {#each providerModels as model (model.id)}
                                                 <Select.Item
                                                     value={model.id}
                                                     class="cursor-pointer">
@@ -262,14 +286,32 @@
                 {/if}
 
                 <div class="border-border border-t pt-6">
-                    <div class="flex items-center justify-between gap-4">
+                    <div class="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                         <div>
                             <p class="text-sm font-medium">Appearance</p>
                             <p class="text-muted-foreground mt-1 text-sm">
                                 Current theme: {currentThemeLabel}
                             </p>
                         </div>
-                        <ThemePicker />
+                        <ToggleGroup.Root
+                            type="single"
+                            variant="outline"
+                            value={themeStore.preference}
+                            onValueChange={(value) => {
+                                if (value) themeStore.set(value as ThemePreference)
+                            }}
+                            class="w-full sm:w-auto">
+                            {#each themeOptions as option (option.value)}
+                                <ToggleGroup.Item
+                                    value={option.value}
+                                    aria-label={`${option.label} theme`}
+                                    class="h-9 min-w-[6.5rem] flex-none cursor-pointer gap-2 px-4">
+                                    {@const Icon = option.icon}
+                                    <Icon class="h-4 w-4" />
+                                    <span>{option.label}</span>
+                                </ToggleGroup.Item>
+                            {/each}
+                        </ToggleGroup.Root>
                     </div>
                 </div>
             </Card.Content>

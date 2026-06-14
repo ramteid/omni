@@ -4,6 +4,7 @@ use serde_json::Value as JsonValue;
 use sqlx::types::time::OffsetDateTime;
 use sqlx::FromRow;
 use std::collections::HashMap;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "varchar", rename_all = "lowercase")]
@@ -222,6 +223,386 @@ pub enum AuthType {
     #[sqlx(rename = "oauth")]
     #[serde(rename = "oauth")]
     OAuth,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigurationMemoryMode {
+    Off,
+    Chat,
+    Full,
+}
+
+impl ConfigurationMemoryMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Chat => "chat",
+            Self::Full => "full",
+        }
+    }
+}
+
+impl Default for ConfigurationMemoryMode {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
+impl TryFrom<&str> for ConfigurationMemoryMode {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "off" => Ok(Self::Off),
+            "chat" => Ok(Self::Chat),
+            "full" => Ok(Self::Full),
+            _ => Err(format!("Invalid memory mode: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum DoclingQualityPreset {
+    Fast,
+    Balanced,
+    Quality,
+}
+
+impl DoclingQualityPreset {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+            Self::Quality => "quality",
+        }
+    }
+}
+
+impl Default for DoclingQualityPreset {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
+
+impl TryFrom<&str> for DoclingQualityPreset {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "fast" => Ok(Self::Fast),
+            "balanced" => Ok(Self::Balanced),
+            "quality" => Ok(Self::Quality),
+            _ => Err(format!("Invalid Docling quality preset: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalConfiguration {
+    pub docling_enabled: bool,
+    pub docling_quality_preset: DoclingQualityPreset,
+    pub memory_mode_default: ConfigurationMemoryMode,
+    pub memory_llm_id: Option<String>,
+}
+
+impl Default for GlobalConfiguration {
+    fn default() -> Self {
+        Self {
+            docling_enabled: false,
+            docling_quality_preset: DoclingQualityPreset::Balanced,
+            memory_mode_default: ConfigurationMemoryMode::Off,
+            memory_llm_id: None,
+        }
+    }
+}
+
+impl GlobalConfiguration {
+    pub fn from_rows<I>(rows: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (String, JsonValue)>,
+    {
+        let mut configuration = Self::default();
+
+        for (key, value) in rows {
+            match key.as_str() {
+                "docling_enabled" => {
+                    configuration.docling_enabled = extract_bool_config_value(&value, "enabled")?
+                        .ok_or_else(|| {
+                        "docling_enabled.enabled must be a boolean".to_string()
+                    })?;
+                }
+                "docling_quality_preset" => {
+                    let preset = extract_string_config_value(&value, &["preset"])?
+                        .ok_or_else(|| "docling_quality_preset.preset is required".to_string())?;
+                    configuration.docling_quality_preset =
+                        DoclingQualityPreset::try_from(preset.as_str())?;
+                }
+                "memory_mode_default" => {
+                    let mode = extract_string_config_value(&value, &["mode"])?
+                        .ok_or_else(|| "memory_mode_default.value is required".to_string())?;
+                    configuration.memory_mode_default =
+                        ConfigurationMemoryMode::try_from(mode.as_str())?;
+                }
+                "memory_llm_id" => {
+                    configuration.memory_llm_id = extract_string_config_value(&value, &[])?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(configuration)
+    }
+}
+
+fn normalize_timezone_config_value(timezone: &str) -> Option<String> {
+    let candidate = timezone.trim();
+    if candidate.is_empty() {
+        return None;
+    }
+
+    let canonical = iana_timezone_alias(candidate).unwrap_or(candidate);
+    if canonical.parse::<chrono_tz::Tz>().is_ok() {
+        Some(canonical.to_string())
+    } else {
+        warn!(timezone = %timezone, "Ignoring invalid user timezone configuration");
+        None
+    }
+}
+
+fn iana_timezone_alias(timezone: &str) -> Option<&'static str> {
+    match timezone.to_ascii_lowercase().as_str() {
+        "africa/asmera" => Some("Africa/Asmara"),
+        "africa/timbuktu" => Some("Africa/Bamako"),
+        "america/argentina/comodrivadavia" => Some("America/Argentina/Catamarca"),
+        "america/atka" => Some("America/Adak"),
+        "america/buenos_aires" => Some("America/Argentina/Buenos_Aires"),
+        "america/catamarca" => Some("America/Argentina/Catamarca"),
+        "america/coral_harbour" => Some("America/Atikokan"),
+        "america/cordoba" => Some("America/Argentina/Cordoba"),
+        "america/ensenada" => Some("America/Tijuana"),
+        "america/fort_wayne" => Some("America/Indiana/Indianapolis"),
+        "america/godthab" => Some("America/Nuuk"),
+        "america/indianapolis" => Some("America/Indiana/Indianapolis"),
+        "america/jujuy" => Some("America/Argentina/Jujuy"),
+        "america/knox_in" => Some("America/Indiana/Knox"),
+        "america/kralendijk" => Some("America/Curacao"),
+        "america/louisville" => Some("America/Kentucky/Louisville"),
+        "america/lower_princes" => Some("America/Curacao"),
+        "america/marigot" => Some("America/Port_of_Spain"),
+        "america/mendoza" => Some("America/Argentina/Mendoza"),
+        "america/montreal" => Some("America/Toronto"),
+        "america/nipigon" => Some("America/Toronto"),
+        "america/pangnirtung" => Some("America/Iqaluit"),
+        "america/porto_acre" => Some("America/Rio_Branco"),
+        "america/rainy_river" => Some("America/Winnipeg"),
+        "america/rosario" => Some("America/Argentina/Cordoba"),
+        "america/santa_isabel" => Some("America/Tijuana"),
+        "america/shiprock" => Some("America/Denver"),
+        "america/st_barthelemy" => Some("America/Port_of_Spain"),
+        "america/thunder_bay" => Some("America/Toronto"),
+        "america/virgin" => Some("America/St_Thomas"),
+        "america/yellowknife" => Some("America/Edmonton"),
+        "antarctica/south_pole" => Some("Antarctica/McMurdo"),
+        "arctic/longyearbyen" => Some("Europe/Oslo"),
+        "asia/ashkhabad" => Some("Asia/Ashgabat"),
+        "asia/calcutta" => Some("Asia/Kolkata"),
+        "asia/choibalsan" => Some("Asia/Ulaanbaatar"),
+        "asia/chongqing" => Some("Asia/Shanghai"),
+        "asia/chungking" => Some("Asia/Shanghai"),
+        "asia/dacca" => Some("Asia/Dhaka"),
+        "asia/harbin" => Some("Asia/Shanghai"),
+        "asia/istanbul" => Some("Europe/Istanbul"),
+        "asia/kashgar" => Some("Asia/Urumqi"),
+        "asia/katmandu" => Some("Asia/Kathmandu"),
+        "asia/macao" => Some("Asia/Macau"),
+        "asia/rangoon" => Some("Asia/Yangon"),
+        "asia/saigon" => Some("Asia/Ho_Chi_Minh"),
+        "asia/tel_aviv" => Some("Asia/Jerusalem"),
+        "asia/thimbu" => Some("Asia/Thimphu"),
+        "asia/ujung_pandang" => Some("Asia/Makassar"),
+        "asia/ulan_bator" => Some("Asia/Ulaanbaatar"),
+        "atlantic/faeroe" => Some("Atlantic/Faroe"),
+        "atlantic/jan_mayen" => Some("Europe/Oslo"),
+        "australia/act" => Some("Australia/Sydney"),
+        "australia/canberra" => Some("Australia/Sydney"),
+        "australia/currie" => Some("Australia/Hobart"),
+        "australia/lhi" => Some("Australia/Lord_Howe"),
+        "australia/north" => Some("Australia/Darwin"),
+        "australia/nsw" => Some("Australia/Sydney"),
+        "australia/queensland" => Some("Australia/Brisbane"),
+        "australia/south" => Some("Australia/Adelaide"),
+        "australia/tasmania" => Some("Australia/Hobart"),
+        "australia/victoria" => Some("Australia/Melbourne"),
+        "australia/west" => Some("Australia/Perth"),
+        "australia/yancowinna" => Some("Australia/Broken_Hill"),
+        "brazil/acre" => Some("America/Rio_Branco"),
+        "brazil/denoronha" => Some("America/Noronha"),
+        "brazil/east" => Some("America/Sao_Paulo"),
+        "brazil/west" => Some("America/Manaus"),
+        "canada/atlantic" => Some("America/Halifax"),
+        "canada/central" => Some("America/Winnipeg"),
+        "canada/eastern" => Some("America/Toronto"),
+        "canada/mountain" => Some("America/Edmonton"),
+        "canada/newfoundland" => Some("America/St_Johns"),
+        "canada/pacific" => Some("America/Vancouver"),
+        "canada/saskatchewan" => Some("America/Regina"),
+        "canada/yukon" => Some("America/Whitehorse"),
+        "chile/continental" => Some("America/Santiago"),
+        "chile/easterisland" => Some("Pacific/Easter"),
+        "cuba" => Some("America/Havana"),
+        "egypt" => Some("Africa/Cairo"),
+        "eire" => Some("Europe/Dublin"),
+        "etc/gmt+0" => Some("Etc/GMT"),
+        "etc/gmt-0" => Some("Etc/GMT"),
+        "etc/gmt0" => Some("Etc/GMT"),
+        "etc/greenwich" => Some("Etc/GMT"),
+        "etc/uct" => Some("Etc/UTC"),
+        "etc/universal" => Some("Etc/UTC"),
+        "etc/zulu" => Some("Etc/UTC"),
+        "europe/belfast" => Some("Europe/London"),
+        "europe/bratislava" => Some("Europe/Prague"),
+        "europe/busingen" => Some("Europe/Zurich"),
+        "europe/kiev" => Some("Europe/Kyiv"),
+        "europe/mariehamn" => Some("Europe/Helsinki"),
+        "europe/nicosia" => Some("Asia/Nicosia"),
+        "europe/podgorica" => Some("Europe/Belgrade"),
+        "europe/san_marino" => Some("Europe/Rome"),
+        "europe/tiraspol" => Some("Europe/Chisinau"),
+        "europe/uzhgorod" => Some("Europe/Kyiv"),
+        "europe/vatican" => Some("Europe/Rome"),
+        "europe/zaporozhye" => Some("Europe/Kyiv"),
+        "gb" => Some("Europe/London"),
+        "gb-eire" => Some("Europe/London"),
+        "gmt" => Some("Etc/GMT"),
+        "gmt+0" => Some("Etc/GMT"),
+        "gmt-0" => Some("Etc/GMT"),
+        "gmt0" => Some("Etc/GMT"),
+        "greenwich" => Some("Etc/GMT"),
+        "hongkong" => Some("Asia/Hong_Kong"),
+        "iceland" => Some("Atlantic/Reykjavik"),
+        "iran" => Some("Asia/Tehran"),
+        "israel" => Some("Asia/Jerusalem"),
+        "jamaica" => Some("America/Jamaica"),
+        "japan" => Some("Asia/Tokyo"),
+        "kwajalein" => Some("Pacific/Kwajalein"),
+        "libya" => Some("Africa/Tripoli"),
+        "mexico/bajanorte" => Some("America/Tijuana"),
+        "mexico/bajasur" => Some("America/Mazatlan"),
+        "mexico/general" => Some("America/Mexico_City"),
+        "navajo" => Some("America/Denver"),
+        "nz" => Some("Pacific/Auckland"),
+        "nz-chat" => Some("Pacific/Chatham"),
+        "pacific/enderbury" => Some("Pacific/Kanton"),
+        "pacific/johnston" => Some("Pacific/Honolulu"),
+        "pacific/ponape" => Some("Pacific/Pohnpei"),
+        "pacific/samoa" => Some("Pacific/Pago_Pago"),
+        "pacific/truk" => Some("Pacific/Chuuk"),
+        "pacific/yap" => Some("Pacific/Chuuk"),
+        "poland" => Some("Europe/Warsaw"),
+        "portugal" => Some("Europe/Lisbon"),
+        "prc" => Some("Asia/Shanghai"),
+        "roc" => Some("Asia/Taipei"),
+        "rok" => Some("Asia/Seoul"),
+        "singapore" => Some("Asia/Singapore"),
+        "turkey" => Some("Europe/Istanbul"),
+        "uct" => Some("Etc/UTC"),
+        "universal" => Some("Etc/UTC"),
+        "us/alaska" => Some("America/Anchorage"),
+        "us/aleutian" => Some("America/Adak"),
+        "us/arizona" => Some("America/Phoenix"),
+        "us/central" => Some("America/Chicago"),
+        "us/east-indiana" => Some("America/Indiana/Indianapolis"),
+        "us/eastern" => Some("America/New_York"),
+        "us/hawaii" => Some("Pacific/Honolulu"),
+        "us/indiana-starke" => Some("America/Indiana/Knox"),
+        "us/michigan" => Some("America/Detroit"),
+        "us/mountain" => Some("America/Denver"),
+        "us/pacific" => Some("America/Los_Angeles"),
+        "us/samoa" => Some("Pacific/Pago_Pago"),
+        "utc" => Some("UTC"),
+        "w-su" => Some("Europe/Moscow"),
+        "zulu" => Some("Etc/UTC"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct UserConfiguration {
+    pub memory_mode: Option<ConfigurationMemoryMode>,
+    pub timezone: Option<String>,
+}
+
+impl UserConfiguration {
+    pub fn from_rows<I>(rows: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (String, JsonValue)>,
+    {
+        let mut configuration = Self::default();
+
+        for (key, value) in rows {
+            match key.as_str() {
+                "memory_mode" => {
+                    if let Some(mode) = extract_string_config_value(&value, &["mode"])? {
+                        configuration.memory_mode =
+                            Some(ConfigurationMemoryMode::try_from(mode.as_str())?);
+                    }
+                }
+                "timezone" => {
+                    if let Some(timezone) = extract_string_config_value(&value, &["timezone"])? {
+                        configuration.timezone = normalize_timezone_config_value(&timezone);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(configuration)
+    }
+
+    pub fn timezone(&self) -> Option<&str> {
+        self.timezone
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+    }
+}
+
+fn extract_string_config_value(
+    value: &JsonValue,
+    alternate_keys: &[&str],
+) -> Result<Option<String>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(value) => Ok(Some(value.clone())),
+        JsonValue::Object(map) => {
+            let keys = std::iter::once("value").chain(alternate_keys.iter().copied());
+            for key in keys {
+                match map.get(key) {
+                    Some(JsonValue::String(value)) => return Ok(Some(value.clone())),
+                    Some(JsonValue::Null) | None => {}
+                    Some(_) => return Err(format!("{key} must be a string")),
+                }
+            }
+            Ok(None)
+        }
+        _ => Err("value must be a string or object".to_string()),
+    }
+}
+
+fn extract_bool_config_value(value: &JsonValue, key: &str) -> Result<Option<bool>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::Bool(value) => Ok(Some(*value)),
+        JsonValue::Object(map) => match map.get(key) {
+            Some(JsonValue::Bool(value)) => Ok(Some(*value)),
+            Some(JsonValue::Null) | None => Ok(None),
+            Some(_) => Err(format!("{key} must be a boolean")),
+        },
+        _ => Err("value must be a boolean or object".to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -767,6 +1148,28 @@ mod tests {
             updated_at: OffsetDateTime::now_utc(),
             created_by: "admin".to_string(),
         }
+    }
+
+    #[test]
+    fn test_user_configuration_normalizes_timezone_aliases() {
+        let configuration = UserConfiguration::from_rows(vec![(
+            "timezone".to_string(),
+            json!({ "value": "Asia/Calcutta" }),
+        )])
+        .unwrap();
+
+        assert_eq!(configuration.timezone.as_deref(), Some("Asia/Kolkata"));
+    }
+
+    #[test]
+    fn test_user_configuration_ignores_invalid_timezone() {
+        let configuration = UserConfiguration::from_rows(vec![(
+            "timezone".to_string(),
+            json!({ "value": "Not/AZone" }),
+        )])
+        .unwrap();
+
+        assert_eq!(configuration.timezone, None);
     }
 
     #[test]

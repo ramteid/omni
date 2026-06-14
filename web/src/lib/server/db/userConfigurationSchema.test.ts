@@ -18,6 +18,9 @@ describe('user configuration schema helpers', () => {
         expect(normalizeTimezone('UTC')).toBe('UTC')
         expect(extractUserTimezone({ value: 'America/New_York' })).toBe('America/New_York')
         expect(extractUserTimezone({ timezone: 'Europe/Berlin' })).toBe('Europe/Berlin')
+        expect(normalizeTimezone('Asia/Calcutta')).toBe('Asia/Kolkata')
+        expect(normalizeTimezone('US/Eastern')).toBe('America/New_York')
+        expect(normalizeTimezone('Europe/Kiev')).toBe('Europe/Kyiv')
     })
 
     it('rejects invalid timezone values', () => {

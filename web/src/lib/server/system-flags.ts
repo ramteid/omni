@@ -1,7 +1,19 @@
+import {
+    GLOBAL_CONFIGURATION_KEYS,
+    getTypedGlobal,
+    setTypedGlobal,
+    type DoclingQualityPreset,
+} from './db/configuration'
 import { getRedisClient } from './redis'
 
 const SYSTEM_FLAGS_KEY = 'system:flags'
-const SYSTEM_SETTINGS_KEY = 'system:settings'
+const DOCLING_ENABLED_KEY = GLOBAL_CONFIGURATION_KEYS.DOCLING_ENABLED
+const DOCLING_QUALITY_PRESET_KEY = GLOBAL_CONFIGURATION_KEYS.DOCLING_QUALITY_PRESET
+const DEFAULT_DOCLING_QUALITY_PRESET: DoclingQualityPreset = 'balanced'
+
+function isDoclingQualityPreset(preset: string): preset is DoclingQualityPreset {
+    return preset === 'fast' || preset === 'balanced' || preset === 'quality'
+}
 
 export class SystemFlags {
     private static memoryCache: Map<string, boolean> = new Map()
@@ -54,7 +66,7 @@ export class SystemFlags {
 
 /**
  * System settings that can be configured via the admin UI.
- * These are stored in Redis and can be changed at runtime.
+ * The source of truth is the global-scope `configuration` table.
  */
 export class SystemSettings {
     private static memoryCache: Map<string, string> = new Map()
@@ -63,16 +75,13 @@ export class SystemSettings {
      * Check if Docling-based document conversion is enabled.
      */
     static async isDoclingEnabled(): Promise<boolean> {
-        if (this.memoryCache.has('docling_enabled')) {
-            return this.memoryCache.get('docling_enabled') === 'true'
+        if (this.memoryCache.has(DOCLING_ENABLED_KEY)) {
+            return this.memoryCache.get(DOCLING_ENABLED_KEY) === 'true'
         }
 
-        const redis = await getRedisClient()
-        const value = await redis.hGet(SYSTEM_SETTINGS_KEY, 'docling_enabled')
-        const enabled = value === 'true'
-
-        this.memoryCache.set('docling_enabled', enabled ? 'true' : 'false')
-
+        const config = await getTypedGlobal(DOCLING_ENABLED_KEY)
+        const enabled = config?.enabled ?? false
+        this.memoryCache.set(DOCLING_ENABLED_KEY, enabled ? 'true' : 'false')
         return enabled
     }
 
@@ -80,25 +89,21 @@ export class SystemSettings {
      * Set whether Docling-based document conversion is enabled.
      */
     static async setDoclingEnabled(enabled: boolean): Promise<void> {
-        const redis = await getRedisClient()
-        await redis.hSet(SYSTEM_SETTINGS_KEY, 'docling_enabled', enabled ? 'true' : 'false')
-        this.memoryCache.set('docling_enabled', enabled ? 'true' : 'false')
+        await setTypedGlobal(DOCLING_ENABLED_KEY, { enabled })
+        this.memoryCache.set(DOCLING_ENABLED_KEY, enabled ? 'true' : 'false')
     }
 
     /**
      * Get the Docling quality preset. Defaults to "balanced".
      */
     static async getDoclingQualityPreset(): Promise<string> {
-        if (this.memoryCache.has('docling_quality_preset')) {
-            return this.memoryCache.get('docling_quality_preset')!
+        if (this.memoryCache.has(DOCLING_QUALITY_PRESET_KEY)) {
+            return this.memoryCache.get(DOCLING_QUALITY_PRESET_KEY)!
         }
 
-        const redis = await getRedisClient()
-        const value = await redis.hGet(SYSTEM_SETTINGS_KEY, 'docling_quality_preset')
-        const preset = value ?? 'balanced'
-
-        this.memoryCache.set('docling_quality_preset', preset)
-
+        const config = await getTypedGlobal(DOCLING_QUALITY_PRESET_KEY)
+        const preset = config?.preset ?? DEFAULT_DOCLING_QUALITY_PRESET
+        this.memoryCache.set(DOCLING_QUALITY_PRESET_KEY, preset)
         return preset
     }
 
@@ -106,9 +111,12 @@ export class SystemSettings {
      * Set the Docling quality preset.
      */
     static async setDoclingQualityPreset(preset: string): Promise<void> {
-        const redis = await getRedisClient()
-        await redis.hSet(SYSTEM_SETTINGS_KEY, 'docling_quality_preset', preset)
-        this.memoryCache.set('docling_quality_preset', preset)
+        if (!isDoclingQualityPreset(preset)) {
+            throw new Error(`Invalid Docling quality preset: ${preset}`)
+        }
+
+        await setTypedGlobal(DOCLING_QUALITY_PRESET_KEY, { preset })
+        this.memoryCache.set(DOCLING_QUALITY_PRESET_KEY, preset)
     }
 
     /**

@@ -38,21 +38,21 @@ from config import (
 )
 from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
-from db.models import Chat, Source, UserConfiguration
 from db.configuration import ConfigurationRepository
+from db.models import Chat, Source, UserConfiguration
 from db.uploads import UploadsRepository
 from db.usage import UsageRepository
 from db.users import UsersRepository
 from memory import (
     MemoryMode,
     agent_key,
-    parse_org_default,
     resolve_memory_mode,
     user_key,
 )
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
 from providers import LLMProvider, LLMProviderStreamError
 from services.compaction import ConversationCompactor
+from services.title_generation import generate_title_for_conversation
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
 from tools import (
@@ -71,15 +71,6 @@ from tools.skill_handler import SkillHandler
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
-
-TITLE_GENERATION_SYSTEM_PROMPT = """You are a helpful assistant that generates concise, descriptive titles for chat conversations.
-Based on the first message(s) of a conversation, generate a title that is:
-- 3-7 words long
-- Descriptive and specific
-- Written in title case
-- Does not include quotes or special formatting
-
-Just respond with the title text, nothing else."""
 
 
 def _chat_error_message(exc: Exception) -> str:
@@ -560,14 +551,11 @@ async def stream_chat(
         memories = []
         if memory_provider is not None:
             config_repo = ConfigurationRepository()
-            org_default = parse_org_default(
-                await config_repo.get_global("memory_mode_default")
-            )
+            org_default = (await config_repo.get_global_configuration()).memory_mode_default
             if is_org_agent:
                 effective_mode = org_default
-            elif chat_user is not None:
-                user_memory_mode = await config_repo.get_user_memory_mode(chat_user.id)
-                effective_mode = resolve_memory_mode(user_memory_mode, org_default)
+            elif user_configuration is not None:
+                effective_mode = resolve_memory_mode(user_configuration.memory_mode, org_default)
             memory_namespace = agent_key(agent.id)
             if effective_mode >= MemoryMode.CHAT and chat_messages:
                 last_user_text = ""
@@ -650,14 +638,8 @@ async def stream_chat(
         if memory_provider is not None and chat.user_id:
             memory_write_key = user_key(chat.user_id)
             config_repo = ConfigurationRepository()
-            user_memory_mode = (
-                await config_repo.get_user_memory_mode(user.id)
-                if user is not None
-                else None
-            )
-            org_default = parse_org_default(
-                await config_repo.get_global("memory_mode_default")
-            )
+            org_default = (await config_repo.get_global_configuration()).memory_mode_default
+            user_memory_mode = user_configuration.memory_mode if user_configuration else None
             effective_mode = resolve_memory_mode(user_memory_mode, org_default)
             if effective_mode >= MemoryMode.CHAT:
                 last_user_text = ""
@@ -1340,38 +1322,29 @@ async def generate_chat_title(
         logger.info(f"Extracted conversation text ({len(conversation_text)} chars)")
         logger.debug(f"Conversation text: {conversation_text[:200]}...")
 
-        # Generate title using LLM
-        prompt = f"{TITLE_GENERATION_SYSTEM_PROMPT}\n\nConversation:\n{conversation_text}\n\nTitle:"
-
-        generated_title, title_usage = await llm_provider.generate_response(
-            prompt=prompt,
-            max_tokens=20,
-            temperature=0.7,
-            top_p=0.9,
+        title_result = await generate_title_for_conversation(
+            llm_provider,
+            conversation_text,
+            chat_id,
         )
+        title = title_result.title
 
-        track_usage(
-            UsageRepository(),
-            UsageContext(
-                user_id=chat.user_id,
-                model_id=llm_provider.model_record_id,
-                model_name=llm_provider.model_name,
-                provider_type=llm_provider.provider_type,
-                purpose=UsagePurpose.TITLE_GENERATION,
-                chat_id=chat_id,
-            ),
-            input_tokens=title_usage.input_tokens,
-            output_tokens=title_usage.output_tokens,
-            cache_read_tokens=title_usage.cache_read_tokens,
-            cache_creation_tokens=title_usage.cache_creation_tokens,
-        )
-
-        # Clean up the title
-        title = generated_title.strip().strip('"').strip("'")
-
-        # Limit title length just in case
-        if len(title) > 100:
-            title = title[:97] + "..."
+        if title_result.usage is not None:
+            track_usage(
+                UsageRepository(),
+                UsageContext(
+                    user_id=chat.user_id,
+                    model_id=llm_provider.model_record_id,
+                    model_name=llm_provider.model_name,
+                    provider_type=llm_provider.provider_type,
+                    purpose=UsagePurpose.TITLE_GENERATION,
+                    chat_id=chat_id,
+                ),
+                input_tokens=title_result.usage.input_tokens,
+                output_tokens=title_result.usage.output_tokens,
+                cache_read_tokens=title_result.usage.cache_read_tokens,
+                cache_creation_tokens=title_result.usage.cache_creation_tokens,
+            )
 
         logger.info(f"Generated title: {title}")
 
