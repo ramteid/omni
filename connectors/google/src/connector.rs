@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, create_service_auth, get_domain_from_credentials};
+use crate::auth::{create_service_auth, get_domain_from_credentials};
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
 use crate::sync::SyncManager;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, OAuthManifestConfig, OAuthScopeSet,
     SearchOperator, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -398,11 +398,15 @@ impl Connector for GoogleConnector {
     }
 
     fn description(&self) -> Option<String> {
-        Some("Connect to Google Drive, Docs, Gmail, and more".to_string())
+        Some("Connect to Google Drive, Docs, Gmail, Google Chat, and more".to_string())
     }
 
     fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::GoogleDrive, SourceType::Gmail]
+        vec![
+            SourceType::GoogleDrive,
+            SourceType::Gmail,
+            SourceType::GoogleChat,
+        ]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {
@@ -443,7 +447,7 @@ impl Connector for GoogleConnector {
                     },
                     "required": []
                 }),
-                source_types: vec![SourceType::GoogleDrive],
+                source_types: vec![SourceType::GoogleDrive, SourceType::GoogleChat],
                 admin_only: true,
             },
         ]
@@ -464,6 +468,16 @@ impl Connector for GoogleConnector {
             SearchOperator {
                 operator: "label".to_string(),
                 attribute_key: "labels".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "space".to_string(),
+                attribute_key: "space".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "thread".to_string(),
+                attribute_key: "threads".to_string(),
                 value_type: "text".to_string(),
             },
         ]
