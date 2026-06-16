@@ -92,7 +92,15 @@ impl Connector for ImapConnector {
                     },
                     "required": ["host"]
                 }),
-                source_types: Vec::new(),
+                // Hide this action from EVERY chat/MCP tool surface, admins included.
+                // The AI chat tool builder (connector_handler) and the
+                // connector-manager `list_actions` endpoint only surface an action
+                // when the source's type is listed in `source_types`. A sentinel type
+                // this connector never serves (any non-IMAP variant) drops it from
+                // every tool list for all users, before `admin_only` is consulted.
+                // It stays in the manifest (Read mode) and is still dispatchable by
+                // name; these are setup/util actions with no chat-facing use.
+                source_types: vec![SourceType::Linear],
                 admin_only: false,
             },
             ActionDefinition {
@@ -108,7 +116,15 @@ impl Connector for ImapConnector {
                     },
                     "required": ["host"]
                 }),
-                source_types: Vec::new(),
+                // Hide this action from EVERY chat/MCP tool surface, admins included.
+                // The AI chat tool builder (connector_handler) and the
+                // connector-manager `list_actions` endpoint only surface an action
+                // when the source's type is listed in `source_types`. A sentinel type
+                // this connector never serves (any non-IMAP variant) drops it from
+                // every tool list for all users, before `admin_only` is consulted.
+                // It stays in the manifest (Read mode) and is still dispatchable by
+                // name; these are setup/util actions with no chat-facing use.
+                source_types: vec![SourceType::Linear],
                 admin_only: false,
             },
         ]
