@@ -54,7 +54,7 @@
         CitationSearchResultLocationParam,
         ContentBlockParam,
     } from '@anthropic-ai/sdk/resources.js'
-    import { afterNavigate, invalidate } from '$app/navigation'
+    import { afterNavigate, invalidate, invalidateAll } from '$app/navigation'
     import { page } from '$app/state'
     import UserInput from '$lib/components/user-input.svelte'
     import UploadChip from '$lib/components/upload-chip.svelte'
@@ -82,6 +82,7 @@
         eventSource?.close()
         eventSource = null
         activeStreamChatId = null
+        clearReconnectState()
     })
 
     afterNavigate(() => {
@@ -96,6 +97,7 @@
                 eventSource.close()
                 eventSource = null
             }
+            clearReconnectState()
             activeStreamChatId = null
             isStreaming = false
             error = null
@@ -172,6 +174,33 @@
     let error = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
     let activeStreamChatId: string | null = null
+
+    // --- Stream resilience (reconnect after a backgrounded tab / transient drop) ---
+    // The server keeps the run alive and buffered, so we reconnect from the last
+    // received offset (SSE Last-Event-ID) and resume seamlessly instead of failing.
+    let streamLastEventId: string | null = null
+    let reconnectAttempts = 0
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let streamWatchdog: ReturnType<typeof setInterval> | null = null
+    let lastStreamEventAt = 0
+    // Re-opens the active chat's stream from streamLastEventId; set by streamResponse.
+    let reconnectStream: (() => void) | null = null
+    const MAX_RECONNECT_ATTEMPTS = 6
+    const STREAM_STALL_MS = 20000
+
+    function clearReconnectState() {
+        reconnectAttempts = 0
+        streamLastEventId = null
+        reconnectStream = null
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer)
+            reconnectTimer = null
+        }
+        if (streamWatchdog) {
+            clearInterval(streamWatchdog)
+            streamWatchdog = null
+        }
+    }
 
     type StreamErrorPayload = { message: string }
 
@@ -397,11 +426,18 @@
     }
 
     function handleStop() {
+        // The run is decoupled from this connection, so closing the EventSource
+        // is no longer enough — tell the server to actually stop generating.
+        const stopChatId = activeStreamChatId ?? data.chat.id
+        fetch(`/api/chat/${stopChatId}/stop`, { method: 'POST' }).catch((err) =>
+            console.error('Failed to stop stream:', err),
+        )
         if (eventSource) {
             eventSource.close()
             eventSource = null
             activeStreamChatId = null
         }
+        clearReconnectState()
         // Reset all stream state so the input is immediately ready for a new message.
         isStreaming = false
         error = null
@@ -1071,9 +1107,26 @@
         const resizeObserver = new ResizeObserver(() => recalcBottomPadding())
         if (chatContentRef) resizeObserver.observe(chatContentRef)
 
+        // When returning to a backgrounded/frozen tab, the SSE connection is
+        // often dead without an 'error' event firing. If we're still streaming,
+        // reconnect from the last offset and resume.
+        const handleVisibility = () => {
+            if (
+                document.visibilityState === 'visible' &&
+                isStreaming &&
+                activeStreamChatId === data.chat.id &&
+                (!eventSource || eventSource.readyState === EventSource.CLOSED) &&
+                !reconnectTimer
+            ) {
+                reconnectStream?.()
+            }
+        }
+        document.addEventListener('visibilitychange', handleVisibility)
+
         return () => {
             chatContainerRef?.removeEventListener('scroll', handleScroll)
             resizeObserver.disconnect()
+            document.removeEventListener('visibilitychange', handleVisibility)
         }
     })
 
@@ -1092,10 +1145,9 @@
         const pendingPersistedMessageIds: string[] = []
         let tempMessageCounter = 0
 
-        eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
-
         let streamCompleted = false
         let messageEventsReceived = 0
+        reconnectAttempts = 0
 
         const nextTempMessageId = () => `temp-${Date.now()}-${tempMessageCounter++}`
 
@@ -1311,9 +1363,36 @@
             })
         }
 
-        eventSource.addEventListener('message_id', (event) => {
-            applyPersistedMessageId(event.data)
-        })
+        const openStream = (resumeFromId: string | null) => {
+            const base = `/api/chat/${chatId}/stream`
+            eventSource = new EventSource(
+                resumeFromId
+                    ? `${base}?last_event_id=${encodeURIComponent(resumeFromId)}`
+                    : base,
+                { withCredentials: true },
+            )
+
+            eventSource.addEventListener('message_id', (event) => {
+                streamLastEventId = event.lastEventId || streamLastEventId
+                lastStreamEventAt = Date.now()
+                reconnectAttempts = 0
+                applyPersistedMessageId(event.data)
+            })
+
+            eventSource.addEventListener('not_resumable', () => {
+                // The buffered run is gone (expired or never existed). Reload the
+                // persisted messages from the server and clear streaming state.
+                streamCompleted = true
+                isStreaming = false
+                activeStreamingMessageId = null
+                refreshProcessedMessages()
+                stopThinkingText()
+                eventSource?.close()
+                eventSource = null
+                activeStreamChatId = null
+                clearReconnectState()
+                invalidateAll()
+            })
 
         eventSource.addEventListener('title', () => {
             invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
@@ -1325,6 +1404,9 @@
         })
 
         eventSource.addEventListener('message', (event) => {
+            streamLastEventId = event.lastEventId || streamLastEventId
+            lastStreamEventAt = Date.now()
+            reconnectAttempts = 0
             try {
                 const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
                 if (data.type === 'message_start') {
@@ -1482,6 +1564,7 @@
             eventSource?.close()
             eventSource = null
             activeStreamChatId = null
+            clearReconnectState()
 
             if (messageEventsReceived === 0 && !error) {
                 error = 'Failed to generate response. Please try again.'
@@ -1489,6 +1572,7 @@
         })
 
         const handleStreamError = (event: Event) => {
+            streamCompleted = true
             error =
                 event instanceof MessageEvent
                     ? streamErrorMessage(event as MessageEvent<string>)
@@ -1502,6 +1586,7 @@
             eventSource?.close()
             eventSource = null
             activeStreamChatId = null
+            clearReconnectState()
         }
 
         const handleConnectionError = () => {
@@ -1509,6 +1594,24 @@
             // handleStop() sets isStreaming = false before the EventSource fires its
             // error event, so we can use that as a signal to skip cleanup here.
             if (streamCompleted || !isStreaming) return
+
+            // Transient drop (e.g. backgrounded tab): the server keeps the run
+            // alive and buffered, so reconnect from our last offset with backoff
+            // instead of failing. Only surface an error once the budget is spent.
+            eventSource?.close()
+            eventSource = null
+            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                reconnectAttempts += 1
+                const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 15000)
+                if (reconnectTimer) clearTimeout(reconnectTimer)
+                reconnectTimer = setTimeout(() => {
+                    reconnectTimer = null
+                    if (!isStreaming || streamCompleted || activeStreamChatId !== chatId) return
+                    reconnectStream?.()
+                }, delay)
+                return
+            }
+
             error =
                 messageEventsReceived > 0
                     ? 'Response stream disconnected before it finished. Please try again.'
@@ -1519,13 +1622,29 @@
             stopThinkingText()
             requestAnimationFrame(() => recalcBottomPadding())
             userInputRef?.focus()
-            eventSource?.close()
-            eventSource = null
             activeStreamChatId = null
+            clearReconnectState()
         }
 
-        eventSource.addEventListener('stream_error', handleStreamError)
-        eventSource.addEventListener('error', handleConnectionError)
+            eventSource.addEventListener('stream_error', handleStreamError)
+            eventSource.addEventListener('error', handleConnectionError)
+        }
+
+        streamLastEventId = null
+        lastStreamEventAt = Date.now()
+        reconnectStream = () => openStream(streamLastEventId)
+        openStream(null)
+
+        // Safety net for the case where the browser never fires an 'error' event
+        // after a freeze: if the stream stalls while its connection is not open,
+        // reconnect from the last offset.
+        if (streamWatchdog) clearInterval(streamWatchdog)
+        streamWatchdog = setInterval(() => {
+            if (!isStreaming || streamCompleted || activeStreamChatId !== chatId) return
+            const stalled = Date.now() - lastStreamEventAt > STREAM_STALL_MS
+            const notOpen = !eventSource || eventSource.readyState !== EventSource.OPEN
+            if (stalled && notOpen && !reconnectTimer) reconnectStream?.()
+        }, 5000)
     }
 
     async function handleApproval(decision: 'approved' | 'denied') {
