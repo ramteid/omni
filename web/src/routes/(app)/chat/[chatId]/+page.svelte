@@ -1364,6 +1364,14 @@
         }
 
         const openStream = (resumeFromId: string | null) => {
+            // Close any stale EventSource before opening a new one. Without this,
+            // the old connection's error event fires after openStream returns, calls
+            // handleConnectionError which closes the *new* eventSource, and triggers
+            // another reconnect loop.
+            if (eventSource) {
+                eventSource.close()
+                eventSource = null
+            }
             const base = `/api/chat/${chatId}/stream`
             eventSource = new EventSource(
                 resumeFromId

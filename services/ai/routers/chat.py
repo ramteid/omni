@@ -646,13 +646,20 @@ async def stream_chat(
     last_event_id = request.headers.get("last-event-id") or request.query_params.get(
         "last_event_id"
     )
-    if (
-        redis_client is not None
-        and last_event_id is not None
-        and await redis_client.exists(_stream_key(chat_id))
-    ):
+    if redis_client is not None and last_event_id is not None:
+        if await redis_client.exists(_stream_key(chat_id)):
+            return StreamingResponse(
+                _consume_run(redis_client, chat_id, last_event_id),
+                media_type="text/event-stream",
+                headers=SSE_HEADERS,
+            )
+        # Stream expired (TTL elapsed). Starting a new generation would produce a
+        # duplicate response — tell the client to reload from the database instead.
+        async def _not_resumable_response():
+            yield "event: not_resumable\ndata: \n\n"
+
         return StreamingResponse(
-            _consume_run(redis_client, chat_id, last_event_id),
+            _not_resumable_response(),
             media_type="text/event-stream",
             headers=SSE_HEADERS,
         )
