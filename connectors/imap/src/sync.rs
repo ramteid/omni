@@ -35,6 +35,150 @@ fn is_connection_error(e: &anyhow::Error) -> bool {
     })
 }
 
+/// Run the HTML→text conversion and attachment-text extraction that turn a
+/// freshly parsed message into its final indexable body.  Shared by the
+/// new-message indexing pass and the on-demand body re-fetch used when
+/// rebuilding a thread document, so a re-fetched body is byte-for-byte
+/// identical to the one produced at first index time.
+async fn finalize_email_content(
+    ctx: &SyncContext,
+    sync_run_id: &str,
+    email: &mut ParsedEmail,
+    raw_attachments: Vec<crate::attachment::RawAttachment>,
+) {
+    // If the email body is HTML (no plain-text alternative), convert it via the
+    // connector manager so Docling is used when enabled.  On failure, fall back
+    // to the built-in HTML-to-text extractor so we never index raw HTML tags.
+    if email.body_is_html && !email.body_text.is_empty() {
+        match ctx
+            .sdk_client()
+            .extract_text(
+                sync_run_id,
+                email.body_text.as_bytes().to_vec(),
+                "text/html",
+                None,
+            )
+            .await
+        {
+            Ok(text) => {
+                email.body_text = text;
+                email.body_is_html = false;
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to convert HTML body for UID {}: {}, using built-in fallback",
+                    email.imap_uid, e
+                );
+                let html_bytes = email.body_text.as_bytes();
+                email.body_text = omni_connector_sdk::content_extractor::extract_content(
+                    html_bytes,
+                    "text/html",
+                    None,
+                )
+                .unwrap_or_default();
+                email.body_is_html = false;
+            }
+        }
+    }
+
+    // Extract attachment text via the connector manager (supports Docling when
+    // enabled) and append to the email body.
+    for att in raw_attachments {
+        match ctx
+            .sdk_client()
+            .extract_text(sync_run_id, att.data, &att.mime_type, Some(&att.filename))
+            .await
+        {
+            Ok(text) if !text.trim().is_empty() => {
+                email.body_text.push_str("\n\n");
+                email
+                    .body_text
+                    .push_str(&format!("[Attachment: {}]\n", att.filename));
+                email.body_text.push_str(&text);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    "Failed to extract attachment '{}' for UID {}: {}",
+                    att.filename, email.imap_uid, e
+                );
+            }
+        }
+    }
+}
+
+/// Ensure every UID in `uids` has its indexable body available in `messages`,
+/// re-fetching and re-processing it from the IMAP server when the stored
+/// snapshot only carries metadata (bodies are not persisted in the checkpoint).
+///
+/// `loaded` is a per-sync-run cache of UIDs whose body is already in memory, so
+/// a message is fetched at most once regardless of how many thread rebuilds
+/// reference it.  Connection-level fetch failures are propagated so the caller
+/// can abort and reconnect rather than emit a thread document with missing
+/// content; other failures (e.g. an individual message the server will not
+/// return) are logged and that message is left body-less, degrading it to
+/// headers only.
+async fn ensure_bodies_loaded(
+    session: &mut ImapSession,
+    ctx: &SyncContext,
+    folder: &str,
+    messages: &mut HashMap<u32, ParsedEmail>,
+    loaded: &mut HashSet<u32>,
+    uids: &[u32],
+) -> Result<()> {
+    let missing: Vec<u32> = uids
+        .iter()
+        .copied()
+        .filter(|uid| !loaded.contains(uid) && messages.contains_key(uid))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let sync_run_id = ctx.sync_run_id();
+    for chunk in missing.chunks(FETCH_BATCH_SIZE) {
+        let raw_messages = match session.fetch_messages(chunk).await {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                if is_connection_error(&e) {
+                    return Err(e.context(format!(
+                        "Connection lost while loading message bodies in folder '{}'",
+                        folder
+                    )));
+                }
+                warn!(
+                    "Failed to load bodies for thread rebuild in '{}': {}",
+                    folder, e
+                );
+                continue;
+            }
+        };
+
+        for raw in &raw_messages {
+            let (mut email, raw_attachments) = match parse_raw_email(&raw.data, raw.uid, folder) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    warn!(
+                        "Failed to re-parse message UID {} in '{}' for thread rebuild: {}",
+                        raw.uid, folder, e
+                    );
+                    continue;
+                }
+            };
+            finalize_email_content(ctx, sync_run_id, &mut email, raw_attachments).await;
+            // Restore only the body onto the existing snapshot; its metadata
+            // (flags, threading headers) remains authoritative.
+            if let Some(existing) = messages.get_mut(&raw.uid) {
+                existing.body_text = email.body_text;
+                existing.body_is_html = email.body_is_html;
+            }
+            loaded.insert(raw.uid);
+        }
+    }
+
+    Ok(())
+}
+
 pub struct SyncManager;
 
 impl SyncManager {
@@ -334,6 +478,12 @@ impl SyncManager {
         let mut scanned = 0usize;
         let mut processed = 0usize;
 
+        // Per-folder cache of UIDs whose body is currently loaded in
+        // `folder_state.messages`.  Bodies are not persisted in the checkpoint,
+        // so this set ensures each message is re-fetched at most once per sync
+        // run while assembling thread documents.
+        let mut bodies_loaded: HashSet<u32> = HashSet::new();
+
         // Build message_id → UID index for thread root chain-walking.
         // Maintained incrementally as new messages are indexed.
         let mut by_message_id: HashMap<String, u32> = folder_state
@@ -419,67 +569,11 @@ impl SyncManager {
                 };
                 email.flags = raw.flags.clone();
 
-                // If the email body is HTML (no plain-text alternative), convert
-                // it via the connector manager so Docling is used when enabled.
-                // On failure, fall back to the built-in HTML-to-text extractor
-                // so we never index raw HTML tags.
-                if email.body_is_html && !email.body_text.is_empty() {
-                    match ctx
-                        .sdk_client()
-                        .extract_text(
-                            sync_run_id,
-                            email.body_text.as_bytes().to_vec(),
-                            "text/html",
-                            None,
-                        )
-                        .await
-                    {
-                        Ok(text) => {
-                            email.body_text = text;
-                            email.body_is_html = false;
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to convert HTML body for UID {}: {}, using built-in fallback",
-                                raw.uid, e
-                            );
-                            let html_bytes = email.body_text.as_bytes();
-                            email.body_text =
-                                omni_connector_sdk::content_extractor::extract_content(
-                                    html_bytes,
-                                    "text/html",
-                                    None,
-                                )
-                                .unwrap_or_default();
-                            email.body_is_html = false;
-                        }
-                    }
-                }
-
-                // Extract attachment text via the connector manager (supports
-                // Docling when enabled) and append to the email body.
-                for att in raw_attachments {
-                    match ctx
-                        .sdk_client()
-                        .extract_text(sync_run_id, att.data, &att.mime_type, Some(&att.filename))
-                        .await
-                    {
-                        Ok(text) if !text.trim().is_empty() => {
-                            email.body_text.push_str("\n\n");
-                            email
-                                .body_text
-                                .push_str(&format!("[Attachment: {}]\n", att.filename));
-                            email.body_text.push_str(&text);
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(
-                                "Failed to extract attachment '{}' for UID {}: {}",
-                                att.filename, raw.uid, e
-                            );
-                        }
-                    }
-                }
+                // Convert the HTML body (Docling-aware, via the connector
+                // manager) and append extracted attachment text.  Shared with
+                // the on-demand body re-fetch path so a re-fetched body matches
+                // what is produced here.
+                finalize_email_content(ctx, sync_run_id, &mut email, raw_attachments).await;
 
                 // Resolve canonical thread root with full chain-walking so that
                 // replies-to-replies without a References header are grouped
@@ -488,20 +582,37 @@ impl SyncManager {
                     resolve_new_email_thread_root(&email, &folder_state.messages, &by_message_id);
                 let thread_existed = thread_root_map.values().any(|r| r == &thread_root);
 
-                let mut thread_messages: Vec<ParsedEmail> = folder_state
+                // Already-indexed siblings of this thread, excluding the new
+                // message itself and any UID known to be deleted on the server
+                // (so the emitted document never includes stale content from
+                // messages about to be removed).
+                let sibling_uids: Vec<u32> = folder_state
                     .messages
                     .values()
                     .filter(|m| {
                         thread_root_map.get(&m.imap_uid) == Some(&thread_root)
-                            // Exclude UIDs already known to be deleted on the
-                            // server so the emitted document never includes
-                            // stale content from messages about to be removed.
                             && !deleted_uid_set.contains(&m.imap_uid)
+                            && m.imap_uid != email.imap_uid
                     })
-                    .cloned()
+                    .map(|m| m.imap_uid)
                     .collect();
-                // Defensive: ensure the new email's UID is not already in the slice.
-                thread_messages.retain(|m| m.imap_uid != email.imap_uid);
+                // Bodies are not persisted in the checkpoint, so re-load any
+                // sibling whose snapshot is metadata-only before assembling the
+                // thread document.
+                ensure_bodies_loaded(
+                    session,
+                    ctx,
+                    folder,
+                    &mut folder_state.messages,
+                    &mut bodies_loaded,
+                    &sibling_uids,
+                )
+                .await?;
+
+                let mut thread_messages: Vec<ParsedEmail> = sibling_uids
+                    .iter()
+                    .filter_map(|uid| folder_state.messages.get(uid).cloned())
+                    .collect();
                 thread_messages.push(email.clone());
 
                 let content = generate_thread_content(&thread_messages);
@@ -545,6 +656,9 @@ impl SyncManager {
                 // On full syncs, indexed_uids was cleared before this pass; no duplicate can exist.
                 folder_state.indexed_uids.push(raw.uid);
                 folder_state.messages.insert(raw.uid, email);
+                // The freshly indexed message's body is in memory; record it so
+                // a later thread rebuild this run does not re-fetch it.
+                bodies_loaded.insert(raw.uid);
                 processed += 1;
             }
 
@@ -617,14 +731,32 @@ impl SyncManager {
                         if ctx.is_cancelled() {
                             break;
                         }
-                        let thread_messages: Vec<ParsedEmail> = folder_state
+                        let member_uids: Vec<u32> = folder_state
                             .messages
                             .values()
                             .filter(|m| {
                                 thread_root_map.get(&m.imap_uid).map(String::as_str)
                                     == Some(&thread_root)
                             })
-                            .cloned()
+                            .map(|m| m.imap_uid)
+                            .collect();
+                        if member_uids.is_empty() {
+                            continue;
+                        }
+                        // Re-load bodies (metadata-only in the checkpoint) before
+                        // rebuilding the thread document.
+                        ensure_bodies_loaded(
+                            session,
+                            ctx,
+                            folder,
+                            &mut folder_state.messages,
+                            &mut bodies_loaded,
+                            &member_uids,
+                        )
+                        .await?;
+                        let thread_messages: Vec<ParsedEmail> = member_uids
+                            .iter()
+                            .filter_map(|uid| folder_state.messages.get(uid).cloned())
                             .collect();
                         if thread_messages.is_empty() {
                             continue;
@@ -698,23 +830,38 @@ impl SyncManager {
                     deleted_message.thread_id()
                 }
             };
-            let remaining_messages: Vec<ParsedEmail> = folder_state
+            let remaining_uids: Vec<u32> = folder_state
                 .messages
                 .values()
                 .filter(|m| {
                     thread_root_map.get(&m.imap_uid).map(String::as_str) == Some(&thread_root)
                         && m.imap_uid != uid
                 })
-                .cloned()
+                .map(|m| m.imap_uid)
                 .collect();
 
-            let event = if remaining_messages.is_empty() {
+            let event = if remaining_uids.is_empty() {
                 ConnectorEvent::DocumentDeleted {
                     sync_run_id: sync_run_id.to_string(),
                     source_id: source_id.to_string(),
                     document_id: make_thread_document_id(folder, &thread_root),
                 }
             } else {
+                // Re-load bodies (metadata-only in the checkpoint) for the
+                // surviving thread members before rebuilding the document.
+                ensure_bodies_loaded(
+                    session,
+                    ctx,
+                    folder,
+                    &mut folder_state.messages,
+                    &mut bodies_loaded,
+                    &remaining_uids,
+                )
+                .await?;
+                let remaining_messages: Vec<ParsedEmail> = remaining_uids
+                    .iter()
+                    .filter_map(|member_uid| folder_state.messages.get(member_uid).cloned())
+                    .collect();
                 let content = generate_thread_content(&remaining_messages);
                 let content_id = match ctx.store_content(&content).await {
                     Ok(id) => id,
