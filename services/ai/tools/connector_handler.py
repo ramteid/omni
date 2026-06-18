@@ -15,7 +15,11 @@ from db.documents import DocumentsRepository
 from db.models import Source
 from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
 from tools.registry import ToolContext, ToolResult
-from tools.sandbox import write_binary_to_sandbox
+from tools.sandbox import (
+    is_textual_content_type,
+    text_result_or_sandbox,
+    write_binary_to_sandbox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +346,10 @@ class ConnectorToolHandler:
                             content=[
                                 {
                                     "type": "text",
-                                    "text": "This action requires authorization, but the OAuth start URL was not provided by connector-manager.",
+                                    "text": (
+                                        "This action requires authorization, but the OAuth "
+                                        "start URL was not provided by connector-manager."
+                                    ),
                                 }
                             ],
                             is_error=True,
@@ -363,14 +370,24 @@ class ConnectorToolHandler:
 
                 content_type = response.headers.get("content-type", "")
 
-                # Binary file response
                 if "application/json" not in content_type:
+                    content_disposition = response.headers.get("content-disposition", "")
+                    if is_textual_content_type(content_type) and not content_disposition:
+                        return await text_result_or_sandbox(
+                            text=response.text,
+                            sandbox_url=self._sandbox_url,
+                            chat_id=context.chat_id,
+                            file_name=_action_result_file_name(
+                                action.action_name, extension="txt"
+                            ),
+                            description="Action returned text",
+                        )
                     if not self._sandbox_url:
                         return ToolResult(
                             content=[
                                 {
                                     "type": "text",
-                                    "text": "Received binary file but no sandbox is available to save it.",
+                                    "text": "Received file but no sandbox is available to save it.",
                                 }
                             ],
                             is_error=True,
@@ -412,17 +429,26 @@ class ConnectorToolHandler:
                 is_error=True,
             )
 
-        # Return the result as text content
         result_data = result.get("result", {})
-        return ToolResult(
-            content=[
-                {
-                    "type": "text",
-                    "text": (
-                        json.dumps(result_data, indent=2)
-                        if result_data
-                        else "Action completed successfully."
-                    ),
-                }
-            ],
+        if not result_data:
+            return ToolResult(
+                content=[{"type": "text", "text": "Action completed successfully."}]
+            )
+
+        return await text_result_or_sandbox(
+            text=json.dumps(result_data, indent=2),
+            sandbox_url=self._sandbox_url,
+            chat_id=context.chat_id,
+            file_name=_action_result_file_name(action.action_name, extension="json"),
+            description="Action returned JSON",
         )
+
+
+def _action_result_file_name(action_name: str, *, extension: str) -> str:
+    safe_name = "".join(
+        char if char.isalnum() or char in ("-", "_") else "_" for char in action_name
+    ).strip("_")
+    if not safe_name:
+        safe_name = "connector_action_result"
+    return f"{safe_name}_result.{extension}"
+

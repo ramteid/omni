@@ -42,6 +42,7 @@ class SyncContext:
         source_id: str,
         source_type: str | None = None,
         state: dict[str, Any] | None = None,
+        connector_state: dict[str, Any] | None = None,
         user_filter_mode: UserFilterMode = UserFilterMode.ALL,
         user_whitelist: list[str] | None = None,
         user_blacklist: list[str] | None = None,
@@ -49,12 +50,17 @@ class SyncContext:
         documents_scanned: int = 0,
         documents_updated: int = 0,
         is_resume: bool = False,
+        checkpoint: dict[str, Any] | None = None,
     ):
         self._client = sdk_client
         self._sync_run_id = sync_run_id
         self._source_id = source_id
         self._source_type = source_type
-        self._state = state or {}
+        # checkpoint is the run/source cursor used for resumability.
+        # `state` remains as a deprecated constructor alias for older SDK callers.
+        self._checkpoint = checkpoint if checkpoint is not None else (state or {})
+        # connector_state is durable source-level metadata, not a resume cursor.
+        self._connector_state = connector_state or {}
         self._cancelled = asyncio.Event()
         # Counters report seed (from the dispatch payload) plus everything
         # incremented during this run, so resume picks up where the previous
@@ -86,8 +92,17 @@ class SyncContext:
         return self._source_type
 
     @property
+    def checkpoint(self) -> dict[str, Any]:
+        return self._checkpoint
+
+    @property
     def state(self) -> dict[str, Any]:
-        return self._state
+        """Deprecated alias for checkpoint."""
+        return self._checkpoint
+
+    @property
+    def connector_state(self) -> dict[str, Any]:
+        return self._connector_state
 
     @property
     def content_storage(self) -> ContentStorage:
@@ -235,7 +250,7 @@ class SyncContext:
         considered emitted (the next run resumes past them).
         """
         await self.flush()
-        self._state = checkpoint
+        self._checkpoint = checkpoint
         await self._client.update_checkpoint(self._sync_run_id, checkpoint)
         await self._client.heartbeat(self._sync_run_id)
 
@@ -243,11 +258,16 @@ class SyncContext:
         """Deprecated alias for save_checkpoint."""
         await self.save_checkpoint(state)
 
+    async def save_connector_state(self, state: dict[str, Any]) -> None:
+        """Persist source-level connector state outside the sync checkpoint."""
+        self._connector_state = state
+        await self._client.update_connector_state(self._source_id, state)
+
     async def complete(self, new_state: dict[str, Any] | None = None) -> None:
         """Mark sync as successfully completed. Saves final checkpoint first."""
         await self.flush()
         if new_state is not None:
-            self._state = new_state
+            self._checkpoint = new_state
             await self._client.update_checkpoint(self._sync_run_id, new_state)
         await self._client.complete(
             self._sync_run_id,
