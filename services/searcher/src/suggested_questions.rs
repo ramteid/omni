@@ -6,23 +6,55 @@ use futures_util::StreamExt;
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use shared::utils::safe_str_slice;
-use shared::{AIClient, DatabasePool, DocumentRepository, GroupRepository, ObjectStorage};
+use shared::{
+    AIClient, DatabasePool, DocumentRepository, GroupRepository, ObjectStorage, SourceType,
+};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-const REDIS_CACHE_KEY: &str = "suggested_questions:v1";
-const CACHE_TTL_SECONDS: u64 = 86400; // 7 days
+// Bump the version suffix whenever the generation prompt or validation changes
+// so previously cached (and now undesirable) suggestions are invalidated.
+const REDIS_CACHE_KEY: &str = "suggested_questions:v3";
+const CACHE_TTL_SECONDS: u64 = 86400; // 24 hours
 const MAX_RETRIES: usize = 5;
-const QUESTION_PROMPT_TEMPLATE: &str = r#"You are helping generate example search queries for a workplace search tool that indexes company documents, emails, and files.
+/// Source types whose documents are predominantly code or technical material and
+/// therefore make poor "Try asking" suggestions (e.g. a GitHub repo yields queries
+/// like "Git repository object storage documentation"). They are excluded from the
+/// random document selection; per-document SKIP handling in the generator still
+/// filters technical content out of the remaining sources.
+const SUGGESTION_EXCLUDED_SOURCE_TYPES: &[SourceType] = &[SourceType::Github];
+const QUESTION_PROMPT_TEMPLATE: &str = r#"You are helping generate example search queries for a workplace search tool that indexes a company's documents, emails, and files. The result is shown as a clickable "Try asking" suggestion on the home screen, so it must read like something a real employee would naturally ask.
 
-Given the following document excerpt, generate ONE example search query that an employee might realistically type into a workplace search engine to find information related to this document's topic.
+You are given an excerpt from ONE indexed document. Based on the topic it covers, write ONE natural question that a colleague might ask to find this kind of information.
 
 Rules:
-- Write the query from the perspective of someone who does NOT have the document open — they are searching for information
-- Focus on the topic or knowledge area, not on specific metadata like URLs, file paths, modification dates, or technical properties
-- The query should be practical and useful (e.g. "How do we handle customer refunds?", "Onboarding steps for new engineers", "Q3 budget planning process")
-- Avoid questions that are only answerable by looking at a specific file's properties or raw structure
-- Write only the query itself, no quotes, no prefixes like "Question:" or "Query:"
+- Write a full, natural question, phrased the way a person actually speaks, and end it with a question mark. Examples: "How do we handle customer refunds?", "What are the onboarding steps for new engineers?", "Who is responsible for Q3 budget planning?"
+- Do NOT output keyword phrases, document titles, or noun phrases such as "Git repository object storage documentation". It must be a real question.
+- Ask from the perspective of someone who has NOT seen this document and is looking for the knowledge it contains.
+- Ignore document metadata and structure (URLs, file paths, IDs, timestamps, formatting, raw code, configuration values).
+
+If this document is not a good basis for a useful business question — for example it is source code, configuration, logs, build or CI output, auto-generated content, technical/system documentation, boilerplate, or has no clear business topic an employee would search for — then respond with exactly the single word SKIP and nothing else.
+
+Output only the question itself (or SKIP), with no quotes and no prefix like "Question:" or "Query:".
+
+Document excerpt:
+{content}"#;
+
+const TASK_PROMPT_TEMPLATE: &str = r#"You are helping generate example task prompts for a workplace AI tool that can answer questions and also perform tasks like running analyses, summarizing content, or creating charts. The result is shown as a clickable suggestion on the home screen.
+
+You are given an excerpt from ONE indexed document. Based on what it covers, write ONE natural task instruction that a colleague might give the AI — something actionable it could do with this kind of content.
+
+Rules:
+- Write a concise imperative instruction in the style of "Summarize the key takeaways from the Q3 board meeting", "Show a chart of sales by region from the Q4 report", or "List the action items from the last sprint retro".
+- Do NOT write a question — the output must be an instruction, not an inquiry.
+- Do NOT output keyword phrases, document titles, or noun phrases.
+- Phrase it from the perspective of someone who wants the AI to do something useful with this content.
+- Ignore document metadata and structure (URLs, file paths, IDs, timestamps, formatting, raw code, configuration values).
+
+If this document is not a good basis for a useful task instruction — for example it is source code, configuration, logs, build or CI output, auto-generated content, technical/system documentation, boilerplate, or has no clear business action an employee would want performed — then respond with exactly the single word SKIP and nothing else.
+
+Output only the task instruction itself (or SKIP), with no quotes and no prefix like "Task:" or "Instruction:".
 
 Document excerpt:
 {content}"#;
@@ -138,11 +170,16 @@ impl SuggestedQuestionsGenerator {
         user_email: &str,
     ) -> Result<usize> {
         let mut questions = Vec::new();
+        // Random fetches across retry attempts can re-draw the same document, and
+        // distinct documents can yield identical questions. Track both so the
+        // suggestions we return stay unique.
+        let mut seen_doc_ids: HashSet<String> = HashSet::new();
+        let mut seen_questions: HashSet<String> = HashSet::new();
         let mut attempts = 0;
 
         let num_questions = 9;
         info!(
-            "Beginning question generation loop (target: {} questions, max attempts: {})",
+            "Beginning suggestion generation loop (target: {} suggestions, max attempts: {})",
             num_questions, MAX_RETRIES
         );
 
@@ -160,14 +197,24 @@ impl SuggestedQuestionsGenerator {
                 .find_groups_for_user(user_email)
                 .await
                 .unwrap_or_default();
+            // Exclude documents already consumed in earlier attempts at the query
+            // level, so every fetched document is new and attempts don't spin on
+            // re-drawn rows (the seen_doc_ids guard below stays as a safety net).
+            let already_seen: Vec<String> = seen_doc_ids.iter().cloned().collect();
             match doc_repo
-                .fetch_random_documents(user_email, &user_groups, needed)
+                .fetch_random_documents(
+                    user_email,
+                    &user_groups,
+                    needed,
+                    SUGGESTION_EXCLUDED_SOURCE_TYPES,
+                    &already_seen,
+                )
                 .await
             {
                 Ok(docs) => {
                     let num_docs_fetched = docs.len();
                     info!(
-                        "Fetched {} random document(s) for question generation",
+                        "Fetched {} random document(s) for suggestion generation",
                         num_docs_fetched
                     );
 
@@ -196,6 +243,12 @@ impl SuggestedQuestionsGenerator {
                         .collect::<Result<Vec<_>>>()?;
 
                     for (doc, content) in docs.into_iter().zip(contents) {
+                        // Skip documents already handled in an earlier attempt so we
+                        // neither spend an AI call nor surface a duplicate suggestion.
+                        if !seen_doc_ids.insert(doc.id.clone()) {
+                            continue;
+                        }
+
                         debug!(
                             "Processing document {} [id={}] (content length: {} chars)",
                             doc.title,
@@ -203,16 +256,31 @@ impl SuggestedQuestionsGenerator {
                             content.len()
                         );
 
-                        match Self::generate_question_from_document(&ai_client, &doc.id, &content)
-                            .await
-                        {
+                        // Every third suggestion is a task instruction; the rest are questions.
+                        let use_task_prompt = questions.len() % 3 == 2;
+                        let result = if use_task_prompt {
+                            Self::generate_task_from_document(&ai_client, &doc.id, &content).await
+                        } else {
+                            Self::generate_question_from_document(&ai_client, &doc.id, &content)
+                                .await
+                        };
+                        match result {
                             Ok(question) => {
+                                // Two different documents can produce the same generic
+                                // suggestion; keep the displayed suggestions distinct.
+                                if !seen_questions.insert(question.to_lowercase()) {
+                                    debug!(
+                                        "Skipping duplicate suggestion text from document {}",
+                                        doc.id
+                                    );
+                                    continue;
+                                }
                                 questions.push(SuggestedQuestion {
                                     question: question.clone(),
                                     document_id: doc.id.clone(),
                                 });
                                 info!(
-                                    "Generated question {}/{}: \"{}\" (from document: {})",
+                                    "Generated suggestion {}/{}: \"{}\" (from document: {})",
                                     questions.len(),
                                     num_questions,
                                     question,
@@ -244,19 +312,19 @@ impl SuggestedQuestionsGenerator {
                                     .context("Failed to cache questions in Redis")?;
 
                                 info!(
-                                    "Successfully cached {} suggested question(s) in Redis (TTL: {} hours)",
+                                    "Successfully cached {} suggested suggestion(s) in Redis (TTL: {} hours)",
                                     response.questions.len(),
                                     CACHE_TTL_SECONDS / 3600
                                 );
                             }
                             Err(e) => {
-                                warn!("Failed to generate question for document {}: {}", doc.id, e);
+                                warn!("Failed to generate suggestion for document {}: {}", doc.id, e);
                             }
                         }
 
                         if questions.len() >= num_questions {
                             info!(
-                                "Target of {} questions reached, stopping generation",
+                                "Target of {} suggestions reached, stopping generation",
                                 num_questions
                             );
                             break;
@@ -282,17 +350,17 @@ impl SuggestedQuestionsGenerator {
 
         if questions.is_empty() {
             error!(
-                "Failed to generate any questions after {} attempts",
+                "Failed to generate any suggestions after {} attempts",
                 attempts
             );
             return Err(anyhow!(
-                "Failed to generate any questions after {} attempts",
+                "Failed to generate any suggestions after {} attempts",
                 attempts
             ));
         }
 
         info!(
-            "Question generation complete: {} question(s) generated after {} attempt(s)",
+            "Suggestion generation complete: {} suggestion(s) generated after {} attempt(s)",
             questions.len(),
             attempts
         );
@@ -300,12 +368,13 @@ impl SuggestedQuestionsGenerator {
         Ok(questions.len())
     }
 
-    async fn generate_question_from_document(
+    async fn generate_suggestion_from_document(
         ai_client: &AIClient,
         document_id: &str,
         content: &str,
+        prompt_template: &str,
+        expect_question_mark: bool,
     ) -> Result<String> {
-        // Take first 2000 characters of content
         let excerpt = if content.len() > 2000 {
             debug!(
                 "Truncating content from {} to 2000 chars for document {}",
@@ -317,64 +386,80 @@ impl SuggestedQuestionsGenerator {
             content
         };
 
-        let prompt = QUESTION_PROMPT_TEMPLATE.replace("{content}", excerpt);
-        debug!(
-            "Generated prompt for document {} (length: {} chars)",
-            document_id,
-            prompt.len()
-        );
+        let prompt = prompt_template.replace("{content}", excerpt);
 
-        info!(
-            "Calling AI service to generate question for document {}",
-            document_id
-        );
-
-        // Call AI service using stream_prompt and collect the full response
         let mut stream = ai_client
             .stream_prompt(&prompt)
             .await
             .context("Failed to start AI stream")?;
 
-        debug!("AI stream started, collecting response chunks");
-        let mut question = String::new();
-        let mut chunk_count = 0;
-
+        let mut output = String::new();
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
-                Ok(chunk) => {
-                    chunk_count += 1;
-                    debug!("Received chunk {} ({} bytes)", chunk_count, chunk.len());
-                    question.push_str(&chunk);
-                }
-                Err(e) => {
-                    error!("Error in AI stream for document {}: {}", document_id, e);
-                    return Err(anyhow!("Error in AI stream: {}", e));
-                }
+                Ok(chunk) => output.push_str(&chunk),
+                Err(e) => return Err(anyhow!("Error in AI stream: {}", e)),
             }
         }
 
-        debug!(
-            "AI stream complete for document {}: received {} chunks, total {} chars",
-            document_id,
-            chunk_count,
-            question.len()
-        );
+        let output = output.trim().trim_matches('"').trim().to_string();
 
-        let question = question.trim().to_string();
+        if output.is_empty() {
+            return Err(anyhow!("AI service returned empty output"));
+        }
 
-        if question.is_empty() {
-            warn!(
-                "AI service returned empty question for document {}",
+        let normalized =
+            output.trim_end_matches(|c: char| c == '.' || c == '!' || c.is_whitespace());
+        if normalized.eq_ignore_ascii_case("skip") {
+            info!(
+                "Document {} deemed unsuitable for suggestion (model returned SKIP)",
                 document_id
             );
-            return Err(anyhow!("AI service returned empty question"));
+            return Err(anyhow!("Document unsuitable for suggestion generation (SKIP)"));
+        }
+
+        if expect_question_mark && !output.contains('?') {
+            warn!(
+                "Discarding non-question suggestion for document {}: \"{}\"",
+                document_id, output
+            );
+            return Err(anyhow!("Generated suggestion was not a question"));
         }
 
         info!(
-            "Successfully generated question for document {}: \"{}\"",
-            document_id, question
+            "Successfully generated suggestion for document {}: \"{}\"",
+            document_id, output
         );
 
-        Ok(question)
+        Ok(output)
+    }
+
+    async fn generate_question_from_document(
+        ai_client: &AIClient,
+        document_id: &str,
+        content: &str,
+    ) -> Result<String> {
+        Self::generate_suggestion_from_document(
+            ai_client,
+            document_id,
+            content,
+            QUESTION_PROMPT_TEMPLATE,
+            true,
+        )
+        .await
+    }
+
+    async fn generate_task_from_document(
+        ai_client: &AIClient,
+        document_id: &str,
+        content: &str,
+    ) -> Result<String> {
+        Self::generate_suggestion_from_document(
+            ai_client,
+            document_id,
+            content,
+            TASK_PROMPT_TEMPLATE,
+            false,
+        )
+        .await
     }
 }

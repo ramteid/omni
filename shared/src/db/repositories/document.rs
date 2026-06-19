@@ -115,14 +115,28 @@ impl DocumentRepository {
         user_email: &str,
         user_groups: &[String],
         count: usize,
+        excluded_source_types: &[SourceType],
+        excluded_document_ids: &[String],
     ) -> Result<Vec<Document>, DatabaseError> {
         let permission_filter = &self.generate_permission_filter(user_email, user_groups);
 
+        // `excluded_source_types` lets the caller drop whole source categories (e.g.
+        // code repositories) that produce poor results. `excluded_document_ids` skips
+        // documents the caller has already consumed, so repeated random draws don't
+        // return duplicates. An empty slice excludes nothing, since `ANY('{}')` never
+        // matches and `<> ALL('{}')` is always true.
         let query = format!(
             r#"
             SELECT *
             FROM documents d
             WHERE d.content_id IS NOT NULL
+                AND d.id <> ALL($3)
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM sources s
+                    WHERE s.id = d.source_id
+                        AND s.source_type = ANY($2)
+                )
                 AND {}
             ORDER BY RANDOM()
             LIMIT $1
@@ -132,6 +146,8 @@ impl DocumentRepository {
 
         let documents = sqlx::query_as::<_, Document>(&query)
             .bind(count as i32)
+            .bind(excluded_source_types)
+            .bind(excluded_document_ids)
             .fetch_all(&self.pool)
             .await?;
 
