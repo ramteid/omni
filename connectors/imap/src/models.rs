@@ -27,7 +27,10 @@ pub struct FolderSyncState {
     /// for deletion detection (`indexed_uids − server_uids`).
     #[serde(default)]
     pub indexed_uids: Vec<u32>,
-    /// Parsed message snapshots keyed by IMAP UID, used to rebuild thread docs.
+    /// Per-message metadata snapshots keyed by IMAP UID, used to rebuild thread
+    /// documents.  The message body (`ParsedEmail::body_text`) is intentionally
+    /// **not** persisted here; it is re-fetched from the IMAP server on demand
+    /// when a thread is rebuilt (see `SyncManager`'s `ensure_bodies_loaded`).
     #[serde(default)]
     pub messages: HashMap<u32, ParsedEmail>,
     /// UIDs that were intentionally skipped due to the `max_message_size` limit.
@@ -65,10 +68,18 @@ pub struct ParsedEmail {
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub date: Option<OffsetDateTime>,
+    /// The indexable message body.  Deliberately **not** persisted in the
+    /// connector checkpoint (`#[serde(skip)]`): bodies — especially once
+    /// extracted attachment text is appended — can be megabytes each, and
+    /// persisting one per indexed message blew `Source.connector_state` up to
+    /// >100 MB on large mailboxes.  Only lightweight metadata is checkpointed;
+    /// the body is re-fetched from the server when a thread document is rebuilt
+    /// (see `SyncManager`'s `ensure_bodies_loaded`).
+    #[serde(skip)]
     pub body_text: String,
     /// When true, `body_text` is raw HTML that must be converted via the
-    /// connector manager before indexing.
-    #[serde(default)]
+    /// connector manager before indexing.  Not persisted — see `body_text`.
+    #[serde(skip)]
     pub body_is_html: bool,
     #[serde(default)]
     pub flags: Vec<String>,
