@@ -97,6 +97,174 @@ def _sse_event(event_type: str, data: object) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+# --- Decoupled streaming run (survives client disconnect; supports resume) ---
+# The agent loop runs as a background "producer" that writes each SSE event into
+# a per-chat Redis Stream. HTTP requests are thin "consumers" that tail that
+# stream from an offset (SSE Last-Event-ID), so a client that backgrounds/
+# reconnects resumes without interrupting generation. The producer is the single
+# DB writer of the streaming path (persists messages, then emits `message_id`),
+# which keeps replays free of duplicate writes.
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+
+_STREAM_HEARTBEAT_MS = 15000  # idle ping interval (keeps proxies from timing out)
+_RUN_LOCK_TTL = 300  # seconds; refreshed on every produced event and by the heartbeat below
+_LOCK_REFRESH_INTERVAL = 60  # seconds; independent of event production, so a long
+# silent gap in the agent loop (e.g. a slow tool call with no intermediate SSE
+# events) can't let the lock expire while the producer is still running.
+_STREAM_TTL = 300  # seconds a finished stream stays replayable
+_STREAM_MAXLEN = 5000  # cap buffered events per run
+_CANCEL_TTL = 300
+
+_background_run_tasks: set[asyncio.Task] = set()
+
+
+def _stream_key(chat_id: str) -> str:
+    return f"chat:stream:{chat_id}"
+
+
+def _run_lock_key(chat_id: str) -> str:
+    return f"chat:runlock:{chat_id}"
+
+
+def _cancel_key(chat_id: str) -> str:
+    return f"chat:cancel:{chat_id}"
+
+
+async def _is_run_cancelled(redis_client, chat_id: str) -> bool:
+    if redis_client is None:
+        return False
+    try:
+        return bool(await redis_client.exists(_cancel_key(chat_id)))
+    except Exception:
+        return False
+
+
+def _sse_event_type(event_str: str) -> str:
+    for line in event_str.split("\n"):
+        if line.startswith("event:"):
+            return line[len("event:") :].strip()
+    return "message"
+
+
+def _sse_event_data(event_str: str) -> str:
+    for line in event_str.split("\n"):
+        if line.startswith("data:"):
+            return line[len("data:") :].strip()
+    return ""
+
+
+async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
+    """Persist assistant/tool_result messages (single writer of the streaming
+    path) and replace each internal `save_message` event with a client-facing
+    `message_id` event. Deterministic parent_id chaining makes replays safe."""
+    async for event_str in gen:
+        if _sse_event_type(event_str) == "save_message":
+            try:
+                message = json.loads(_sse_event_data(event_str))
+                created = await messages_repo.create(
+                    chat_id, message, parent_id=parent_id
+                )
+                parent_id = created.id
+                yield f"event: message_id\ndata: {created.id}\n\n"
+            except Exception as e:
+                logger.error(
+                    f"Failed to persist streamed message for chat {chat_id}: {e}"
+                )
+            continue
+        yield event_str
+
+
+async def _refresh_lock_periodically(redis_client, lock_key):
+    """Keep the run lock alive independently of event production, so a long
+    silent gap in the agent loop doesn't let it expire mid-run."""
+    while True:
+        await asyncio.sleep(_LOCK_REFRESH_INTERVAL)
+        await redis_client.expire(lock_key, _RUN_LOCK_TTL)
+
+
+async def _run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
+    """Background task: drive the agent loop to completion independently of any
+    client connection, buffering every SSE event in a Redis Stream."""
+    stream_key = _stream_key(chat_id)
+    lock_key = _run_lock_key(chat_id)
+    refresh_task = asyncio.create_task(
+        _refresh_lock_periodically(redis_client, lock_key)
+    )
+    try:
+        async for event_str in _persist_and_transform(
+            gen, chat_id, messages_repo, parent_id
+        ):
+            await redis_client.xadd(
+                stream_key,
+                {"e": event_str},
+                maxlen=_STREAM_MAXLEN,
+                approximate=True,
+            )
+            await redis_client.expire(lock_key, _RUN_LOCK_TTL)
+    except Exception as e:
+        logger.error(f"Producer failed for chat {chat_id}: {e}", exc_info=True)
+        try:
+            await redis_client.xadd(
+                stream_key,
+                {"e": _sse_event("stream_error", {"message": _chat_error_message(e)})},
+            )
+        except Exception:
+            pass
+    finally:
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except asyncio.CancelledError:
+            pass
+        for coro in (
+            redis_client.expire(stream_key, _STREAM_TTL),
+            redis_client.delete(lock_key),
+            redis_client.delete(_cancel_key(chat_id)),
+        ):
+            try:
+                await coro
+            except Exception:
+                pass
+
+
+async def _consume_run(redis_client, chat_id, start_id):
+    """Thin consumer: tail the Redis Stream from `start_id`, prefixing each event
+    with its Redis id (SSE `id:`) for Last-Event-ID resume. Emits heartbeats
+    while idle and a terminal event if the producer vanished."""
+    stream_key = _stream_key(chat_id)
+    lock_key = _run_lock_key(chat_id)
+    last = start_id or "0"
+    while True:
+        resp = await redis_client.xread(
+            {stream_key: last}, block=_STREAM_HEARTBEAT_MS, count=200
+        )
+        if resp:
+            for _key, entries in resp:
+                for entry_id, fields in entries:
+                    last = entry_id
+                    event_str = fields.get("e", "")
+                    yield f"id: {entry_id}\n{event_str}"
+                    if _sse_event_type(event_str) in ("end_of_stream", "stream_error"):
+                        return
+            continue
+        # Idle: no new events within the heartbeat window.
+        if not await redis_client.exists(stream_key):
+            if await redis_client.exists(lock_key):
+                # Producer just started and hasn't written its first event yet.
+                yield ": ping\n\n"
+                continue
+            yield "event: not_resumable\ndata: \n\n"
+            return
+        if not await redis_client.exists(lock_key):
+            # Producer is gone but never wrote a terminal event we forwarded.
+            yield _sse_event(
+                "stream_error", {"message": "Generation ended unexpectedly."}
+            )
+            return
+        yield ": ping\n\n"
+
+
 def _resolve_provider(state: AppState, model_id: str | None) -> LLMProvider:
     """Resolve a model by ID, returning the provider.
     Priority: requested model -> default model -> first available.
@@ -642,6 +810,31 @@ async def stream_chat(
 
     llm_provider = _resolve_llm_provider(request.app.state, chat)
     redis_client = getattr(request.app.state, "redis_client", None)
+
+    # Reconnect/resume fast path: if a buffered run already exists for this chat,
+    # attach to it (tail from the client's offset) and skip all (re)setup so we
+    # never re-run registry build / compaction / tools on a reconnect.
+    last_event_id = request.headers.get("last-event-id") or request.query_params.get(
+        "last_event_id"
+    )
+    if redis_client is not None and last_event_id is not None:
+        if await redis_client.exists(_stream_key(chat_id)):
+            return StreamingResponse(
+                _consume_run(redis_client, chat_id, last_event_id),
+                media_type="text/event-stream",
+                headers=SSE_HEADERS,
+            )
+        # Stream expired (TTL elapsed). Starting a new generation would produce a
+        # duplicate response — tell the client to reload from the database instead.
+        async def _not_resumable_response():
+            yield "event: not_resumable\ndata: \n\n"
+
+        return StreamingResponse(
+            _not_resumable_response(),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_active_path(chat_id)
 
@@ -1114,11 +1307,11 @@ async def stream_chat(
             usage_repo = UsageRepository()
 
             for iteration in range(AGENT_MAX_ITERATIONS):
-                # Check if client disconnected before starting expensive operations
-                if await request.is_disconnected():
-                    logger.info(
-                        f"Client disconnected, stopping stream for chat {chat_id}"
-                    )
+                # Stop only on an explicit user cancel (Stop button). The run is
+                # decoupled from the client connection, so a backgrounded tab no
+                # longer aborts generation.
+                if await _is_run_cancelled(redis_client, chat_id):
+                    logger.info(f"Run cancelled, stopping stream for chat {chat_id}")
                     break
 
                 logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
@@ -1170,9 +1363,18 @@ async def stream_chat(
 
                 event_index = 0
                 message_stop_received = False
+                cancelled = False
                 async for event in stream:
                     logger.debug(f"Received event: {event} (index: {event_index})")
                     event_index += 1
+
+                    # Responsive Stop: poll the cancel flag periodically so an
+                    # explicit user Stop interrupts a long in-progress message.
+                    if event_index % 32 == 0 and await _is_run_cancelled(
+                        redis_client, chat_id
+                    ):
+                        cancelled = True
+                        break
 
                     if event.type == "message_start":
                         logger.info("Message start received.")
@@ -1268,6 +1470,9 @@ async def stream_chat(
                     if message_stop_received:
                         break
 
+                if cancelled:
+                    break
+
                 tracker.save()
 
                 # Parse tool call inputs. Convert to JSON.
@@ -1298,10 +1503,10 @@ async def stream_chat(
 
                 logger.info(f"Processing {len(tool_calls)} tool calls")
 
-                # Check for disconnection before expensive tool execution
-                if await request.is_disconnected():
+                # Stop before expensive tool execution if the user cancelled.
+                if await _is_run_cancelled(redis_client, chat_id):
                     logger.info(
-                        f"Client disconnected before tool execution, stopping stream for chat {chat_id}"
+                        f"Run cancelled before tool execution for chat {chat_id}"
                     )
                     break
 
@@ -1466,11 +1671,60 @@ async def stream_chat(
             )
             yield _sse_event("stream_error", {"message": _chat_error_message(e)})
 
-    return StreamingResponse(
-        stream_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    # First new message persisted by omni-web is the parent of the run's output.
+    parent_id = chat_messages[-1].id if chat_messages else None
+
+    if redis_client is None:
+        # No Redis: run inline (no resume), still persisting via the producer wrapper.
+        return StreamingResponse(
+            _persist_and_transform(
+                stream_generator(), chat_id, messages_repo, parent_id
+            ),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+
+    # Single producer per chat: the lock winner starts the background run; a
+    # racing connect attaches to it instead of starting a duplicate.
+    got_lock = await redis_client.set(
+        _run_lock_key(chat_id), "1", nx=True, ex=_RUN_LOCK_TTL
     )
+    if not got_lock:
+        return StreamingResponse(
+            _consume_run(redis_client, chat_id, last_event_id or "0"),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+
+    await redis_client.delete(_stream_key(chat_id))
+    await redis_client.delete(_cancel_key(chat_id))
+    task = asyncio.create_task(
+        _run_producer(
+            redis_client, chat_id, stream_generator(), messages_repo, parent_id
+        )
+    )
+    _background_run_tasks.add(task)
+    task.add_done_callback(_background_run_tasks.discard)
+
+    return StreamingResponse(
+        _consume_run(redis_client, chat_id, "0"),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
+@router.post("/chat/{chat_id}/cancel")
+async def cancel_chat_stream(
+    request: Request, chat_id: str = Path(..., description="Chat thread ID")
+):
+    """Explicit Stop: signal the background run to stop at its next checkpoint."""
+    redis_client = getattr(request.app.state, "redis_client", None)
+    if redis_client is not None:
+        try:
+            await redis_client.set(_cancel_key(chat_id), "1", ex=_CANCEL_TTL)
+        except Exception as e:
+            logger.error(f"Failed to set cancel flag for chat {chat_id}: {e}")
+    return {"status": "cancelling"}
 
 
 @router.post("/chat/{chat_id}/generate_title")

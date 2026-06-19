@@ -9,6 +9,25 @@ from .models import ChatMessage
 from .connection import get_db_pool
 
 
+def _extract_content_text(message: Dict[str, Any]) -> Optional[str]:
+    """Plain-text projection of a message for search/title. Mirrors omni-web's
+    extractContentText so rows written here match those written by the web."""
+    if message.get("role") not in ("user", "assistant"):
+        return None
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        joined = "\n".join(p for p in parts if p)
+        return joined or None
+    return None
+
+
 class MessagesRepository:
     def __init__(self, pool: Optional[Pool] = None):
         self.pool = pool
@@ -46,17 +65,25 @@ class MessagesRepository:
             WHERE chat_id = $1
         """
 
+        content_text = _extract_content_text(message)
+
         async with pool.acquire() as conn:
             next_seq = await conn.fetchval(seq_query, chat_id)
 
             query = """
-                INSERT INTO chat_messages (id, chat_id, message_seq_num, message, parent_id, created_at)
-                VALUES ($1, $2, $3, $4, $5, NOW())
+                INSERT INTO chat_messages (id, chat_id, message_seq_num, message, parent_id, content_text, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
                 RETURNING id, chat_id, message_seq_num, message, parent_id, created_at
             """
 
             row = await conn.fetchrow(
-                query, message_id, chat_id, next_seq, json.dumps(message), parent_id
+                query,
+                message_id,
+                chat_id,
+                next_seq,
+                json.dumps(message),
+                parent_id,
+                content_text,
             )
 
         return ChatMessage.from_row(dict(row))

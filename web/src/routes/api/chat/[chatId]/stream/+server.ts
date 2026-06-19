@@ -3,17 +3,12 @@ import { relative, resolve } from 'node:path'
 import { json, error } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
-import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
+import { chatRepository } from '$lib/server/db/chats.js'
 import { getAgent } from '$lib/server/db/agents.js'
 import { isProviderConfigured } from '$lib/server/oauth/connectorOAuth.js'
 import { getSourceDisplayName } from '$lib/utils/icons.js'
 import { SourceType } from '$lib/types.js'
 import type { OAuthRequiredAIEvent } from '$lib/types/message.js'
-import type {
-    ContentBlockParam,
-    ToolResultBlockParam,
-    ToolUseBlockParam,
-} from '@anthropic-ai/sdk/resources/messages'
 
 function sseEvent(eventType: string, data: object): string {
     return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`
@@ -180,7 +175,7 @@ async function triggerTitleGeneration(chatId: string, logger: any): Promise<Titl
     }
 }
 
-export const GET: RequestHandler = async ({ params, locals, cookies }) => {
+export const GET: RequestHandler = async ({ params, locals, cookies, request, url }) => {
     const replayPath = replayStreamFixturePath(cookies)
     if (replayPath) {
         const sampleStream = await readFile(replayPath, 'utf-8')
@@ -214,11 +209,20 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
     const abortController = new AbortController()
 
     try {
-        const streamUrl = chat.agentId
+        // Resume offset: native EventSource reconnects send the Last-Event-ID
+        // header; our manual reconnects pass ?last_event_id=. Forward either to
+        // the AI service so it can resume the buffered run from that point.
+        const lastEventId =
+            request.headers.get('last-event-id') ?? url.searchParams.get('last_event_id')
+        let streamUrl = chat.agentId
             ? `${env.AI_SERVICE_URL}/chat/${chatId}/stream?auto_start=true`
             : `${env.AI_SERVICE_URL}/chat/${chatId}/stream`
+        if (lastEventId) {
+            streamUrl += `${streamUrl.includes('?') ? '&' : '?'}last_event_id=${encodeURIComponent(lastEventId)}`
+        }
         const response = await fetch(streamUrl, {
             signal: abortController.signal,
+            headers: lastEventId ? { 'Last-Event-ID': lastEventId } : undefined,
         })
 
         if (!response.ok) {
@@ -241,10 +245,6 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
         if (!reader) {
             throw new Error('Response body is null')
         }
-
-        // Track the last saved message ID to chain parent_id during streaming
-        const lastActiveMessage = await chatMessageRepository.getLastMessageInActivePath(chatId)
-        let lastSavedMessageId: string | undefined = lastActiveMessage?.id
 
         const decoder = new TextDecoder()
         const encoder = new TextEncoder()
@@ -298,43 +298,20 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
                             const lines = event.split('\n')
                             let eventType = 'message' // default event type
                             let data = ''
+                            let id = '' // Redis stream offset for Last-Event-ID resume
 
                             for (const line of lines) {
                                 if (line.startsWith('event:')) {
                                     eventType = line.substring(6).trim()
                                 } else if (line.startsWith('data:')) {
                                     data = line.substring(5).trim()
+                                } else if (line.startsWith('id:')) {
+                                    id = line.substring(3).trim()
                                 }
                             }
-
-                            // If this is a save_message event, save it immediately to database
-                            if (eventType === 'save_message' && data) {
-                                try {
-                                    const message = JSON.parse(data)
-                                    const { id: messageId } = await chatMessageRepository.create(
-                                        chatId,
-                                        message,
-                                        lastSavedMessageId,
-                                    )
-                                    lastSavedMessageId = messageId
-                                    logger.debug('Saved message to database', {
-                                        chatId,
-                                        role: message.role,
-                                        messageId,
-                                    })
-
-                                    // Send message ID to client
-                                    const event = `event: message_id\ndata: ${messageId}\n\n`
-                                    controller.enqueue(encoder.encode(event))
-                                } catch (error) {
-                                    logger.error('Failed to save message to database', error, {
-                                        chatId,
-                                        data,
-                                    })
-                                }
-                                // Don't forward save_message events to client (internal only)
-                                continue
-                            }
+                            // Preserve the offset on every reconstructed event below
+                            // so the browser advances Last-Event-ID correctly.
+                            const idPrefix = id ? `id: ${id}\n` : ''
 
                             // Forward approval_required events to client
                             if (eventType === 'approval_required' && data) {
@@ -355,7 +332,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
                                         chatId,
                                     })
                                 }
-                                const approvalEvent = `event: approval_required\ndata: ${data}\n\n`
+                                const approvalEvent = `${idPrefix}event: approval_required\ndata: ${data}\n\n`
                                 controller.enqueue(encoder.encode(approvalEvent))
                                 continue
                             }
@@ -379,7 +356,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
                                         provider_configured: providerConfigured,
                                         source_display_name: sourceDisplayName,
                                     }
-                                    const enrichedEvent = `event: oauth_required\ndata: ${JSON.stringify(enriched)}\n\n`
+                                    const enrichedEvent = `${idPrefix}event: oauth_required\ndata: ${JSON.stringify(enriched)}\n\n`
                                     controller.enqueue(encoder.encode(enrichedEvent))
                                 } catch (err) {
                                     logger.error('Failed to enrich oauth_required event', err, {
@@ -387,7 +364,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
                                     })
                                     // Fall back to forwarding the raw event so the
                                     // client at least sees something actionable.
-                                    const fallback = `event: oauth_required\ndata: ${data}\n\n`
+                                    const fallback = `${idPrefix}event: oauth_required\ndata: ${data}\n\n`
                                     controller.enqueue(encoder.encode(fallback))
                                 }
                                 continue
@@ -448,7 +425,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
                                             content: redactedContent,
                                         }
 
-                                        const redactedEvent = `event: message\ndata: ${JSON.stringify(redactedData)}\n\n`
+                                        const redactedEvent = `${idPrefix}event: message\ndata: ${JSON.stringify(redactedData)}\n\n`
                                         controller.enqueue(encoder.encode(redactedEvent))
                                         continue
                                     }
@@ -471,63 +448,13 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
                 }
             },
             async cancel() {
-                logger.info('Client disconnected, cancelling stream', { chatId })
+                // The browser disconnected (e.g. backgrounded tab). Stop proxying
+                // by aborting our upstream read, but do NOT touch the run — it
+                // continues server-side so the client can reconnect and resume.
+                // Generation is ended only via the explicit Stop endpoint.
+                logger.info('Client disconnected from stream proxy', { chatId })
                 reader.cancel()
                 abortController.abort()
-
-                // Clean up any incomplete tool uses from the interrupted stream
-                try {
-                    const lastMessage =
-                        await chatMessageRepository.getLastMessageInActivePath(chatId)
-                    if (!lastMessage || lastMessage.message.role !== 'assistant') return
-
-                    const content = lastMessage.message.content
-                    const contentBlocks: ContentBlockParam[] = Array.isArray(content) ? content : []
-                    const toolUseBlocks = contentBlocks.filter(
-                        (b): b is ToolUseBlockParam => b.type === 'tool_use',
-                    )
-                    if (toolUseBlocks.length === 0) return
-
-                    const allMessages = await chatMessageRepository.getByChatId(chatId)
-                    const toolResultMsgs = allMessages.filter((m) => m.parentId === lastMessage.id)
-                    const existingToolUseIds = new Set<string>()
-                    for (const msg of toolResultMsgs) {
-                        if (msg.message.role === 'user' && Array.isArray(msg.message.content)) {
-                            for (const block of msg.message.content) {
-                                if (block.type === 'tool_result') {
-                                    existingToolUseIds.add(block.tool_use_id)
-                                }
-                            }
-                        }
-                    }
-
-                    const missingToolUses = toolUseBlocks.filter(
-                        (tu) => !existingToolUseIds.has(tu.id),
-                    )
-                    if (missingToolUses.length === 0) return
-
-                    const syntheticToolResults: ToolResultBlockParam[] = missingToolUses.map(
-                        (tu) => ({
-                            type: 'tool_result',
-                            tool_use_id: tu.id,
-                            content: [{ type: 'text', text: 'Tool response was interrupted' }],
-                            is_error: true,
-                        }),
-                    )
-
-                    await chatMessageRepository.create(
-                        chatId,
-                        { role: 'user', content: syntheticToolResults },
-                        lastMessage.id,
-                    )
-
-                    logger.info('Cleaned up interrupted stream', {
-                        chatId,
-                        missingToolCount: missingToolUses.length,
-                    })
-                } catch (err) {
-                    logger.error('Error cleaning up interrupted stream', err, { chatId })
-                }
             },
         })
 
