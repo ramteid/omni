@@ -289,9 +289,15 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                     logger.info(
                                         `Generated title for chat ${chatId}: ${result.title}`,
                                     )
-                                    controller.enqueue(
-                                        encoder.encode(sseEvent('title', { title: result.title })),
-                                    )
+                                    try {
+                                        controller.enqueue(
+                                            encoder.encode(
+                                                sseEvent('title', { title: result.title }),
+                                            ),
+                                        )
+                                    } catch {
+                                        // The browser may have disconnected while title generation ran.
+                                    }
                                 } else if (result.status === 'failed') {
                                     logger.warn('Title generation failed', {
                                         chatId,
@@ -308,7 +314,11 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                         const { done, value } = await reader.read()
 
                         if (done) {
-                            controller.close()
+                            try {
+                                controller.close()
+                            } catch {
+                                // The browser may have disconnected first.
+                            }
                             break
                         }
 
@@ -341,25 +351,10 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                             // so the browser advances Last-Event-ID correctly.
                             const idPrefix = id ? `id: ${id}\n` : ''
 
-                            // Forward approval_required events to client
+                            // Forward approval_required events to client. The AI service
+                            // owns creation of the durable approval row; web only resolves
+                            // approve/deny decisions through /api/chat/:chatId/approve.
                             if (eventType === 'approval_required' && data) {
-                                try {
-                                    const approvalData = JSON.parse(data)
-                                    // Save approval record to database using the same ID from Redis
-                                    const { toolApprovalRepository } =
-                                        await import('$lib/server/db/tool-approvals.js')
-                                    await toolApprovalRepository.createWithId(
-                                        approvalData.approval_id,
-                                        chatId,
-                                        chat.userId,
-                                        approvalData.tool_name,
-                                        approvalData.tool_input,
-                                    )
-                                } catch (err) {
-                                    logger.error('Failed to save tool approval record', err, {
-                                        chatId,
-                                    })
-                                }
                                 const approvalEvent = `${idPrefix}event: approval_required\ndata: ${data}\n\n`
                                 controller.enqueue(encoder.encode(approvalEvent))
                                 continue
@@ -471,8 +466,16 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                     logger.error('Error in stream processing', error, { chatId })
                     const message =
                         error instanceof Error ? error.message : 'Failed to process chat stream'
-                    controller.enqueue(encoder.encode(sseEvent('stream_error', { message })))
-                    controller.close()
+                    try {
+                        controller.enqueue(encoder.encode(sseEvent('stream_error', { message })))
+                    } catch {
+                        // The browser may have disconnected already.
+                    }
+                    try {
+                        controller.close()
+                    } catch {
+                        // The browser may have disconnected already.
+                    }
                 }
             },
             async cancel() {
@@ -481,7 +484,11 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                 // continues server-side so the client can reconnect and resume.
                 // Generation is ended only via the explicit Stop endpoint.
                 logger.info('Client disconnected from stream proxy', { chatId })
-                reader.cancel()
+                try {
+                    await reader.cancel()
+                } catch {
+                    // Upstream may already be closed.
+                }
                 abortController.abort()
             },
         })

@@ -3,7 +3,13 @@ import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
 import { getAgent } from '$lib/server/db/agents.js'
 import type { OmniUploadBlock } from '$lib/types/message'
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages'
+import type {
+    MessageParam,
+    TextBlockParam,
+    ToolResultBlockParam,
+    ToolUseBlockParam,
+} from '@anthropic-ai/sdk/resources/messages'
+import { getChatStreamStatus } from '$lib/server/ai-stream-status.js'
 
 interface MessageRequest {
     content: string
@@ -12,6 +18,29 @@ interface MessageRequest {
 }
 
 type UserMessageBlock = OmniUploadBlock | TextBlockParam
+
+function interruptedToolResultMessage(message: MessageParam): MessageParam | null {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) return null
+
+    const toolUses = message.content.filter(
+        (block): block is ToolUseBlockParam => block.type === 'tool_use',
+    )
+    if (toolUses.length === 0) return null
+
+    const content: ToolResultBlockParam[] = toolUses.map((toolUse) => ({
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: [
+            {
+                type: 'text',
+                text: `Tool call ${toolUse.name} did not complete because the previous response was interrupted. Treat this tool call as failed and retry it if the result is still needed.`,
+            },
+        ],
+        is_error: true,
+    }))
+
+    return { role: 'user', content }
+}
 
 export const GET: RequestHandler = async ({ params, locals }) => {
     const logger = locals.logger.child('chat')
@@ -122,6 +151,21 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             }
         }
 
+        try {
+            const streamStatus = await getChatStreamStatus(chatId)
+            if (streamStatus.running) {
+                return json(
+                    {
+                        error: 'A response is still in progress for this chat. Reconnect to the stream before sending another message.',
+                        streamActive: true,
+                    },
+                    { status: 409 },
+                )
+            }
+        } catch (error) {
+            logger.warn('Could not check stream status before adding message', error, { chatId })
+        }
+
         // Create the user message in MessageParam format. If there are attachments, build
         // the content as an array of blocks: omni_upload document blocks first, then text.
         let userMessage: { role: 'user'; content: string | UserMessageBlock[] }
@@ -139,12 +183,28 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             userMessage = { role: 'user', content: trimmedText }
         }
 
-        // Determine parentId: use provided value, or find the last message in the active path
+        // Determine parentId: use provided value, or find the last message in the active path.
+        // If the active leaf is an assistant tool_use without a tool_result, first insert an
+        // error tool_result so the next user turn does not create invalid provider history.
         let parentId = messageRequest.parentId
         if (!parentId) {
             const lastMessage = await chatMessageRepository.getLastMessageInActivePath(chatId)
             if (lastMessage) {
-                parentId = lastMessage.id
+                const repairMessage = interruptedToolResultMessage(lastMessage.message)
+                if (repairMessage) {
+                    const savedRepairMessage = await chatMessageRepository.create(
+                        chatId,
+                        repairMessage,
+                        lastMessage.id,
+                    )
+                    parentId = savedRepairMessage.id
+                    logger.warn('Inserted failed tool_result for interrupted tool call', {
+                        chatId,
+                        repairMessageId: savedRepairMessage.id,
+                    })
+                } else {
+                    parentId = lastMessage.id
+                }
             }
         }
 

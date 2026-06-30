@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import crypto from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink, writeFile } from 'node:fs/promises'
 import postgres from 'postgres'
 import { createClient } from 'redis'
 import { ulid } from 'ulid'
@@ -49,6 +49,28 @@ type TemplateChatMessage = {
     message: unknown
     contentText: string | null
     createdAt: string
+}
+
+type InterruptedToolRepairRow = {
+    id: string
+    parent_id: string | null
+    message_seq_num: number
+    message: unknown
+}
+
+type InterruptedToolResultMessage = {
+    role: 'user'
+    content: Array<{
+        type: 'tool_result'
+        tool_use_id: string
+        is_error: boolean
+        content: Array<{ type: 'text'; text: string }>
+    }>
+}
+
+type TextUserMessage = {
+    role: 'user'
+    content: string
 }
 
 type SeededCitationChat = SeededChat & {
@@ -130,6 +152,68 @@ function finalAssistantTextSse(text: string): string {
         sseMessage({ type: 'content_block_stop', index: 0 }),
         sseMessage({ type: 'message_stop' }),
         `event: message_id\ndata: ${ulid()}\n\n`,
+    ].join('')
+}
+
+type ApprovalPauseFixture = {
+    approvalId: string
+    toolCallId: string
+    toolName: string
+    toolInput: Record<string, unknown>
+}
+
+function approvalRequiredSse({
+    approvalId,
+    toolCallId,
+    toolName,
+    toolInput,
+}: ApprovalPauseFixture): string {
+    return `event: approval_required\ndata: ${JSON.stringify({
+        approval_id: approvalId,
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_call_id: toolCallId,
+    })}\n\n`
+}
+
+function approvalPauseSse(fixture: ApprovalPauseFixture): string {
+    const assistantMessage = {
+        role: 'assistant',
+        content: [
+            {
+                type: 'tool_use',
+                id: fixture.toolCallId,
+                name: fixture.toolName,
+                input: fixture.toolInput,
+            },
+        ],
+    }
+
+    return [
+        assistantStart(),
+        sseMessage({
+            type: 'content_block_start',
+            index: 0,
+            content_block: {
+                type: 'tool_use',
+                id: fixture.toolCallId,
+                name: fixture.toolName,
+                input: {},
+            },
+        }),
+        sseMessage({
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify(fixture.toolInput),
+            },
+        }),
+        sseMessage({ type: 'content_block_stop', index: 0 }),
+        sseMessage({ type: 'message_stop' }),
+        `event: save_message\ndata: ${JSON.stringify(assistantMessage)}\n\n`,
+        approvalRequiredSse(fixture),
+        'event: end_of_stream\ndata: Approval required\n\n',
     ].join('')
 }
 
@@ -243,6 +327,40 @@ async function seedChat(): Promise<SeededChat> {
     await redis.disconnect()
 
     return { userId, chatId, userMessageId, sessionToken, sessionKey }
+}
+
+async function seedInterruptedToolCallChat(): Promise<
+    SeededChat & { assistantMessageId: string; toolUseId: string }
+> {
+    const seeded = await seedChat()
+    const sql = postgres(dbConfig)
+    const assistantMessageId = ulid()
+    const toolUseId = `toolu_interrupted_${ulid()}`
+
+    await sql`
+        INSERT INTO chat_messages (id, chat_id, parent_id, message_seq_num, message, content_text)
+        VALUES (
+            ${assistantMessageId},
+            ${seeded.chatId},
+            ${seeded.userMessageId},
+            2,
+            ${sql.json({
+                role: 'assistant',
+                content: [
+                    {
+                        type: 'tool_use',
+                        id: toolUseId,
+                        name: 'search_documents',
+                        input: { query: 'interrupted tool call', limit: 10 },
+                    },
+                ],
+            })},
+            NULL
+        )
+    `
+    await sql.end()
+
+    return { ...seeded, assistantMessageId, toolUseId }
 }
 
 async function seedChatFromTemplateFixture(
@@ -553,6 +671,412 @@ test('branched chat keeps the second streamed assistant response on delayed tool
     }
 })
 
+test('chat reconnects after a dropped stream connection', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId: ulid() }),
+            })
+        })
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: false,
+                    running: false,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        let streamRequests = 0
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            streamRequests += 1
+            if (streamRequests === 1) {
+                await route.abort('failed')
+                return
+            }
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: `${finalAssistantTextSse('Recovered after reconnecting to the active stream.')}
+event: end_of_stream
+data: {}
+
+`,
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Start a stream that drops')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Start a stream that drops')).toBeVisible()
+        await expect(
+            page.getByText('Recovered after reconnecting to the active stream.'),
+        ).toBeVisible({
+            timeout: 10_000,
+        })
+        expect(streamRequests).toBeGreaterThanOrEqual(2)
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat inserts failed tool result before a user reply after interrupted tool call', async ({
+    page,
+}) => {
+    let seeded: (SeededChat & { assistantMessageId: string; toolUseId: string }) | null = null
+    try {
+        seeded = await seedInterruptedToolCallChat()
+        await authenticate(page, seeded)
+
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: false,
+                    running: false,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: 'event: end_of_stream\ndata: Stream ended\n\n',
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Please continue after failure')
+        await page.keyboard.press('Enter')
+        await expect(page.getByText('Please continue after failure')).toBeVisible()
+
+        const sql = postgres(dbConfig)
+        const rows = await sql<InterruptedToolRepairRow[]>`
+            SELECT id, parent_id, message_seq_num, message
+            FROM chat_messages
+            WHERE chat_id = ${seeded.chatId}
+            ORDER BY message_seq_num
+        `
+        await sql.end()
+
+        expect(rows).toHaveLength(4)
+        const repairMessage = rows[2]
+        const followUpMessage = rows[3]
+        const repairPayload = repairMessage.message as InterruptedToolResultMessage
+        const followUpPayload = followUpMessage.message as TextUserMessage
+
+        expect(repairMessage.parent_id).toBe(seeded.assistantMessageId)
+        expect(repairPayload.role).toBe('user')
+        expect(repairPayload.content).toEqual([
+            expect.objectContaining({
+                type: 'tool_result',
+                tool_use_id: seeded.toolUseId,
+                is_error: true,
+            }),
+        ])
+        expect(repairPayload.content[0].content[0].text).toContain(
+            'previous response was interrupted',
+        )
+        expect(followUpMessage.parent_id).toBe(repairMessage.id)
+        expect(followUpPayload).toEqual({
+            role: 'user',
+            content: 'Please continue after failure',
+        })
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat keeps prior messages visible when reloaded during an active stream', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    const fixtureName = `reload-active-stream-${ulid()}.sse`
+    const fixturePath = new URL(`./fixtures/${fixtureName}`, import.meta.url)
+    try {
+        seeded = await seedChat()
+        const historicAssistantId = ulid()
+        const sql = postgres(dbConfig)
+        await sql`
+            INSERT INTO chat_messages (id, chat_id, parent_id, message_seq_num, message, content_text)
+            VALUES (
+                ${historicAssistantId},
+                ${seeded.chatId},
+                ${seeded.userMessageId},
+                2,
+                ${sql.json({
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'Historical assistant answer before reload.' }],
+                })},
+                'Historical assistant answer before reload.'
+            )
+        `
+        await sql.end()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, fixtureName)
+
+        await writeFile(
+            fixturePath,
+            `${finalAssistantTextSse('Recovered assistant response after reload.')}${Array.from(
+                { length: 500 },
+                () => 'event: heartbeat\ndata: {}\n\n',
+            ).join('')}event: end_of_stream\ndata: Stream ended\n\n`,
+        )
+
+        let streamActive = false
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: streamActive,
+                    running: streamActive,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            const requestBody = (await route.request().postDataJSON()) as {
+                content: string
+                parentId?: string
+            }
+            const messageId = ulid()
+            const sql = postgres(dbConfig)
+            await sql`
+                INSERT INTO chat_messages (id, chat_id, parent_id, message_seq_num, message, content_text)
+                VALUES (
+                    ${messageId},
+                    ${seeded.chatId},
+                    ${requestBody.parentId ?? null},
+                    3,
+                    ${sql.json({ role: 'user', content: requestBody.content })},
+                    ${requestBody.content}
+                )
+            `
+            await sql.end()
+            streamActive = true
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId }),
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await expect(page.getByText('What tools can you use?')).toBeVisible()
+        await expect(page.getByText('Historical assistant answer before reload.')).toBeVisible()
+
+        const textbox = page.getByRole('main').getByRole('textbox')
+        await textbox.fill('Reload this stream mid-flight')
+        await page.keyboard.press('Enter')
+        await expect(page.getByText('Reload this stream mid-flight')).toBeVisible()
+        await expect(page.getByText('Recovered assistant response after reload.')).toBeVisible()
+
+        await page.reload({ waitUntil: 'domcontentloaded' })
+        await expect(page.getByText('Recovered assistant response after reload.')).toBeVisible()
+
+        await expect(page.getByText('What tools can you use?')).toBeVisible()
+        await expect(page.getByText('Historical assistant answer before reload.')).toBeVisible()
+        await expect(page.getByText('Reload this stream mid-flight')).toBeVisible()
+        await expect(page.locator('.omni-composer-send.rounded-full')).toBeVisible()
+
+        streamActive = false
+    } finally {
+        await unlink(fixturePath).catch(() => undefined)
+        await cleanupChat(seeded)
+    }
+})
+
+test('approval card can be approved after reload', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    const fixtureName = `approval-reload-${ulid()}.sse`
+    const fixturePath = new URL(`./fixtures/${fixtureName}`, import.meta.url)
+    const approvalFixture: ApprovalPauseFixture = {
+        approvalId: ulid(),
+        toolCallId: `call_${ulid()}`,
+        toolName: 'google_drive__google_workspace_call',
+        toolInput: {
+            service: 'sheets',
+            resource: 'spreadsheets.values',
+            method: 'update',
+            params: { spreadsheetId: 'spreadsheet-1', range: 'Sheet1!A1:B2' },
+            body: {
+                values: [
+                    ['Asset', 'Risk'],
+                    ['Debt', 'Low'],
+                ],
+            },
+        },
+    }
+
+    try {
+        seeded = await seedChatFromTemplateFixture()
+        const sql = postgres(dbConfig)
+        await sql`
+            INSERT INTO tool_approvals (id, chat_id, user_id, tool_name, tool_input)
+            VALUES (
+                ${approvalFixture.approvalId},
+                ${seeded.chatId},
+                ${seeded.userId},
+                ${approvalFixture.toolName},
+                ${sql.json(approvalFixture.toolInput)}
+            )
+        `
+        await sql.end()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, fixtureName)
+
+        await writeFile(fixturePath, approvalPauseSse(approvalFixture))
+
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: true,
+                    running: false,
+                    resumable: false,
+                    pendingApproval: true,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Trigger an approval')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Awaiting approval')).toBeVisible()
+        await expect(page.getByRole('button', { name: /Approve\s*&\s*send/ })).toBeVisible()
+
+        await writeFile(
+            fixturePath,
+            [
+                approvalRequiredSse(approvalFixture),
+                'event: end_of_stream\ndata: Approval required\n\n',
+            ].join(''),
+        )
+        await page.reload({ waitUntil: 'domcontentloaded' })
+
+        await expect(page.getByText('Awaiting approval')).toBeVisible()
+        const approveButton = page.getByRole('button', { name: /Approve\s*&\s*send/ })
+        await expect(approveButton).toBeVisible()
+
+        await writeFile(
+            fixturePath,
+            `${finalAssistantTextSse('Approved action completed after reload.')}event: end_of_stream\ndata: {}\n\n`,
+        )
+        await Promise.all([
+            page.waitForResponse(
+                (response) =>
+                    response.url().includes(`/api/chat/${seeded!.chatId}/approve`) &&
+                    response.status() === 200,
+            ),
+            approveButton.click(),
+        ])
+
+        await expect(page.getByText('Awaiting approval')).toHaveCount(0)
+    } finally {
+        await unlink(fixturePath).catch(() => undefined)
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat reconnects instead of sending a new message while a response is active', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+
+        let statusRequests = 0
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            statusRequests += 1
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: statusRequests > 1,
+                    running: statusRequests > 1,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            await route.fulfill({
+                status: 409,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    error: 'A response is still in progress for this chat.',
+                    streamActive: true,
+                }),
+            })
+        })
+
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: `${finalAssistantTextSse('Continued the prior response after reconnect.')}
+event: end_of_stream
+data: {}
+
+`,
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await expect.poll(() => statusRequests).toBe(1)
+
+        const textbox = page.getByRole('main').getByRole('textbox')
+        await textbox.fill('Do not send this while the prior response is active')
+        await page.keyboard.press('Enter')
+
+        await expect(
+            page.getByText('The previous response is still in progress. Reconnecting to it now.'),
+        ).toBeVisible()
+        await expect(textbox).toContainText('Do not send this while the prior response is active')
+        await expect(page.getByText('Continued the prior response after reconnect.')).toBeVisible()
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
 test('chat renders a sanitized captured stream with incrementally replayed markdown', async ({
     page,
 }) => {
@@ -684,7 +1208,9 @@ test('stop button during streaming resets state so the input is ready for a new 
         seeded = await seedChat()
         await authenticate(page, seeded)
 
+        let messagePosts = 0
         await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            messagePosts += 1
             await route.fulfill({
                 status: 200,
                 headers: { 'content-type': 'application/json' },
@@ -692,16 +1218,30 @@ test('stop button during streaming resets state so the input is ready for a new 
             })
         })
 
-        let resolveStream!: () => void
-        const streamUnblocked = new Promise<void>((resolve) => {
-            resolveStream = resolve
+        let resolveFirstStream!: () => void
+        const firstStreamUnblocked = new Promise<void>((resolve) => {
+            resolveFirstStream = resolve
         })
+        let streamRequests = 0
         await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
-            await streamUnblocked
+            streamRequests += 1
+            if (streamRequests === 1) {
+                await firstStreamUnblocked
+                await route.fulfill({
+                    status: 200,
+                    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+                    body: 'event: end_of_stream\ndata: Stream stopped\n\n',
+                })
+                return
+            }
             await route.fulfill({
                 status: 200,
                 headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-                body: 'event: end_of_stream\ndata: Stream stopped\n\n',
+                body: `${finalAssistantTextSse('Follow-up response after stop.')}
+event: end_of_stream
+data: Stream ended
+
+`,
             })
         })
 
@@ -713,13 +1253,21 @@ test('stop button during streaming resets state so the input is ready for a new 
         const stopButton = page.locator('.omni-composer-send.rounded-full')
         await expect(stopButton).toBeVisible()
         await stopButton.click()
-        resolveStream()
+        resolveFirstStream()
 
-        // After stopping, the stop button is gone and the input accepts a new message
+        // After stopping, the stop button is gone, no empty-response error is shown,
+        // and the next message is submitted instead of being treated as an active stream.
         await expect(stopButton).not.toBeVisible()
+        await expect(
+            page.getByText('Failed to generate response. Please try again.'),
+        ).not.toBeVisible()
         const textbox = page.getByRole('main').getByRole('textbox')
         await textbox.fill('Follow-up question')
         await expect(page.locator('.omni-composer-send')).not.toBeDisabled()
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Follow-up response after stop.')).toBeVisible()
+        expect(messagePosts).toBe(2)
     } finally {
         await cleanupChat(seeded)
     }

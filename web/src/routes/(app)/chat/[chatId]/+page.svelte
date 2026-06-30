@@ -43,7 +43,9 @@
         ToolResultReplacedEvent,
         OmniUploadBlock,
     } from '$lib/types/message'
+    import { ToolApprovalStatus } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
+    import { fetchChatStreamStatus } from '$lib/utils/stream-status'
     import ToolMessage from '$lib/components/tool-message.svelte'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { cn } from '$lib/utils'
@@ -110,6 +112,7 @@
             activeStreamingMessageId = null
             editingMessageId = null
             uploadFilenames = { ...data.uploadFilenames }
+            pendingApproval = pendingApprovalFromData()
             markChatMessagesChanged()
         }
     })
@@ -212,6 +215,18 @@
         provider?: string | null
         model?: string | null
         statusCode?: number | null
+    }
+
+    async function resumeActiveStreamIfNeeded() {
+        if (isStreaming || eventSource) return
+        try {
+            const status = await fetchChatStreamStatus(data.chat.id)
+            if (status?.running) {
+                streamResponse(data.chat.id)
+            }
+        } catch (err) {
+            console.warn('Failed to check chat stream status', err)
+        }
     }
 
     function streamErrorMessage(event: MessageEvent<string>): {
@@ -338,7 +353,98 @@
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
-    let pendingApproval = $state<ApprovalRequiredEvent | null>(null)
+    function pendingApprovalFromData(): ApprovalRequiredEvent | null {
+        const approvals = data.pendingApprovals.length > 0 ? data.pendingApprovals : []
+        const first = approvals[0]
+        if (!first) return null
+
+        const mapped = approvals.map((approval) => ({
+            approval_id: approval.id,
+            tool_name: approval.toolName,
+            tool_input: approval.toolInput as Record<string, unknown>,
+            tool_call_id: approval.toolCallId ?? '',
+            source_id: approval.sourceId,
+            source_type: approval.sourceType,
+        }))
+
+        return {
+            ...mapped[0],
+            approvals: mapped,
+        }
+    }
+
+    let pendingApproval = $state<ApprovalRequiredEvent | null>(pendingApprovalFromData())
+
+    type ApprovalInputDisplayField = {
+        label: string
+        value: string
+    }
+
+    function humanizeApprovalToken(value: string): string {
+        return value
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .replace(/[_-]+/g, ' ')
+            .replace(/\b\w/g, (match) => match.toUpperCase())
+            .replace(/\bId\b/g, 'ID')
+            .trim()
+    }
+
+    function approvalActionLabel(toolName: string): string {
+        const actionName = toolName.split('__').slice(1).join('__') || toolName
+        return humanizeApprovalToken(actionName).toLowerCase()
+    }
+
+    function isApprovalRecord(value: unknown): value is Record<string, unknown> {
+        return typeof value === 'object' && value !== null && !Array.isArray(value)
+    }
+
+    function formatApprovalDisplayValue(value: unknown): string {
+        if (value === null || value === undefined) return 'Not provided'
+        if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+        if (typeof value === 'number') return String(value)
+        if (typeof value === 'string') return value || 'Not provided'
+        if (Array.isArray(value)) {
+            if (value.length === 0) return 'None'
+            if (value.every((item) => ['string', 'number', 'boolean'].includes(typeof item))) {
+                return value.map(formatApprovalDisplayValue).join(', ')
+            }
+            return `${value.length} ${value.length === 1 ? 'item' : 'items'}`
+        }
+        if (isApprovalRecord(value)) {
+            const entries = Object.entries(value).filter(
+                ([, entryValue]) => entryValue !== undefined,
+            )
+            if (entries.length === 0) return 'None'
+            return entries
+                .slice(0, 4)
+                .map(
+                    ([key, entryValue]) =>
+                        `${humanizeApprovalToken(key)}: ${formatApprovalDisplayValue(entryValue)}`,
+                )
+                .join(' · ')
+        }
+        return String(value)
+    }
+
+    function approvalInputDisplayFields(
+        input: Record<string, unknown>,
+    ): ApprovalInputDisplayField[] {
+        return Object.entries(input)
+            .filter(([, value]) => value !== undefined)
+            .map(([key, value]) => ({
+                label: humanizeApprovalToken(key),
+                value: formatApprovalDisplayValue(value),
+            }))
+    }
+
+    function formatApprovalTechnicalDetails(input: Record<string, unknown>): string {
+        try {
+            return JSON.stringify(input, null, 2)
+        } catch {
+            return String(input)
+        }
+    }
+
     // Live OAuth metadata indexed by tool_call_id. The SSE oauth_required
     // event is the only place we learn `provider_configured` and a friendly
     // source display name; the persisted envelope on its own can render the
@@ -353,6 +459,7 @@
     let showTopShadow = $state(false)
     let bottomPadding = $state(80)
 
+    let processMessagesCallCount = 0
     let processedMessages = $state<ProcessedMessage[]>(processMessages(chatMessages))
     let processedMessagesRefreshScheduled = false
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
@@ -404,6 +511,63 @@
             })
             .join('|')
     }
+
+    function summarizeChatMessagesForDebug(messages: ChatMessage[]) {
+        return messages.slice(-6).map((message) => ({
+            id: message.id,
+            parentId: message.parentId,
+            seq: message.messageSeqNum,
+            role: message.message.role,
+            contentType: Array.isArray(message.message.content) ? 'array' : 'string',
+            blockTypes: Array.isArray(message.message.content)
+                ? message.message.content.map((block) => block.type)
+                : undefined,
+        }))
+    }
+
+    function summarizeProcessedMessagesForDebug(messages: ProcessedMessage[]) {
+        return messages.slice(-4).map((message) => ({
+            origMessageId: message.origMessageId,
+            role: message.role,
+            sourceMessageIds: message.sourceMessageIds,
+            contentTypes: message.content.map((block) => block.type),
+            toolIds: message.content
+                .filter((block): block is ToolMessageContent => block.type === 'tool')
+                .map((block) => block.toolUse.id),
+            textLengths: message.content
+                .filter((block): block is TextMessageContent => block.type === 'text')
+                .map((block) => block.text.length),
+        }))
+    }
+
+    $effect(() => {
+        const displayPath = getDisplayPath(chatMessages)
+        console.debug('[chat-state-debug]', {
+            isStreaming,
+            activeStreamingMessageId,
+            chatMessageCount: chatMessages.length,
+            processedMessageCount: processedMessages.length,
+            displayPathLength: displayPath.length,
+            displayPathTail: displayPath.slice(-5).map((message) => ({
+                id: message.id,
+                parentId: message.parentId,
+                seq: message.messageSeqNum,
+                role: message.message.role,
+            })),
+            chatTail: summarizeChatMessagesForDebug(chatMessages),
+            processedTail: summarizeProcessedMessagesForDebug(processedMessages),
+            pendingApproval: pendingApproval
+                ? {
+                      approvalId: pendingApproval.approval_id,
+                      toolCallId: pendingApproval.tool_call_id,
+                      approvals: pendingApproval.approvals?.map((approval) => ({
+                          approvalId: approval.approval_id,
+                          toolCallId: approval.tool_call_id,
+                      })),
+                  }
+                : null,
+        })
+    })
 
     function markChatMessagesChanged() {
         scheduleProcessedMessagesRefresh()
@@ -554,29 +718,9 @@
         return childrenMap
     }
 
-    function getPathToMessage(messages: ChatMessage[], messageId: string): ChatMessage[] {
-        const messageById = new Map(messages.map((message) => [message.id, message]))
-        const path: ChatMessage[] = []
-        let current = messageById.get(messageId)
-        const seen = new Set<string>()
-
-        while (current && !seen.has(current.id)) {
-            seen.add(current.id)
-            path.push(current)
-            current = current.parentId ? messageById.get(current.parentId) : undefined
-        }
-
-        return path.reverse()
-    }
-
     // Build the display path from the message tree based on branch selections
     function getDisplayPath(chatMessages: ChatMessage[]): ChatMessage[] {
         if (chatMessages.length === 0) return []
-
-        if (activeStreamingMessageId) {
-            const streamingPath = getPathToMessage(chatMessages, activeStreamingMessageId)
-            if (streamingPath.length > 0) return streamingPath
-        }
 
         const childrenMap = buildChildrenMap(chatMessages)
 
@@ -699,7 +843,12 @@
         })
 
         if (!response.ok) {
-            console.error('Failed to edit message')
+            if (response.status === 409) {
+                void resumeActiveStreamIfNeeded()
+                toast.info('The previous response is still in progress. Reconnecting to it now.')
+            } else {
+                console.error('Failed to edit message')
+            }
             return
         }
 
@@ -720,9 +869,13 @@
         }
         chatMessages = [...chatMessages, newUserMessage]
 
-        // Select the new branch
+        // Select the new branch. Pending interventions belong to the abandoned
+        // branch below the edited message, so clear their local UI state before
+        // starting the replay stream for this branch.
         branchSelections[parentKey] = messageId
         clearDownstreamSelections(messageId)
+        pendingApproval = null
+        oauthEventByToolCallId = {}
         markChatMessagesChanged()
 
         streamResponse(data.chat.id)
@@ -731,6 +884,8 @@
     // Converts messages into a format that makes it easy to render the messages
     // E.g., combines multiple content blocks into a single content block, handles citations, etc.
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
+        const processStartedAt = performance.now()
+        processMessagesCallCount += 1
         let result: ProcessedMessage[] = []
         const siblingInfo = computeSiblingInfo(chatMessages)
         const displayPath = getDisplayPath(chatMessages)
@@ -876,6 +1031,13 @@
             updateToolBlock(toolUseId, (block) => ({ ...block, oauthRequired }))
         }
 
+        const updateApprovalRequired = (toolUseId: string, approvalId: string) => {
+            updateToolBlock(toolUseId, (block) => ({
+                ...block,
+                approval: { approvalId, status: ToolApprovalStatus.Pending },
+            }))
+        }
+
         for (let i = 0; i < displayPath.length; i++) {
             const chatMsg = displayPath[i]
             const message = chatMsg.message
@@ -992,6 +1154,28 @@
                                 },
                             }
 
+                            if (
+                                data.pendingOAuth &&
+                                data.pendingOAuth.toolCallId === block.id &&
+                                data.pendingOAuth.sourceId &&
+                                data.pendingOAuth.sourceType &&
+                                data.pendingOAuth.provider &&
+                                data.pendingOAuth.oauthStartUrl
+                            ) {
+                                toolMsgContent.oauthRequired = {
+                                    sourceId: data.pendingOAuth.sourceId,
+                                    sourceType: data.pendingOAuth.sourceType,
+                                    sourceDisplayName:
+                                        getSourceDisplayName(
+                                            data.pendingOAuth.sourceType as SourceType,
+                                        ) ?? data.pendingOAuth.sourceType,
+                                    provider: data.pendingOAuth.provider,
+                                    providerConfigured: true,
+                                    oauthStartUrl: data.pendingOAuth.oauthStartUrl,
+                                    status: 'pending',
+                                }
+                            }
+
                             processedMessage.content.push(toolMsgContent)
                         } else if (block.type === 'tool_result') {
                             const toolUseId = block.tool_use_id
@@ -1015,10 +1199,11 @@
                                       (b): b is TextBlockParam => b.type === 'text',
                                   )
                                 : []
-                            // First text block may carry an Omni envelope (OAuth-required
-                            // prompt). Surface it as a typed UI variant; if it doesn't
-                            // parse, fall through to the normal action-result path.
-                            let oauthHandled = false
+                            // First text block may carry an Omni envelope (OAuth- or
+                            // approval-required prompt). Surface it as a typed UI
+                            // variant; if it doesn't parse, fall through to the normal
+                            // action-result path.
+                            let promptHandled = false
                             if (textBlocks.length > 0) {
                                 const envelope = tryParseOmniEnvelope(textBlocks[0].text)
                                 if (
@@ -1043,10 +1228,16 @@
                                         oauthStartUrl: envelope.payload.oauth_start_url,
                                         status: 'pending',
                                     })
-                                    oauthHandled = true
+                                    promptHandled = true
+                                } else if (
+                                    envelope &&
+                                    envelope.omni_kind === OmniToolResultKind.ApprovalRequired
+                                ) {
+                                    updateApprovalRequired(toolUseId, envelope.payload.approval_id)
+                                    promptHandled = true
                                 }
                             }
-                            if (!oauthHandled && textBlocks.length > 0) {
+                            if (!promptHandled && textBlocks.length > 0) {
                                 const text = textBlocks.map((b: any) => b.text).join('\n')
                                 updateActionResult({
                                     toolUseId,
@@ -1078,6 +1269,18 @@
 
                 addMessage(processedMessage)
             }
+        }
+
+        const durationMs = performance.now() - processStartedAt
+        if (durationMs > 50 || processMessagesCallCount % 25 === 0) {
+            console.debug('[chat-stream-debug]', 'processMessages:done', {
+                processMessagesCallCount,
+                durationMs,
+                chatMessageCount: chatMessages.length,
+                displayPathLength: displayPath.length,
+                processedMessageCount: result.length,
+                activeStreamingMessageId,
+            })
         }
 
         return result
@@ -1126,6 +1329,8 @@
     onMount(() => {
         if ((page.state as any).stream) {
             streamResponse(data.chat.id)
+        } else {
+            void resumeActiveStreamIfNeeded()
         }
 
         const handleScroll = () => {
@@ -1164,6 +1369,28 @@
     })
 
     function streamResponse(chatId: string) {
+        let debugEventCount = 0
+        const debugStream = (label: string, details?: Record<string, unknown>, force = false) => {
+            debugEventCount += 1
+            if (!force && debugEventCount > 200 && debugEventCount % 50 !== 0) return
+            console.debug('[chat-stream-debug]', label, {
+                debugEventCount,
+                ...details,
+            })
+        }
+
+        debugStream(
+            'streamResponse:start',
+            {
+                chatId,
+                existingMessageCount: chatMessages.length,
+                processedMessageCount: processedMessages.length,
+                activeStreamingMessageId,
+                branchSelections: { ...branchSelections },
+            },
+            true,
+        )
+
         isStreaming = true
         activeStreamChatId = chatId
         activeStreamingMessageId = null
@@ -1181,11 +1408,13 @@
 
         let streamCompleted = false
         let messageEventsReceived = 0
+        let pauseEventReceived = false
         reconnectAttempts = 0
 
         const nextTempMessageId = () => `temp-${Date.now()}-${tempMessageCounter++}`
 
         const replaceTempMessageId = (tempId: string, messageId: string) => {
+            debugStream('replaceTempMessageId', { tempId, messageId })
             chatMessages = chatMessages.map((message) => {
                 if (message.id === tempId) {
                     return { ...message, id: messageId }
@@ -1198,11 +1427,19 @@
             if (activeStreamingMessageId === tempId) {
                 activeStreamingMessageId = messageId
             }
+            debugStream('replaceTempMessageId:done', {
+                activeStreamingMessageId,
+                messageCount: chatMessages.length,
+            })
             replaceMessageIdInBranchSelections(tempId, messageId)
             markChatMessagesChanged()
         }
 
         const trackTempMessage = (tempId: string) => {
+            debugStream('trackTempMessage', {
+                tempId,
+                pendingPersistedMessageIds: [...pendingPersistedMessageIds],
+            })
             const persistedMessageId = pendingPersistedMessageIds.shift()
             if (persistedMessageId) {
                 replaceTempMessageId(tempId, persistedMessageId)
@@ -1212,6 +1449,10 @@
         }
 
         const applyPersistedMessageId = (messageId: string) => {
+            debugStream('applyPersistedMessageId', {
+                messageId,
+                pendingTempMessageIds: [...pendingTempMessageIds],
+            })
             const tempId = pendingTempMessageIds.shift()
             if (!tempId) {
                 pendingPersistedMessageIds.push(messageId)
@@ -1220,6 +1461,7 @@
             replaceTempMessageId(tempId, messageId)
         }
 
+        let collectStreamingResponseCount = 0
         const collectStreamingResponse = (
             block:
                 | ToolUseBlock
@@ -1230,7 +1472,27 @@
                 | CitationsDelta,
             blockIdx?: number, // This should be defined for all block types above except ToolResultBlockParam (since this one doesn't come from the LLM)
         ) => {
-            const lastMessage = chatMessages[chatMessages.length - 1]
+            collectStreamingResponseCount += 1
+            const targetMessageId = activeStreamingMessageId
+            const targetMessageIndex = targetMessageId
+                ? chatMessages.findIndex((message) => message.id === targetMessageId)
+                : -1
+            const lastMessage =
+                targetMessageIndex === -1
+                    ? chatMessages[chatMessages.length - 1]
+                    : chatMessages[targetMessageIndex]
+            debugStream('collectStreamingResponse', {
+                collectStreamingResponseCount,
+                blockType: block.type,
+                blockIdx,
+                targetMessageId,
+                targetMessageIndex,
+                lastMessageId: lastMessage?.id,
+                lastMessageRole: lastMessage?.message.role,
+                lastMessageContentIsArray: Array.isArray(lastMessage?.message.content),
+                messageCount: chatMessages.length,
+                activeStreamingMessageId,
+            })
             if (!lastMessage) {
                 // This should never happen
                 console.error('No last message found when streaming response')
@@ -1238,7 +1500,22 @@
             }
 
             const replaceLastMessage = (message: ChatMessage) => {
-                chatMessages = [...chatMessages.slice(0, -1), message]
+                const replaceIndex =
+                    targetMessageIndex === -1 ? chatMessages.length - 1 : targetMessageIndex
+                debugStream('replaceStreamingMessage', {
+                    replaceIndex,
+                    oldMessageId: lastMessage.id,
+                    newMessageId: message.id,
+                    role: message.message.role,
+                    contentBlockCount: Array.isArray(message.message.content)
+                        ? message.message.content.length
+                        : null,
+                })
+                chatMessages = [
+                    ...chatMessages.slice(0, replaceIndex),
+                    message,
+                    ...chatMessages.slice(replaceIndex + 1),
+                ]
                 markChatMessagesChanged()
             }
 
@@ -1378,6 +1655,11 @@
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
+                    debugStream('appendToolResultMessage', {
+                        toolResultMessageId: toolResultMessage.id,
+                        parentId: toolResultMessage.parentId,
+                        toolUseId: block.tool_use_id,
+                    })
                     chatMessages = [...chatMessages, toolResultMessage]
                     activeStreamingMessageId = toolResultMessage.id
                     selectBranch(toolResultMessage.parentId, toolResultMessage.id)
@@ -1413,6 +1695,11 @@
             )
 
             eventSource.addEventListener('message_id', (event) => {
+                debugStream('event:message_id', {
+                    data: event.data,
+                    lastEventId: event.lastEventId,
+                    streamLastEventId,
+                })
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
                 reconnectAttempts = 0
@@ -1443,12 +1730,20 @@
                 // Title generation is best-effort; answer streaming should not surface its failures.
             })
 
+            eventSource.addEventListener('heartbeat', () => {
+                lastStreamEventAt = Date.now()
+            })
+
             eventSource.addEventListener('message', (event) => {
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
                 reconnectAttempts = 0
                 try {
                     const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
+                    debugStream('event:message', {
+                        eventType: data.type,
+                        lastEventId: event.lastEventId,
+                    })
                     if (data.type === 'message_start') {
                         // Find the last message in current display path to use as parent
                         const displayPath = getDisplayPath(chatMessages)
@@ -1456,6 +1751,12 @@
                             displayPath.length > 0
                                 ? displayPath[displayPath.length - 1].id
                                 : undefined
+                        debugStream('message_start:parent', {
+                            streamParentId,
+                            displayPathLength: displayPath.length,
+                            displayPathLastId: displayPath[displayPath.length - 1]?.id,
+                            chatMessageCount: chatMessages.length,
+                        })
                         const startedMessage: ChatMessage = {
                             id: nextTempMessageId(),
                             chatId,
@@ -1470,6 +1771,12 @@
                         }
                         chatMessages = [...chatMessages, startedMessage]
                         activeStreamingMessageId = startedMessage.id
+                        debugStream('message_start:appended', {
+                            startedMessageId: startedMessage.id,
+                            parentId: startedMessage.parentId,
+                            activeStreamingMessageId,
+                            messageCount: chatMessages.length,
+                        })
                         selectBranch(startedMessage.parentId, startedMessage.id)
                         trackTempMessage(startedMessage.id)
                         markChatMessagesChanged()
@@ -1486,6 +1793,12 @@
                             collectStreamingResponse(data.content_block, data.index)
                         }
                     } else if (data.type === 'content_block_delta') {
+                        debugStream('content_block_delta', {
+                            index: data.index,
+                            deltaType: data.delta.type,
+                            textLength:
+                                data.delta.type === 'text_delta' ? data.delta.text?.length : null,
+                        })
                         if (data.delta.type === 'text_delta' && data.delta.text) {
                             updateThinkingForText()
                             collectStreamingResponse(data.delta, data.index)
@@ -1530,6 +1843,8 @@
             })
 
             eventSource.addEventListener('approval_required', (event) => {
+                debugStream('event:approval_required', { data: event.data })
+                pauseEventReceived = true
                 try {
                     const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
                     pendingApproval = approvalData
@@ -1545,6 +1860,8 @@
             })
 
             eventSource.addEventListener('oauth_required', (event) => {
+                debugStream('event:oauth_required', { data: event.data })
+                pauseEventReceived = true
                 try {
                     const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
                     oauthEventByToolCallId[oauthData.tool_call_id] = oauthData
@@ -1598,6 +1915,21 @@
             })
 
             eventSource.addEventListener('end_of_stream', () => {
+                debugStream(
+                    'event:end_of_stream',
+                    {
+                        messageEventsReceived,
+                        pauseEventReceived,
+                        error,
+                        stopInProgress,
+                        chatMessageCount: chatMessages.length,
+                        processedMessageCount: processedMessages.length,
+                        activeStreamingMessageId,
+                        collectStreamingResponseCount,
+                    },
+                    true,
+                )
+                const wasStopping = stopInProgress
                 streamCompleted = true
                 isStreaming = false
                 stopInProgress = false
@@ -1611,7 +1943,7 @@
                 activeStreamChatId = null
                 clearReconnectState()
 
-                if (messageEventsReceived === 0 && !error) {
+                if (messageEventsReceived === 0 && !pauseEventReceived && !error && !wasStopping) {
                     error = 'Failed to generate response. Please try again.'
                 }
             })
@@ -1640,6 +1972,9 @@
             }
 
             const handleConnectionError = () => {
+                // Guard against treating an intentional stop() as a connection error.
+                // handleStop() sets isStreaming = false before the EventSource fires its
+                // error event, so we can use that as a signal to skip cleanup here.
                 if (streamCompleted || !isStreaming) return
 
                 // Transient drop (e.g. backgrounded tab): the server keeps the run
@@ -1685,43 +2020,129 @@
         openStream(null)
 
         // Safety net for the case where the browser never fires an 'error' event
-        // after a freeze: if the stream stalls while its connection is not open,
-        // reconnect from the last offset.
+        // after a freeze or half-open connection: if the stream goes silent, force
+        // a reconnect from the last offset. The server emits heartbeat events while
+        // the agent is legitimately idle, so a healthy long-running tool call will
+        // not trip this timer.
         if (streamWatchdog) clearInterval(streamWatchdog)
         streamWatchdog = setInterval(() => {
             if (!isStreaming || streamCompleted || activeStreamChatId !== chatId) return
             const stalled = Date.now() - lastStreamEventAt > STREAM_STALL_MS
-            const notOpen = !eventSource || eventSource.readyState !== EventSource.OPEN
-            if (stalled && notOpen && !reconnectTimer) reconnectStream?.()
+            if (stalled && !reconnectTimer) {
+                eventSource?.close()
+                eventSource = null
+                reconnectStream?.()
+            }
         }, 5000)
     }
 
     async function handleApproval(decision: 'approved' | 'denied') {
-        if (!pendingApproval) return
+        console.log('Tool approval decision requested', { decision, pendingApproval })
+        if (!pendingApproval) {
+            console.warn('Tool approval decision ignored because no pending approval is set', {
+                decision,
+            })
+            return
+        }
+
+        const approvalIds = pendingApproval.approvals?.map((approval) => approval.approval_id) ?? [
+            pendingApproval.approval_id,
+        ]
+        const approvalId = approvalIds[0]
 
         try {
+            console.log('Submitting tool approval decision', {
+                decision,
+                approvalId,
+                approvalIds,
+                chatId: data.chat.id,
+            })
             const response = await fetch(`/api/chat/${data.chat.id}/approve`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    approvalId: pendingApproval.approval_id,
+                    approvalId,
+                    approvalIds,
                     decision,
                 }),
             })
+            console.log('Tool approval decision response received', {
+                decision,
+                approvalId,
+                approvalIds,
+                status: response.status,
+                ok: response.ok,
+            })
 
             if (!response.ok) {
-                console.error('Failed to submit approval decision')
+                const responseText = await response.text().catch(() => null)
+                console.error('Failed to submit approval decision', {
+                    decision,
+                    approvalId,
+                    approvalIds,
+                    status: response.status,
+                    responseText,
+                })
                 return
             }
 
+            const responseBody = (await response.json()) as { denialMessageId?: string | null }
+            const approvalItems = pendingApproval.approvals ?? [pendingApproval]
+            if (decision === 'denied' && responseBody.denialMessageId) {
+                const firstToolCallId = approvalItems[0]?.tool_call_id
+                const parentMessage = chatMessages.find((message) => {
+                    const content = message.message.content
+                    return (
+                        Array.isArray(content) &&
+                        content.some(
+                            (block) => block.type === 'tool_use' && block.id === firstToolCallId,
+                        )
+                    )
+                })
+                if (parentMessage) {
+                    const denialBlocks: ToolResultBlockParam[] = approvalItems.map((approval) => ({
+                        type: 'tool_result',
+                        tool_use_id: approval.tool_call_id,
+                        content: [
+                            {
+                                type: 'text',
+                                text: 'The user denied approval for this tool call.',
+                            },
+                        ],
+                        is_error: true,
+                    }))
+                    const denialMessage: ChatMessage = {
+                        id: responseBody.denialMessageId,
+                        chatId: data.chat.id,
+                        parentId: parentMessage.id,
+                        message: {
+                            role: 'user',
+                            content: denialBlocks,
+                        },
+                        contentText: null,
+                        messageSeqNum: nextMessageSeqNum(chatMessages),
+                        createdAt: new Date(),
+                    }
+                    chatMessages = [...chatMessages, denialMessage]
+                    selectBranch(parentMessage.id, denialMessage.id)
+                    markChatMessagesChanged()
+                }
+            }
+
             pendingApproval = null
+            console.log('Cleared pending tool approval', { decision, approvalId, approvalIds })
 
             if (decision === 'approved') {
+                console.log('Resuming stream after approval', {
+                    approvalId,
+                    approvalIds,
+                    chatId: data.chat.id,
+                })
                 // Re-trigger stream to resume execution
                 streamResponse(data.chat.id)
             }
         } catch (err) {
-            console.error('Error submitting approval:', err)
+            console.error('Error submitting approval:', err, { decision, approvalId })
         }
     }
 
@@ -1762,7 +2183,12 @@
 
         if (!response.ok) {
             userMessage = userMsg
-            console.error('Failed to send message to chat session')
+            if (response.status === 409) {
+                void resumeActiveStreamIfNeeded()
+                toast.info('The previous response is still in progress. Reconnecting to it now.')
+            } else {
+                console.error('Failed to send message to chat session')
+            }
             return
         }
 
@@ -2268,20 +2694,72 @@
                                         </div>
                                     </Card.Header>
 
-                                    <!-- Parameters -->
+                                    <!-- Action summary -->
                                     <Card.Content class="px-5 py-4">
-                                        <div
-                                            class="grid grid-cols-[80px_1fr] items-start gap-x-4 gap-y-2.5 text-[13px]">
-                                            {#each Object.entries(pendingApproval.tool_input) as [key, value]}
-                                                <div class="text-muted-foreground">{key}</div>
-                                                <div
-                                                    class={typeof value === 'string' &&
-                                                    value.length > 60
-                                                        ? 'leading-relaxed'
-                                                        : 'font-mono'}>
-                                                    {value}
+                                        {@const approvalItems = pendingApproval.approvals ?? [
+                                            pendingApproval,
+                                        ]}
+                                        {@const approvalFields = approvalInputDisplayFields(
+                                            pendingApproval.tool_input,
+                                        )}
+                                        <div class="space-y-4">
+                                            <div class="space-y-1">
+                                                <div class="text-sm font-medium">
+                                                    {#if approvalItems.length === 1}
+                                                        Omni wants to {approvalActionLabel(
+                                                            pendingApproval.tool_name,
+                                                        )}.
+                                                    {:else}
+                                                        Omni wants to perform {approvalItems.length}
+                                                        actions.
+                                                    {/if}
                                                 </div>
-                                            {/each}
+                                                <p class="text-muted-foreground text-xs">
+                                                    Review the important details below before
+                                                    approving {approvalItems.length === 1
+                                                        ? 'this action'
+                                                        : 'these actions'}.
+                                                </p>
+                                            </div>
+
+                                            {#if approvalItems.length > 1}
+                                                <div class="space-y-1 text-[13px]">
+                                                    {#each approvalItems as approval}
+                                                        <div>
+                                                            • {approvalActionLabel(
+                                                                approval.tool_name,
+                                                            )}
+                                                        </div>
+                                                    {/each}
+                                                </div>
+                                            {/if}
+
+                                            {#if approvalFields.length > 0}
+                                                <div class="space-y-2 text-[13px]">
+                                                    {#each approvalFields as field}
+                                                        <div
+                                                            class="grid grid-cols-[120px_1fr] items-start gap-x-4 gap-y-2">
+                                                            <div class="text-muted-foreground">
+                                                                {field.label}
+                                                            </div>
+                                                            <div
+                                                                class="break-words whitespace-pre-wrap">
+                                                                {field.value}
+                                                            </div>
+                                                        </div>
+                                                    {/each}
+                                                </div>
+                                            {/if}
+
+                                            <details class="text-muted-foreground text-xs">
+                                                <summary class="cursor-pointer select-none">
+                                                    Show technical details
+                                                </summary>
+                                                <pre
+                                                    class="bg-muted/60 mt-2 max-h-48 overflow-auto rounded-md p-3 text-[11px] whitespace-pre-wrap">{formatApprovalTechnicalDetails(
+                                                        pendingApproval.tool_input,
+                                                    )}</pre>
+                                            </details>
                                         </div>
                                     </Card.Content>
 
@@ -2292,14 +2770,27 @@
                                             size="sm"
                                             variant="outline"
                                             class="cursor-pointer"
-                                            onclick={() => handleApproval('denied')}>
+                                            onclick={() => {
+                                                console.log('Tool approval deny button clicked', {
+                                                    pendingApproval,
+                                                })
+                                                handleApproval('denied')
+                                            }}>
                                             Deny
                                         </Button>
                                         <Button
                                             size="sm"
                                             variant="default"
                                             class="cursor-pointer"
-                                            onclick={() => handleApproval('approved')}>
+                                            onclick={() => {
+                                                console.log(
+                                                    'Tool approval approve button clicked',
+                                                    {
+                                                        pendingApproval,
+                                                    },
+                                                )
+                                                handleApproval('approved')
+                                            }}>
                                             <Check class="h-3 w-3" />
                                             Approve & send
                                         </Button>
@@ -2325,6 +2816,103 @@
                         </div>
                     {/if}
                 {/each}
+
+                {#if pendingApproval && processedMessages[processedMessages.length - 1]?.role !== 'assistant'}
+                    {@const connectorName = pendingApproval.tool_name.split('__')[0]}
+                    {@const actionName = pendingApproval.tool_name.split('__').slice(1).join('__')}
+                    {@const connectorIcon = getSourceIconPath(connectorName)}
+                    <Card.Root class="gap-0 overflow-hidden py-0">
+                        <Card.Header
+                            class="flex items-center gap-3 border-b px-5 py-3 [.border-b]:py-3">
+                            {#if connectorIcon}
+                                <img src={connectorIcon} alt={connectorName} class="h-7 w-7" />
+                            {/if}
+                            <div class="min-w-0 flex-1">
+                                <Card.Title class="text-sm">
+                                    {getSourceDisplayName(connectorName as SourceType) ||
+                                        connectorName}
+                                </Card.Title>
+                                <Card.Description class="text-xs">
+                                    {actionName.replaceAll('_', ' ')}
+                                </Card.Description>
+                            </div>
+                            <div
+                                class="flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 dark:bg-amber-950">
+                                <span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>
+                                <span
+                                    class="text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                                    >Awaiting approval</span>
+                            </div>
+                        </Card.Header>
+                        <Card.Content class="px-5 py-4">
+                            {@const approvalItems = pendingApproval.approvals ?? [pendingApproval]}
+                            {@const approvalFields = approvalInputDisplayFields(
+                                pendingApproval.tool_input,
+                            )}
+                            <div class="space-y-4">
+                                <div class="space-y-1">
+                                    <div class="text-sm font-medium">
+                                        {#if approvalItems.length === 1}
+                                            Omni wants to {approvalActionLabel(
+                                                pendingApproval.tool_name,
+                                            )}.
+                                        {:else}
+                                            Omni wants to perform {approvalItems.length} actions.
+                                        {/if}
+                                    </div>
+                                    <p class="text-muted-foreground text-xs">
+                                        Review the important details below before approving {approvalItems.length ===
+                                        1
+                                            ? 'this action'
+                                            : 'these actions'}.
+                                    </p>
+                                </div>
+
+                                {#if approvalItems.length > 1}
+                                    <div class="space-y-1 text-[13px]">
+                                        {#each approvalItems as approval}
+                                            <div>• {approvalActionLabel(approval.tool_name)}</div>
+                                        {/each}
+                                    </div>
+                                {/if}
+
+                                {#if approvalFields.length > 0}
+                                    <div class="space-y-2 text-[13px]">
+                                        {#each approvalFields as field}
+                                            <div
+                                                class="grid grid-cols-[120px_1fr] items-start gap-x-4 gap-y-2">
+                                                <div class="text-muted-foreground">
+                                                    {field.label}
+                                                </div>
+                                                <div class="break-words whitespace-pre-wrap">
+                                                    {field.value}
+                                                </div>
+                                            </div>
+                                        {/each}
+                                    </div>
+                                {/if}
+                            </div>
+                        </Card.Content>
+                        <Card.Footer
+                            class="bg-muted/50 justify-end gap-2 border-t px-3 py-3 [.border-t]:py-3">
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                class="cursor-pointer"
+                                onclick={() => handleApproval('denied')}>
+                                Deny
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="default"
+                                class="cursor-pointer"
+                                onclick={() => handleApproval('approved')}>
+                                <Check class="h-3 w-3" />
+                                Approve & send
+                            </Button>
+                        </Card.Footer>
+                    </Card.Root>
+                {/if}
 
                 <!-- Streaming AI Response -->
                 {#if isStreaming || (error && processedMessages[processedMessages.length - 1]?.role !== 'assistant')}

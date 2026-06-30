@@ -1,8 +1,23 @@
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
 import { getModel } from '$lib/server/db/model-providers.js'
 import { getAgent } from '$lib/server/db/agents.js'
+import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
 import { error } from '@sveltejs/kit'
 import type { ChatMessage } from '$lib/server/db/schema.js'
+
+function collectActivePathToolCallIds(messages: ChatMessage[]): Set<string> {
+    const ids = new Set<string>()
+    for (const msg of messages) {
+        const content = msg.message.content
+        if (!Array.isArray(content)) continue
+        for (const block of content) {
+            if (block.type === 'tool_use') {
+                ids.add(block.id)
+            }
+        }
+    }
+    return ids
+}
 
 function collectUploadIds(messages: ChatMessage[]): Set<string> {
     const ids = new Set<string>()
@@ -72,6 +87,22 @@ export const load = async ({ params, locals, fetch }) => {
 
     const uploadIds = collectUploadIds(messages)
     const uploadFilenames = await resolveUploadFilenames(uploadIds, fetch)
+    const activePathMessages = await chatMessageRepository.getActivePath(chat.id)
+    const activePathToolCallIds = collectActivePathToolCallIds(activePathMessages)
+    const allPendingApprovals = await toolApprovalRepository.getPendingForChatAll(
+        chat.id,
+        'approval',
+    )
+    const pendingApprovals = allPendingApprovals.filter(
+        (approval) =>
+            approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
+    )
+    const allPendingOAuth = await toolApprovalRepository.getPendingForChatAll(chat.id, 'oauth')
+    const pendingOAuth =
+        allPendingOAuth.find(
+            (approval) =>
+                approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
+        ) ?? null
 
     return {
         user: locals.user!,
@@ -80,5 +111,7 @@ export const load = async ({ params, locals, fetch }) => {
         modelDisplayName,
         agent,
         uploadFilenames,
+        pendingApprovals,
+        pendingOAuth,
     }
 }
