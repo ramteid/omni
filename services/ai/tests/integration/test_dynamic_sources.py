@@ -31,6 +31,7 @@ import db.connection
 from prompts import build_chat_system_prompt
 from routers.chat import _build_registry
 from state import AppState
+from tools.connector_handler import SearchOperator
 from tools.registry import ToolContext
 from tools.search_handler import _build_search_tools
 from tools.searcher_client import CapabilitySearchResponse, CapabilitySearchResult
@@ -346,20 +347,20 @@ def test_search_tool_has_query_with_operators():
 def test_search_tool_includes_connector_operators():
     """Search tool query description includes connector-specific operators."""
     operators = [
-        {
-            "operator": "status",
-            "attribute_key": "status",
-            "value_type": "text",
-            "source_type": "jira",
-            "display_name": "Jira",
-        },
-        {
-            "operator": "channel",
-            "attribute_key": "channel_name",
-            "value_type": "text",
-            "source_type": "slack",
-            "display_name": "Slack",
-        },
+        SearchOperator(
+            operator="status",
+            attribute_key="status",
+            value_type="text",
+            source_type="jira",
+            display_name="Jira",
+        ),
+        SearchOperator(
+            operator="channel",
+            attribute_key="channel_name",
+            value_type="text",
+            source_type="slack",
+            display_name="Slack",
+        ),
     ]
     tools = _build_search_tools(operators)
     query_desc = tools[0]["input_schema"]["properties"]["query"]["description"]
@@ -867,9 +868,9 @@ async def test_build_registry_no_sources_generic_description(
     monkeypatch.setattr("routers.chat.CONNECTOR_MANAGER_URL", connector_manager_url)
     monkeypatch.setattr("routers.chat.SANDBOX_URL", "")
 
-    # Ensure no sources for this user
+    # Ensure no sources exist in the DB; connector-manager lists sources globally.
     async with db_pool.acquire() as conn:
-        await _cleanup_sources(conn, test_user)
+        await conn.execute("DELETE FROM sources")
 
     app = _make_app()
     request = _make_request(app)
